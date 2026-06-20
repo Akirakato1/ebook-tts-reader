@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ebook-tts-pipeline"
+version = "0.1.0"
+description = "Python-first ebook audiobook generation pipeline"
+requires-python = ">=3.9"
+dependencies = [
+  "anthropic>=0.55",
+  "nltk>=3.9",
+  "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+qwen = ["torch", "torchaudio", "transformers", "librosa", "accelerate"]
+
+[project.scripts]
+ebook-tts = "ebook_tts_pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-p no:beet -p no:anyio -p no:typeguard"
