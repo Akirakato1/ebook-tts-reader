@@ -1,0 +1,108 @@
+Ebook Audiobook Pipeline Manual Runtime Notes
+Date: 2026-06-20
+
+Purpose
+-------
+This runbook records the manual prerequisites for the v1 Python-first audiobook pipeline.
+
+V1 does not use LM Studio and does not require a manually started Qwen FastAPI server. The pipeline calls Anthropic directly for annotation and loads Qwen3-TTS through a local Python wrapper for TTS.
+
+Required Services And Credentials
+---------------------------------
+1. Anthropic
+   - Create or use an Anthropic API key.
+   - Set ANTHROPIC_API_KEY in the shell before running the pipeline.
+   - Default model is Haiku. The exact pinned model ID should live in pipeline config and can be changed without editing code.
+
+2. Qwen3-TTS local runtime
+   - Install the Python dependencies required by the Qwen TTS wrapper.
+   - Make sure the Qwen3-TTS model files are available locally.
+   - Use the model path layout expected by the wrapper, based on the ComfyUI-Qwen-TTS conventions:
+
+     models/
+       qwen-tts/
+         Qwen/
+           Qwen3-TTS-12Hz-1.7B-Base/
+           Qwen3-TTS-12Hz-1.7B-VoiceDesign/
+           Qwen3-TTS-Tokenizer-12Hz/
+
+   - Use bf16 precision and auto attention by default when the hardware supports it.
+
+3. Book files
+   - Put a whole-book text file at:
+
+     books/<book_slug>/source/book.txt
+
+   - Or put pre-split chapters at:
+
+     books/<book_slug>/chapters/chapter_001.txt
+     books/<book_slug>/chapters/chapter_002.txt
+
+Runtime Order
+-------------
+1. Prepare the environment.
+   - Activate the Python environment for the pipeline.
+   - Confirm ANTHROPIC_API_KEY is set.
+   - Confirm local Qwen model files exist.
+
+2. Run ingestion and segmentation.
+   - If source/book.txt exists, run deterministic chapter splitting.
+   - Run deterministic sentence segmentation for each chapter.
+   - Confirm files exist under:
+
+     books/<book_slug>/sentence_segments/
+
+3. Run annotation.
+   - The pipeline reads only sentence_segments/*.sentences.json for annotation.
+   - Anthropic labels each sentence as narration, dialogue, or thought and assigns a role.
+   - New characters are written to registry.json only after validation succeeds.
+
+4. Run voice preparation.
+   - For every role in the chapter, the pipeline checks registry.json.
+   - If voice_config_path points to a readable .qvp file, reuse it.
+   - If no .qvp exists, generate one once from the saved voice profile and voice identity seed.
+   - Save .qvp files under:
+
+     books/<book_slug>/voices/
+
+5. Run chapter TTS.
+   - The pipeline builds TTS windows with at most 8 roles.
+   - Sentences are atomic. A sentence that does not fit in the current window moves to the next window.
+   - A single sentence that is too large for a window causes a clear failure.
+
+6. Inspect outputs.
+   - Annotation:
+
+     books/<book_slug>/annotations/chapter_001.annotation.json
+
+   - Audio:
+
+     books/<book_slug>/audio/chapter_001.wav
+
+   - Sentence timing:
+
+     books/<book_slug>/audio/chapter_001.timeline.json
+
+Consistency Rule
+----------------
+For consistent character voices across chapters, reuse saved .qvp files. Do not regenerate a voice from only the text voice description unless the user intentionally wants a new voice.
+
+Troubleshooting
+---------------
+- Missing ANTHROPIC_API_KEY:
+  Set the environment variable before running annotation.
+
+- Low-confidence chapter split:
+  Provide pre-split chapter files or configure a custom chapter heading regex.
+
+- Invalid LLM JSON:
+  The pipeline should retry once with a repair prompt. If it still fails, inspect the saved failed response.
+
+- Missing or unreadable .qvp:
+  Regenerate the voice only if the existing file is absent or intentionally replaced.
+
+- Similar voices for different characters:
+  Check registry.json for voice_identity.differentiators. Distinct characters should have stable differentiators such as timbre, cadence, resonance, or energy.
+
+- Highlight timing looks wrong:
+  Check chapter_001.timeline.json. Timing should be computed from generated waveform sample counts and sample rate before the final WAV is written.
