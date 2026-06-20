@@ -106,3 +106,21 @@ Troubleshooting
 
 - Highlight timing looks wrong:
   Check chapter_001.timeline.json. Timing should be computed from generated waveform sample counts and sample rate before the final WAV is written.
+
+V1 CLI Commands
+---------------
+Install local package for development:
+
+  python -m pip install -e ".[dev]"
+
+Run all tests:
+
+  python -m pytest -v
+
+Run a chapter with fake TTS for pipeline validation:
+
+  ebook-tts run-chapter --book-root books/demo --book-title "Demo" --book-slug demo --chapter chapter_001 --fake-tts
+
+Run a chapter with real Qwen TTS after local Qwen wiring is complete:
+
+  ebook-tts run-chapter --book-root books/demo --book-title "Demo" --book-slug demo --chapter chapter_001
