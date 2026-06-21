@@ -13,9 +13,15 @@ from ebook_tts_pipeline.tts.base import GeneratedSentenceAudio, TtsAdapter
 
 
 class ChapterAudioBuilder:
-    def __init__(self, tts_adapter: TtsAdapter, pause_between_sentences_ms: int) -> None:
+    def __init__(
+        self,
+        tts_adapter: TtsAdapter,
+        pause_between_sentences_ms: int,
+        tts_speed: float = 1.0,
+    ) -> None:
         self.tts_adapter = tts_adapter
         self.pause_between_sentences_ms = pause_between_sentences_ms
+        self.tts_speed = max(0.1, float(tts_speed))
 
     def build_chapter_audio(
         self,
@@ -68,18 +74,20 @@ class ChapterAudioBuilder:
                     for item in generated:
                         if item.sample_rate != sample_rate:
                             raise ValueError("All generated sentence audio must use the same sample rate.")
+                        samples = self._apply_speed(item.samples.astype(np.float32))
                         start_samples = cursor_samples
-                        end_samples = start_samples + len(item.samples)
+                        end_samples = start_samples + len(samples)
                         timeline_sentences.append(
                             {
                                 "sentence_idx": item.sentence_idx,
+                                "unit_idx": item.unit_idx if item.unit_idx is not None else item.sentence_idx,
                                 "role": item.role,
                                 "type": item.speech_type,
                                 "start_ms": int(round(start_samples * 1000 / sample_rate)),
                                 "end_ms": int(round(end_samples * 1000 / sample_rate)),
                             }
                         )
-                        chunks.append(item.samples.astype(np.float32))
+                        chunks.append(samples)
                         cursor_samples = end_samples
                         emitted_sentences += 1
                         if emitted_sentences < total_jobs and pause_samples:
@@ -118,6 +126,16 @@ class ChapterAudioBuilder:
         generated = self.tts_adapter.generate_sentences(jobs)
         if generated:
             yield generated
+
+    def _apply_speed(self, samples: np.ndarray) -> np.ndarray:
+        if self.tts_speed == 1.0 or len(samples) <= 1:
+            return samples
+        target_len = max(1, int(round(len(samples) / self.tts_speed)))
+        if target_len == len(samples):
+            return samples
+        source_positions = np.linspace(0, len(samples) - 1, num=len(samples), dtype=np.float32)
+        target_positions = np.linspace(0, len(samples) - 1, num=target_len, dtype=np.float32)
+        return np.interp(target_positions, source_positions, samples).astype(np.float32)
 
     def _write_wav(self, path: Path, samples: np.ndarray, sample_rate: int) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, Union
@@ -194,6 +194,33 @@ class PrototypeUiController:
             raise ValueError(f"Registry JSON is invalid: {exc}") from exc
         prune_deprecated_registry_fields(payload)
         write_json_atomic(self.paths.registry, payload)
+
+    def tts_settings(self) -> Dict[str, Any]:
+        config = PipelineConfig.from_env(str(self.book_root))
+        defaults = {
+            "qwen_batch_size": config.qwen_batch_size,
+            "tts_speed": config.tts_speed,
+            "pause_between_sentences_ms": config.pause_between_sentences_ms,
+        }
+        if not self.paths.settings.exists():
+            return defaults
+        payload = read_json(self.paths.settings)
+        return {
+            "qwen_batch_size": _positive_int(payload.get("qwen_batch_size"), defaults["qwen_batch_size"]),
+            "tts_speed": _positive_float(payload.get("tts_speed"), defaults["tts_speed"]),
+            "pause_between_sentences_ms": _nonnegative_int(
+                payload.get("pause_between_sentences_ms"),
+                defaults["pause_between_sentences_ms"],
+            ),
+        }
+
+    def save_tts_settings(self, values: Dict[str, Any]) -> None:
+        settings = {
+            "qwen_batch_size": _positive_int(values.get("qwen_batch_size"), 8),
+            "tts_speed": _positive_float(values.get("tts_speed"), 1.0),
+            "pause_between_sentences_ms": _nonnegative_int(values.get("pause_between_sentences_ms"), 250),
+        }
+        write_json_atomic(self.paths.settings, settings)
 
     def registry_character_forms(self) -> List[RegistryCharacterForm]:
         if not self.paths.registry.exists():
@@ -439,7 +466,14 @@ class PrototypeUiController:
         return count
 
     def _pipeline(self, needs_llm: bool) -> AudiobookPipeline:
-        return self.pipeline_factory(PipelineConfig.from_env(str(self.book_root)), needs_llm, self.fake_tts)
+        settings = self.tts_settings()
+        config = replace(
+            PipelineConfig.from_env(str(self.book_root)),
+            qwen_batch_size=settings["qwen_batch_size"],
+            tts_speed=settings["tts_speed"],
+            pause_between_sentences_ms=settings["pause_between_sentences_ms"],
+        )
+        return self.pipeline_factory(config, needs_llm, self.fake_tts)
 
     def _load_annotation(self, chapter: str) -> AnnotationResult:
         return AnnotationResult.from_dict(read_json(self.paths.annotation(chapter)))
@@ -720,3 +754,27 @@ def _string_list(value: Any) -> List[str]:
         return [str(item).strip() for item in value if str(item).strip()]
     text = str(value).strip()
     return [text] if text else []
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _nonnegative_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
+
+
+def _positive_float(value: Any, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default

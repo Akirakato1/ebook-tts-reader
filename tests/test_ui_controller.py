@@ -40,6 +40,7 @@ class FakePipeline:
     def __init__(self, config, calls):
         self.paths = BookPaths(config.book_root)
         self.calls = calls
+        self.config = config
         self.registry = FakeRegistry(self.paths, calls)
 
     def segment_chapter(self, chapter):
@@ -101,7 +102,16 @@ class FakePipeline:
 
 def fake_pipeline_factory(calls):
     def factory(config, needs_llm, fake_tts):
-        calls.append(("factory", needs_llm, fake_tts))
+        calls.append(
+            (
+                "factory",
+                needs_llm,
+                fake_tts,
+                config.qwen_batch_size,
+                config.tts_speed,
+                config.pause_between_sentences_ms,
+            )
+        )
         return FakePipeline(config, calls)
 
     return factory
@@ -146,6 +156,35 @@ def test_controller_saves_pretty_registry_json(tmp_path):
 
     with pytest.raises(ValueError):
         controller.save_registry_text("{bad json")
+
+
+def test_controller_saves_tts_settings_and_applies_them_to_pipeline_config(tmp_path):
+    calls = []
+    paths = BookPaths(tmp_path / "book")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text("Chapter One\nText.", encoding="utf-8")
+    controller = PrototypeUiController(
+        book_root=paths.root,
+        pipeline_factory=fake_pipeline_factory(calls),
+        fake_tts=True,
+    )
+
+    controller.save_tts_settings(
+        {
+            "qwen_batch_size": "24",
+            "tts_speed": "1.25",
+            "pause_between_sentences_ms": "150",
+        }
+    )
+    settings = controller.tts_settings()
+    controller.run_next_chapter_action("chapter_001")
+
+    assert settings == {
+        "qwen_batch_size": 24,
+        "tts_speed": 1.25,
+        "pause_between_sentences_ms": 150,
+    }
+    assert ("factory", True, True, 24, 1.25, 150) in calls
 
 
 def test_controller_registry_forms_expose_only_safe_editable_fields(tmp_path):

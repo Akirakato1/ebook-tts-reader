@@ -32,7 +32,7 @@ def render_annotation_prompt(
     return (
         f"Known characters: {json.dumps(known_characters, ensure_ascii=False, separators=(',', ':'))}\n\n"
         f"Chapter: {chapter}\n\n"
-        f"Chapter text:\n{rendered_sentences}\n\n"
+        f"Annotation units:\n{rendered_sentences}\n\n"
         "Return JSON with these keys:\n"
         f"{character_schema}"
         "- Do not include Narrator in new_characters.\n"
@@ -55,12 +55,14 @@ def render_annotation_prompt(
         "- roles: list of role names appearing in this window\n"
         '- Use exactly "Narrator" for narration, not "narrator" or another variant.\n'
         '- types: exactly ["narration", "dialogue", "thought"]\n'
-        "- script: list of [role_idx, type_idx, sentence_idx]\n"
-        f"- Allowed sentence_idx values: {json.dumps(allowed_indexes)}\n"
-        f"- script must contain exactly {len(sentences)} rows, one for each allowed sentence_idx.\n"
-        "- Never emit multiple script rows for the same sentence_idx, even if one sentence contains multiple quoted speakers.\n"
-        "- For mixed-speaker sentence records, choose the first or primary speaker for the whole sentence.\n"
-        "Every sentence index in the input must appear exactly once.\n"
+        "- The chapter text has already been split into annotation units. A single source sentence can have multiple units.\n"
+        "- If an input unit is narration around dialogue, such as said-tags or action beats outside quotes, label it Narrator/narration.\n"
+        "- If an input unit is quoted external speech, label it as the speaking character/dialogue.\n"
+        "- script: list of [role_idx, type_idx, unit_idx]\n"
+        f"- Allowed unit_idx values: {json.dumps(allowed_indexes)}\n"
+        f"- script must contain exactly {len(sentences)} rows, one for each allowed unit_idx.\n"
+        "- Never emit multiple script rows for the same unit_idx.\n"
+        "Every unit index in the input must appear exactly once.\n"
         "Do not wrap the JSON in Markdown code fences."
     )
 

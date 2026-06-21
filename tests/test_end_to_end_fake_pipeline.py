@@ -19,7 +19,7 @@ class TinyBookLlm:
             ],
             "roles": ["Narrator", "Elena"],
             "types": ["narration", "dialogue", "thought"],
-            "script": [[0, 0, 0], [1, 1, 1]],
+            "script": [[0, 0, 0], [1, 1, 1], [0, 0, 2]],
         }
 
 

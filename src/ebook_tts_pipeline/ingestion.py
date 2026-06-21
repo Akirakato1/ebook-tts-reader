@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from ebook_tts_pipeline.domain import Sentence, SentenceArtifact
+from ebook_tts_pipeline.domain import Sentence, SentenceArtifact, SentenceUnit
 from ebook_tts_pipeline.json_io import write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
 
@@ -69,6 +69,7 @@ class SentenceSegmenter:
                 "version": self._segmenter_version(),
             },
             sentences=sentences,
+            units=split_sentence_units(sentences),
         )
         write_json_atomic(paths.sentence_artifact(chapter), artifact.to_dict())
         return artifact
@@ -103,3 +104,58 @@ def fallback_sentence_tokenize(text: str) -> List[str]:
         return []
     parts = re.split(r"(?<=[.!?])\s+(?=[\"'“‘A-Z0-9])", normalized)
     return [part.strip() for part in parts if part.strip()]
+
+
+def split_sentence_units(sentences: List[Sentence]) -> List[SentenceUnit]:
+    units: List[SentenceUnit] = []
+    for sentence in sentences:
+        for fragment in split_dialogue_embedded_text(sentence.text):
+            units.append(SentenceUnit(idx=len(units), sentence_idx=sentence.idx, text=fragment))
+    return units
+
+
+def split_dialogue_embedded_text(text: str) -> List[str]:
+    fragments = _quote_split_fragments(text)
+    if len(fragments) <= 1:
+        return [text.strip()] if text.strip() else []
+    return fragments
+
+
+def _quote_split_fragments(text: str) -> List[str]:
+    fragments: List[str] = []
+    current: List[str] = []
+    in_quote = False
+    quote_close = ""
+    opened_quote = False
+    closed_quote = False
+
+    for char in text:
+        is_open_quote = char in {'"', "“"}
+        is_close_quote = in_quote and char == quote_close
+        if is_open_quote and not in_quote:
+            _append_fragment(fragments, current)
+            current = [char]
+            in_quote = True
+            quote_close = "”" if char == "“" else char
+            opened_quote = True
+            continue
+
+        current.append(char)
+        if is_close_quote:
+            _append_fragment(fragments, current)
+            current = []
+            in_quote = False
+            quote_close = ""
+            closed_quote = True
+
+    if in_quote or (opened_quote and not closed_quote):
+        return [text.strip()] if text.strip() else []
+
+    _append_fragment(fragments, current)
+    return fragments
+
+
+def _append_fragment(fragments: List[str], current: List[str]) -> None:
+    fragment = "".join(current).strip()
+    if fragment:
+        fragments.append(fragment)

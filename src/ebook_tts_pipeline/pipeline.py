@@ -88,7 +88,7 @@ class AudiobookPipeline:
         window_results: List[AnnotationResult] = []
 
         for window in build_llm_windows(
-            artifact.sentences,
+            artifact.annotation_units,
             self.config.max_llm_window_chars,
             max_sentences=self.config.max_llm_window_sentences,
         ):
@@ -103,7 +103,7 @@ class AudiobookPipeline:
         merged = merge_annotation_windows(window_results, self.registry.load())
         validate_annotation(
             merged,
-            expected_sentence_indices=[sentence.idx for sentence in artifact.sentences],
+            expected_sentence_indices=[unit.idx for unit in artifact.annotation_units],
             known_names=initial_known_names,
         )
         write_json_atomic(self.paths.annotation(chapter), merged.to_dict())
@@ -215,6 +215,7 @@ class AudiobookPipeline:
         builder = ChapterAudioBuilder(
             tts_adapter=self.tts_adapter,
             pause_between_sentences_ms=self.config.pause_between_sentences_ms,
+            tts_speed=self.config.tts_speed,
         )
         return builder.build_chapter_audio_from_windows(
             chapter=chapter,

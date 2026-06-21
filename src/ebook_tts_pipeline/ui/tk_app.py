@@ -35,6 +35,9 @@ class PrototypeTkApp:
         self.book_title = tk.StringVar(value="Untitled Book")
         self.book_slug = tk.StringVar(value=Path(book_root).name or "book")
         self.fake_tts = tk.BooleanVar(value=fake_tts)
+        self.tts_batch_size = tk.StringVar(value="8")
+        self.tts_speed = tk.StringVar(value="1.0")
+        self.tts_pause_ms = tk.StringVar(value="250")
         self.status = tk.StringVar(value="Ready")
         self._loading_library = False
         self.registry_fields = {}
@@ -73,6 +76,16 @@ class PrototypeTkApp:
         ttk.Button(actions, text="Toggle Registry", command=self.toggle_registry).pack(side="left", padx=4)
         ttk.Checkbutton(actions, text="Fake TTS", variable=self.fake_tts).pack(side="left", padx=8)
         ttk.Label(actions, textvariable=self.status).pack(side="right")
+
+        settings = ttk.Frame(top)
+        settings.grid(row=3, column=0, columnspan=6, sticky="ew", pady=(6, 0))
+        ttk.Label(settings, text="TTS Batch").pack(side="left")
+        ttk.Entry(settings, textvariable=self.tts_batch_size, width=6).pack(side="left", padx=(4, 10))
+        ttk.Label(settings, text="Speed").pack(side="left")
+        ttk.Entry(settings, textvariable=self.tts_speed, width=6).pack(side="left", padx=(4, 10))
+        ttk.Label(settings, text="Pause ms").pack(side="left")
+        ttk.Entry(settings, textvariable=self.tts_pause_ms, width=6).pack(side="left", padx=(4, 10))
+        ttk.Button(settings, text="Save TTS Settings", command=self.save_tts_settings).pack(side="left")
 
         self.main = ttk.Frame(self.root)
         self.main.grid(row=1, column=0, sticky="nsew")
@@ -185,6 +198,7 @@ class PrototypeTkApp:
 
     def refresh(self) -> None:
         self._sync_controller()
+        self.load_tts_settings()
         self.load_library()
         for child in self.chapter_list.winfo_children():
             child.destroy()
@@ -315,6 +329,27 @@ class PrototypeTkApp:
             return
         self.status.set("Registry saved.")
         self.refresh()
+
+    def load_tts_settings(self) -> None:
+        settings = self.controller.tts_settings()
+        self.tts_batch_size.set(str(settings["qwen_batch_size"]))
+        self.tts_speed.set(str(settings["tts_speed"]))
+        self.tts_pause_ms.set(str(settings["pause_between_sentences_ms"]))
+
+    def save_tts_settings(self) -> None:
+        try:
+            self._sync_controller()
+            self.controller.save_tts_settings(
+                {
+                    "qwen_batch_size": self.tts_batch_size.get(),
+                    "tts_speed": self.tts_speed.get(),
+                    "pause_between_sentences_ms": self.tts_pause_ms.get(),
+                }
+            )
+        except ValueError as exc:
+            messagebox.showerror("TTS Settings Error", str(exc))
+            return
+        self.status.set("TTS settings saved.")
 
     def open_annotation_review(self, chapter: str) -> None:
         self._sync_controller()

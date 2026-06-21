@@ -20,6 +20,10 @@ class BookPaths:
     def registry(self) -> Path:
         return self.root / "registry.json"
 
+    @property
+    def settings(self) -> Path:
+        return self.root / "settings.json"
+
     def chapter_text(self, chapter: str) -> Path:
         return self.root / "chapters" / f"{chapter}.txt"
 

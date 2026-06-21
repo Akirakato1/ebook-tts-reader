@@ -45,3 +45,28 @@ def test_sentence_segmenter_writes_canonical_artifact(tmp_path):
         {"idx": 0, "text": "Hello there."},
         {"idx": 1, "text": "She waved."},
     ]
+    assert data["units"] == [
+        {"idx": 0, "sentence_idx": 0, "text": "Hello there."},
+        {"idx": 1, "sentence_idx": 1, "text": "She waved."},
+    ]
+
+
+def test_sentence_segmenter_splits_dialogue_embedded_narration_into_units(tmp_path):
+    paths = BookPaths(tmp_path / "demo")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text(
+        '"Go," Callie said, looking away. "Now." Plain narration.',
+        encoding="utf-8",
+    )
+    segmenter = SentenceSegmenter(
+        tokenizer=lambda text: ['"Go," Callie said, looking away. "Now."', "Plain narration."]
+    )
+
+    artifact = segmenter.segment_chapter(paths, "chapter_001")
+
+    assert [unit.to_dict() for unit in artifact.units] == [
+        {"idx": 0, "sentence_idx": 0, "text": '"Go,"'},
+        {"idx": 1, "sentence_idx": 0, "text": "Callie said, looking away."},
+        {"idx": 2, "sentence_idx": 0, "text": '"Now."'},
+        {"idx": 3, "sentence_idx": 1, "text": "Plain narration."},
+    ]

@@ -28,6 +28,7 @@ class PipelineConfig:
     max_tts_window_chars: int = 6000
     max_tts_roles: int = 8
     pause_between_sentences_ms: int = 250
+    tts_speed: float = 1.0
     debug_log_root: str = "logs/annotation_failures"
 
     @classmethod
@@ -54,6 +55,8 @@ class PipelineConfig:
                 os.environ.get("EBOOK_TTS_GLOBAL_REGISTRY_WINDOW_CHARS", "130000")
             ),
             max_llm_window_sentences=int(os.environ.get("EBOOK_TTS_MAX_LLM_WINDOW_SENTENCES", "300")),
+            tts_speed=float(os.environ.get("EBOOK_TTS_SPEED", "1.0")),
+            pause_between_sentences_ms=int(os.environ.get("EBOOK_TTS_PAUSE_BETWEEN_SENTENCES_MS", "250")),
             debug_log_root=os.environ.get("EBOOK_TTS_DEBUG_LOG_ROOT", "logs/annotation_failures"),
         )
 

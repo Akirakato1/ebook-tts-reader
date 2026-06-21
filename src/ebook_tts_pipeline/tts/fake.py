@@ -31,6 +31,7 @@ class FakeTtsAdapter:
                     speech_type=str(job["type"]),
                     samples=samples,
                     sample_rate=self.sample_rate,
+                    unit_idx=int(job.get("unit_idx", job["sentence_idx"])),
                 )
             )
         return generated

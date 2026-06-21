@@ -1,4 +1,4 @@
-from ebook_tts_pipeline.domain import AnnotationResult, Sentence, SentenceArtifact
+from ebook_tts_pipeline.domain import AnnotationResult, Sentence, SentenceArtifact, SentenceUnit
 from ebook_tts_pipeline.tts.script import build_tts_script, render_qwen_dialogue_script
 
 
@@ -61,6 +61,7 @@ def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
     assert [job.to_dict() for job in script.jobs] == [
         {
             "sentence_idx": 0,
+            "unit_idx": 0,
             "role": "Narrator",
             "role_id": "narrator",
             "type": "narration",
@@ -69,6 +70,7 @@ def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
         },
         {
             "sentence_idx": 1,
+            "unit_idx": 1,
             "role": "Elena_default",
             "role_id": "elena_default",
             "character": "Elena",
@@ -79,6 +81,7 @@ def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
         },
         {
             "sentence_idx": 2,
+            "unit_idx": 2,
             "role": "Elena_internal",
             "role_id": "elena_internal",
             "character": "Elena",
@@ -96,6 +99,7 @@ def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
             "voice_config_path": "voices/narrator.qvp",
             "language": "auto",
             "sentence_indices": [0],
+            "unit_indices": [0],
             "types": ["narration"],
             "text": ["It rained."],
         },
@@ -106,6 +110,7 @@ def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
             "voice_config_path": "voices/elena_default.qvp",
             "language": "auto",
             "sentence_indices": [1],
+            "unit_indices": [1],
             "types": ["dialogue"],
             "text": ['"Hello," Elena said.'],
         },
@@ -116,6 +121,7 @@ def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
             "voice_config_path": "voices/elena_internal.qvp",
             "language": "auto",
             "sentence_indices": [2],
+            "unit_indices": [2],
             "types": ["thought"],
             "text": ["She left."],
         },
@@ -205,6 +211,7 @@ def test_tts_script_resolves_age_stage_aliases_to_unique_voice_roles():
     assert [job.to_dict() for job in script.jobs] == [
         {
             "sentence_idx": 0,
+            "unit_idx": 0,
             "role": "callie_child_default",
             "role_id": "callie_child_default",
             "character": "Callie",
@@ -215,6 +222,7 @@ def test_tts_script_resolves_age_stage_aliases_to_unique_voice_roles():
         },
         {
             "sentence_idx": 1,
+            "unit_idx": 1,
             "role": "callie_adult_internal",
             "role_id": "callie_adult_internal",
             "character": "Callie",
@@ -228,6 +236,82 @@ def test_tts_script_resolves_age_stage_aliases_to_unique_voice_roles():
         'callie_child_default: "Stay here," Callie said.\n'
         'callie_adult_internal: "I remember," Callie thought.'
     )
+
+
+def test_tts_script_uses_annotation_units_for_embedded_dialogue_tags():
+    artifact = SentenceArtifact(
+        chapter="chapter_001",
+        source_path="chapters/chapter_001.txt",
+        segmenter={"name": "test"},
+        sentences=[Sentence(0, '"Stay here," Callie said.')],
+        units=[
+            SentenceUnit(0, 0, '"Stay here,"'),
+            SentenceUnit(1, 0, "Callie said."),
+        ],
+    )
+    annotation = AnnotationResult(
+        new_characters=[],
+        roles=["Narrator", "Callie child"],
+        types=["narration", "dialogue", "thought"],
+        script=[(1, 1, 0), (0, 0, 1)],
+    )
+    registry = {
+        "book": {"slug": "demo"},
+        "narrator": {
+            "role_id": "narrator",
+            "display_name": "Narrator",
+            "voice_config_path": "voices/narrator.qvp",
+        },
+        "characters": {
+            "callie_child": {
+                "role_id": "callie_child",
+                "display_name": "Callie",
+                "aliases": ["Callie child"],
+                "voice_variants": {
+                    "default": {
+                        "role_id": "callie_child_default",
+                        "display_name": "Callie_default",
+                        "voice_config_path": "voices/callie_child_default.qvp",
+                        "voice_profile": {"qwen_instruct": "Callie child aloud."},
+                    }
+                },
+            },
+        },
+    }
+
+    script = build_tts_script(
+        chapter="chapter_001",
+        annotation=annotation,
+        artifact=artifact,
+        registry=registry,
+        max_chars=1000,
+        max_roles=8,
+        language="auto",
+    )
+
+    assert [job.to_dict() for job in script.jobs] == [
+        {
+            "sentence_idx": 0,
+            "unit_idx": 0,
+            "role": "Callie_default",
+            "role_id": "callie_child_default",
+            "character": "Callie",
+            "voice_variant": "default",
+            "type": "dialogue",
+            "text": '"Stay here,"',
+            "voice_config_path": "voices/callie_child_default.qvp",
+        },
+        {
+            "sentence_idx": 0,
+            "unit_idx": 1,
+            "role": "Narrator",
+            "role_id": "narrator",
+            "type": "narration",
+            "text": "Callie said.",
+            "voice_config_path": "voices/narrator.qvp",
+        },
+    ]
+    assert script.qwen_dialogue_text == 'Callie_default: "Stay here,"\nNarrator: Callie said.'
 
 
 def test_tts_script_respects_role_limit_when_creating_windows():

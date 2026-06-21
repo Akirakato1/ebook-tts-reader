@@ -32,6 +32,43 @@ def test_fake_tts_and_audio_builder_write_sentence_timeline(tmp_path):
         assert wav.getnchannels() == 1
 
 
+def test_audio_builder_timeline_preserves_unit_indices(tmp_path):
+    adapter = FakeTtsAdapter(sample_rate=1000, samples_per_character=10)
+    builder = ChapterAudioBuilder(tts_adapter=adapter, pause_between_sentences_ms=0)
+    jobs = [
+        {"sentence_idx": 0, "unit_idx": 0, "role": "Elena", "type": "dialogue", "text": '"Hi,"'},
+        {"sentence_idx": 0, "unit_idx": 1, "role": "Narrator", "type": "narration", "text": "she said."},
+    ]
+
+    result = builder.build_chapter_audio(
+        chapter="chapter_001",
+        jobs=jobs,
+        audio_path=tmp_path / "chapter_001.wav",
+        timeline_path=tmp_path / "chapter_001.timeline.json",
+    )
+
+    assert [(item["sentence_idx"], item["unit_idx"], item["role"]) for item in result["sentences"]] == [
+        (0, 0, "Elena"),
+        (0, 1, "Narrator"),
+    ]
+
+
+def test_audio_builder_applies_tts_speed_to_generated_samples(tmp_path):
+    adapter = FakeTtsAdapter(sample_rate=1000, samples_per_character=10)
+    builder = ChapterAudioBuilder(tts_adapter=adapter, pause_between_sentences_ms=0, tts_speed=2.0)
+
+    result = builder.build_chapter_audio(
+        chapter="chapter_001",
+        jobs=[{"sentence_idx": 0, "role": "Narrator", "type": "narration", "text": "123456"}],
+        audio_path=tmp_path / "chapter_001.wav",
+        timeline_path=tmp_path / "chapter_001.timeline.json",
+    )
+
+    assert result["sentences"][0]["end_ms"] == 30
+    with wave.open(str(tmp_path / "chapter_001.wav"), "rb") as wav:
+        assert wav.getnframes() == 30
+
+
 class RecordingWindowAdapter:
     def __init__(self):
         self.calls = []

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterator, List, Protocol
+from typing import Dict, Iterator, List, Optional, Protocol
 
 import numpy as np
 
@@ -14,6 +14,7 @@ class GeneratedSentenceAudio:
     speech_type: str
     samples: np.ndarray
     sample_rate: int
+    unit_idx: Optional[int] = None
 
 
 class TtsAdapter(Protocol):

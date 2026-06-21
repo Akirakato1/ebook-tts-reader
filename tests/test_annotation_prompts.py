@@ -1,5 +1,5 @@
 from ebook_tts_pipeline.annotation.prompts import render_annotation_prompt
-from ebook_tts_pipeline.domain import Sentence
+from ebook_tts_pipeline.domain import Sentence, SentenceUnit
 
 
 def test_annotation_prompt_requires_profile_object_for_new_characters():
@@ -12,15 +12,21 @@ def test_annotation_prompt_requires_profile_object_for_new_characters():
     assert "profile must be a JSON object, never null, never a string" in prompt
 
 
-def test_annotation_prompt_requires_one_script_row_per_sentence():
+def test_annotation_prompt_requires_one_script_row_per_annotation_unit():
     prompt = render_annotation_prompt(
         "chapter_001",
-        [Sentence(idx=0, text='"Hello." "Hi." She waved.')],
+        [
+            SentenceUnit(idx=0, sentence_idx=0, text='"Hello."'),
+            SentenceUnit(idx=1, sentence_idx=0, text="She waved."),
+        ],
         {"characters": {}},
     )
 
-    assert "Never emit multiple script rows for the same sentence_idx" in prompt
-    assert "choose the first or primary speaker" in prompt
+    assert "script: list of [role_idx, type_idx, unit_idx]" in prompt
+    assert "Allowed unit_idx values: [0, 1]" in prompt
+    assert "script must contain exactly 2 rows, one for each allowed unit_idx" in prompt
+    assert "If an input unit is narration around dialogue" in prompt
+    assert "choose the first or primary speaker" not in prompt
 
 
 def test_annotation_prompt_rejects_numbered_person_ids():

@@ -237,6 +237,7 @@ class QwenTtsAdapter:
                 speech_type=str(job["type"]),
                 samples=np.asarray(wavs[index], dtype=np.float32),
                 sample_rate=sample_rate,
+                unit_idx=int(job.get("unit_idx", job["sentence_idx"])),
             )
             for index, job in enumerate(jobs)
         ]
