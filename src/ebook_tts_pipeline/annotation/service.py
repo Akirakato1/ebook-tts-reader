@@ -41,7 +41,7 @@ class AnnotationService:
         result = self._annotation_result_from_payload(chapter, sentences, "annotation", prompt, payload)
         result = _lock_annotation_result(result) if lock_registry else result
         expected = [sentence.idx for sentence in sentences]
-        known_names = _known_names(registry)
+        known_names = known_annotation_role_names(registry)
 
         for attempt in range(self.repair_retries + 1):
             try:
@@ -157,7 +157,7 @@ class AnnotationService:
         )
 
 
-def _known_names(registry: Dict) -> Set[str]:
+def known_annotation_role_names(registry: Dict) -> Set[str]:
     names = {"Narrator"}
     characters = [
         character

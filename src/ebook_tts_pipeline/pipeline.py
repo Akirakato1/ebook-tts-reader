@@ -8,7 +8,7 @@ from ebook_tts_pipeline.annotation.global_registry import (
     GlobalRegistryService,
 )
 from ebook_tts_pipeline.annotation.merge import merge_annotation_windows
-from ebook_tts_pipeline.annotation.service import AnnotationService
+from ebook_tts_pipeline.annotation.service import AnnotationService, known_annotation_role_names
 from ebook_tts_pipeline.annotation.validator import AnnotationValidationError, validate_annotation
 from ebook_tts_pipeline.audio import ChapterAudioBuilder
 from ebook_tts_pipeline.config import PipelineConfig
@@ -84,7 +84,7 @@ class AudiobookPipeline:
 
     def annotate_chapter(self, chapter: str, lock_registry: bool = False) -> AnnotationResult:
         artifact = SentenceArtifact.from_dict(read_json(self.paths.sentence_artifact(chapter)))
-        initial_known_names = self.registry.known_names()
+        initial_known_names = known_annotation_role_names(self.registry.load())
         window_results: List[AnnotationResult] = []
 
         for window in build_llm_windows(artifact.sentences, self.config.max_llm_window_chars):

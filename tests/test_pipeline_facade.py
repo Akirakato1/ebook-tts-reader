@@ -404,6 +404,49 @@ def test_pipeline_locked_annotation_does_not_mutate_registry_with_new_characters
     assert annotation.proposed_new_characters[0]["name"] == "Mystery"
 
 
+def test_pipeline_locked_annotation_accepts_unique_registry_display_names(tmp_path):
+    book_root = tmp_path / "demo"
+    chapter_dir = book_root / "chapters"
+    chapter_dir.mkdir(parents=True)
+    (chapter_dir / "chapter_001.txt").write_text('"Come here," Buddy Waleski said.', encoding="utf-8")
+    client = QueuedLlmClient(
+        [
+            {
+                "new_characters": [],
+                "roles": ["Buddy Waleski"],
+                "types": ["narration", "dialogue", "thought"],
+                "script": [[0, 1, 0]],
+            }
+        ]
+    )
+    pipeline = AudiobookPipeline(
+        config=PipelineConfig(book_root=str(book_root), anthropic_api_key="fake"),
+        annotation_service=AnnotationService(client, repair_retries=0),
+        tts_adapter=FakeTtsAdapter(sample_rate=1000, samples_per_character=5),
+        tokenizer=lambda text: ['"Come here," Buddy Waleski said.'],
+    )
+    pipeline.registry.initialize_if_missing(book_title="Demo", book_slug="demo")
+    pipeline.registry.add_new_characters(
+        chapter="global_registry",
+        new_characters=[
+            {
+                "name": "Buddy Waleski",
+                "profile": {
+                    "age_stage": "adult",
+                    "gender": "male",
+                    "personality": ["aggressive"],
+                    "aliases": ["Buddy Waleski adult"],
+                },
+            }
+        ],
+    )
+    pipeline.segment_chapter("chapter_001")
+
+    annotation = pipeline.annotate_chapter("chapter_001", lock_registry=True)
+
+    assert annotation.roles == ["Buddy Waleski"]
+
+
 def test_pipeline_prepares_default_and_internal_voice_variants_with_cache_invalidation_and_force(tmp_path):
     adapter = CountingTtsAdapter()
     pipeline = AudiobookPipeline(
