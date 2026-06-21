@@ -37,6 +37,9 @@ def test_render_global_registry_prompt_requests_canonical_characters_only():
     assert "Do not recreate" in prompt
     assert "Return new characters and existing-character updates" in prompt
     assert "Do not echo unchanged registry records" in prompt
+    assert '"characters":[{"name":str,"age_stage":str,"gender":str' in prompt
+    assert '"profile":object' not in prompt
+    assert "evidence" not in prompt
     assert "timeline" not in prompt
     assert "same_person_as" not in prompt
     assert "narrative_notes" not in prompt
@@ -113,23 +116,17 @@ def test_global_registry_prompt_uses_minimal_character_summaries():
     assert "narrative_notes" not in prompt
 
 
-def test_global_registry_service_returns_characters_with_evidence():
+def test_global_registry_service_normalizes_compact_character_deltas():
     client = RecordingGlobalClient(
         {
             "characters": [
                 {
                     "name": "Akari Nakayama",
-                    "profile": {
-                        "profile_id": "akari_nakayama_adult",
-                        "person_id": "akari_nakayama",
-                        "age_stage": "adult",
-                        "gender": "female",
-                        "personality": ["professional", "direct"],
-                        "aliases": ["Akari"],
-                    },
-                    "evidence": [
-                        {"chapter": "chapter_001", "note": "Introduced by full name"},
-                    ],
+                    "age_stage": "adult",
+                    "gender": "female",
+                    "race_or_accent": "Japanese; Tokyo accent",
+                    "occupation": "barista",
+                    "personality_type": "professional, direct",
                 }
             ]
         }
@@ -150,5 +147,12 @@ def test_global_registry_service_returns_characters_with_evidence():
 
     assert len(client.calls) == 1
     assert result.characters[0]["name"] == "Akari Nakayama"
-    assert result.characters[0]["profile"]["aliases"] == ["Akari"]
-    assert result.characters[0]["evidence"][0]["chapter"] == "chapter_001"
+    assert result.characters[0]["profile"] == {
+        "age_stage": "adult",
+        "gender": "female",
+        "race_or_ethnicity": "Japanese",
+        "accent": "Tokyo",
+        "occupation": "barista",
+        "personality": ["professional", "direct"],
+    }
+    assert "evidence" not in result.characters[0]

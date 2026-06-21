@@ -6,9 +6,11 @@ Add a book-level character registry pass before chapter annotation so repeated c
 
 ## Pipeline Shape
 
-After EPUB extraction and deterministic sentence segmentation, the app can run a global registry pass. The pass sends compact whole-chapter text windows to the configured Anthropic model, defaults to the existing Haiku model, and asks only for canonical character profiles, aliases, age-stage variants, and chapter evidence. The default global-registry window is 130,000 chapter-text characters, configurable with `EBOOK_TTS_GLOBAL_REGISTRY_WINDOW_CHARS`. It does not produce sentence-level annotation.
+After EPUB extraction and deterministic sentence segmentation, the app can run a global registry pass. The pass sends compact whole-chapter text windows to the configured Anthropic model, defaults to the existing Haiku model, and asks only for canonical character identity facts and age-stage variants. The default global-registry window is 130,000 chapter-text characters, configurable with `EBOOK_TTS_GLOBAL_REGISTRY_WINDOW_CHARS`. It does not produce sentence-level annotation.
 
-Each global-registry window receives a minimal summary of the current saved registry. Each existing character summary contains only `name`, `age_stage`, `gender`, `race_or_accent`, `occupation`, and `personality_type`. The saved `registry.json` remains rich enough for UI editing and voice caching, but the prompt omits ids, aliases, voice variants, Qwen instructions, hashes, old evidence, and narrative notes. After a successful window, the app immediately merges returned new characters or meaningful updates into `registry.json`; the next window sees updated character summaries. The prompt treats the existing registry as authoritative, instructs the model not to recreate summarized characters, and allows updates only when a chunk adds or corrects one of those key identity facts.
+Each global-registry window receives a minimal summary of the current saved registry. Each existing character summary contains only `name`, `age_stage`, `gender`, `race_or_accent`, `occupation`, and `personality_type`. The LLM returns the same compact fields for new characters and meaningful updates only. The app expands those compact deltas into saved registry records, then the next window sees updated summaries. The saved `registry.json` remains rich enough for UI editing and voice caching, but the prompt omits ids, aliases, voice variants, Qwen instructions, hashes, old provenance, and narrative notes. The prompt treats the existing registry as authoritative, instructs the model not to recreate summarized characters, and allows updates only when a chunk adds or corrects one of those key identity facts.
+
+When a compact delta has the same `name` and the same known `age_stage` as an existing record, it updates missing facts on that record. When it has the same `name` but a different known `age_stage`, the app creates a separate voice profile such as `callie_teen` next to `callie_adult`.
 
 The registry remains user-editable in the prototype UI. Chapter annotation then runs against this locked registry and should not automatically create new registry records. If the model sees an unknown speaker during chapter annotation, it returns `proposed_new_characters`; the app records them in the annotation JSON for review but does not add them to `registry.json`.
 
@@ -20,8 +22,11 @@ The prototype UI gets a `Build Global Registry` button. Loading a book still ext
 
 The global registry LLM response uses:
 
-- `characters`: list of `{name, profile, evidence}`
-- `evidence`: compact chapter/sentence references and short notes for debugging the current LLM response; evidence is not persisted into saved character records
+- `characters`: list of `{name, age_stage, gender, race_or_accent, occupation, personality_type}`
+- `name`: stable display name for the person in that life-stage row
+- `age_stage`: one of `child`, `teen`, `adult`, `elder`, or `unknown`
+- `race_or_accent`: compact combined string such as `Japanese; Tokyo accent`, or `unknown`
+- `personality_type`: short comma-separated voice-casting traits
 
 The saved character registry keeps identity fields, aliases, and voice cache fields only. Deprecated plot/provenance fields such as `timeline`, `same_person_as`, `character_profile`, `narrative_notes`, `first_seen`, and `global_evidence` are pruned on save or merge.
 

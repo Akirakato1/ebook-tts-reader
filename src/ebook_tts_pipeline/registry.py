@@ -279,43 +279,7 @@ class RegistryManager:
             collision = sorted(collision_names & normalized_known)
             if collision:
                 raise ValueError(f"collides with existing character or alias: {role_id}")
-            differentiators = choose_differentiators(book_slug, role_id)
-            voice = build_compact_voice_profile(name, profile)
-            voice["qwen_instruct"] = append_differentiators(
-                str(voice["qwen_instruct"]),
-                differentiators,
-            )
-            seed = role_seed(book_slug, role_id)
-            registry["characters"][role_id] = {
-                "role_id": role_id,
-                "profile_id": role_id,
-                "person_id": profile["person_id"],
-                "display_name": name,
-                "age_stage": profile["age_stage"],
-                "aliases": profile["aliases"],
-                "identity_profile": profile["identity_profile"],
-                "voice_identity": {
-                    "seed": seed,
-                    "differentiators": differentiators,
-                },
-                "voice_variants": {
-                    "default": {
-                        "role_id": f"{role_id}_default",
-                        "display_name": f"{name}_default",
-                        "voice_identity": {"seed": seed, "differentiators": differentiators},
-                        "voice_profile": voice,
-                        "voice_config_path": None,
-                    },
-                    "internal": {
-                        "role_id": f"{role_id}_internal",
-                        "display_name": f"{name}_internal",
-                        "voice_identity": {"seed": seed, "differentiators": differentiators},
-                        "voice_profile": _internal_voice_profile(name, voice),
-                        "voice_config_path": None,
-                    },
-                },
-            }
-            prune_deprecated_character_fields(registry["characters"][role_id])
+            _insert_character_record(registry, book_slug, name, profile)
             normalized_known.add(normalize_name(role_id))
             normalized_known.add(normalize_name(role_id.replace("_", " ")))
             normalized_known.update(normalize_name(alias) for alias in profile["aliases"])
@@ -331,7 +295,7 @@ class RegistryManager:
             if not name:
                 continue
             profile = normalize_character_profile(name, character.get("profile", {}))
-            role_id = _find_matching_character_id(registry, name, profile)
+            role_id = _find_matching_global_character_id(registry, name, profile)
             if role_id:
                 _merge_character_record(
                     registry["characters"][role_id],
@@ -341,11 +305,7 @@ class RegistryManager:
                     book_slug=book_slug,
                 )
                 continue
-            self.add_new_characters(
-                chapter=chapter,
-                new_characters=[{"name": name, "profile": character.get("profile", {})}],
-            )
-            registry = self.load()
+            _insert_character_record(registry, book_slug, name, profile)
 
         prune_deprecated_registry_fields(registry)
         self.save(registry)
@@ -380,6 +340,52 @@ def normalize_character_profile(name: str, raw_profile: Any) -> Dict[str, Any]:
     }
 
 
+def _insert_character_record(
+    registry: Dict[str, Any],
+    book_slug: str,
+    name: str,
+    profile: Dict[str, Any],
+) -> None:
+    role_id = str(profile["profile_id"])
+    differentiators = choose_differentiators(book_slug, role_id)
+    voice = build_compact_voice_profile(name, profile)
+    voice["qwen_instruct"] = append_differentiators(
+        str(voice["qwen_instruct"]),
+        differentiators,
+    )
+    seed = role_seed(book_slug, role_id)
+    registry["characters"][role_id] = {
+        "role_id": role_id,
+        "profile_id": role_id,
+        "person_id": profile["person_id"],
+        "display_name": name,
+        "age_stage": profile["age_stage"],
+        "aliases": profile["aliases"],
+        "identity_profile": profile["identity_profile"],
+        "voice_identity": {
+            "seed": seed,
+            "differentiators": differentiators,
+        },
+        "voice_variants": {
+            "default": {
+                "role_id": f"{role_id}_default",
+                "display_name": f"{name}_default",
+                "voice_identity": {"seed": seed, "differentiators": differentiators},
+                "voice_profile": voice,
+                "voice_config_path": None,
+            },
+            "internal": {
+                "role_id": f"{role_id}_internal",
+                "display_name": f"{name}_internal",
+                "voice_identity": {"seed": seed, "differentiators": differentiators},
+                "voice_profile": _internal_voice_profile(name, voice),
+                "voice_config_path": None,
+            },
+        },
+    }
+    prune_deprecated_character_fields(registry["characters"][role_id])
+
+
 def _find_matching_character_id(
     registry: Dict[str, Any],
     name: str,
@@ -399,6 +405,44 @@ def _find_matching_character_id(
         if candidates & names:
             return str(role_id)
     return ""
+
+
+def _find_matching_global_character_id(
+    registry: Dict[str, Any],
+    name: str,
+    profile: Dict[str, Any],
+) -> str:
+    incoming_age_stage = str(profile.get("age_stage", "unknown") or "unknown")
+    candidates = {
+        normalize_name(name),
+        normalize_name(str(profile.get("profile_id", ""))),
+        normalize_name(str(profile.get("profile_id", "")).replace("_", " ")),
+    }
+    candidates.update(normalize_name(alias) for alias in profile.get("aliases", []))
+    if incoming_age_stage == "unknown":
+        candidates.add(normalize_name(str(profile.get("person_id", ""))))
+    candidates.discard("")
+
+    for role_id, record in registry.get("characters", {}).items():
+        record_age_stage = _character_age_stage(record)
+        if _known_age_stages_conflict(incoming_age_stage, record_age_stage):
+            continue
+        names = _character_lookup_names(record)
+        names.add(normalize_name(str(record.get("person_id", ""))))
+        if candidates & names:
+            return str(role_id)
+    return ""
+
+
+def _character_age_stage(record: Dict[str, Any]) -> str:
+    identity = record.get("identity_profile", {})
+    if not isinstance(identity, dict):
+        identity = {}
+    return str(record.get("age_stage") or identity.get("age_stage") or "unknown").strip().lower().replace(" ", "_")
+
+
+def _known_age_stages_conflict(first: str, second: str) -> bool:
+    return first not in ("", "unknown") and second not in ("", "unknown") and first != second
 
 
 def _merge_character_record(
@@ -426,6 +470,7 @@ def _merge_character_record(
         aliases.append(name)
     record["aliases"] = _dedupe_preserving_order(aliases)
     record["identity_profile"] = merged_identity
+    record["age_stage"] = str(merged_identity.get("age_stage", record.get("age_stage", "unknown")))
     prune_deprecated_character_fields(record)
     _refresh_record_voice_profiles(book_slug, record)
 

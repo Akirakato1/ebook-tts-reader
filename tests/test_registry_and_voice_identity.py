@@ -248,6 +248,89 @@ def test_global_registry_merge_updates_key_character_facts(tmp_path):
     assert identity["personality"] == ["guarded", "wry"]
 
 
+def test_global_registry_merge_creates_age_stage_variant_for_same_name(tmp_path):
+    paths = BookPaths(tmp_path / "demo")
+    manager = RegistryManager(paths)
+    manager.initialize_if_missing(book_title="Demo Book", book_slug="demo")
+    manager.add_new_characters(
+        chapter="chapter_001",
+        new_characters=[
+            {
+                "name": "Callie",
+                "profile": {
+                    "age_stage": "adult",
+                    "gender": "female",
+                    "personality": ["protective"],
+                },
+            }
+        ],
+    )
+
+    manager.merge_global_characters(
+        chapter="global_registry",
+        characters=[
+            {
+                "name": "Callie",
+                "profile": {
+                    "age_stage": "teen",
+                    "gender": "female",
+                    "occupation": "student",
+                    "personality": ["guarded", "timid"],
+                },
+            }
+        ],
+    )
+
+    registry = read_json(paths.registry)
+    assert set(registry["characters"]) == {"callie_adult", "callie_teen"}
+    assert registry["characters"]["callie_adult"]["identity_profile"]["personality"] == ["protective"]
+    teen = registry["characters"]["callie_teen"]
+    assert teen["person_id"] == "callie"
+    assert teen["age_stage"] == "teen"
+    assert teen["identity_profile"]["occupation"] == "student"
+    assert teen["voice_variants"]["default"]["role_id"] == "callie_teen_default"
+
+
+def test_global_registry_merge_updates_same_name_same_age_stage(tmp_path):
+    paths = BookPaths(tmp_path / "demo")
+    manager = RegistryManager(paths)
+    manager.initialize_if_missing(book_title="Demo Book", book_slug="demo")
+    manager.add_new_characters(
+        chapter="chapter_001",
+        new_characters=[
+            {
+                "name": "Callie",
+                "profile": {
+                    "age_stage": "adult",
+                    "gender": "female",
+                    "personality": ["protective"],
+                },
+            }
+        ],
+    )
+
+    manager.merge_global_characters(
+        chapter="global_registry",
+        characters=[
+            {
+                "name": "Callie",
+                "profile": {
+                    "age_stage": "adult",
+                    "gender": "female",
+                    "occupation": "lawyer",
+                    "personality": ["direct"],
+                },
+            }
+        ],
+    )
+
+    registry = read_json(paths.registry)
+    assert set(registry["characters"]) == {"callie_adult"}
+    identity = registry["characters"]["callie_adult"]["identity_profile"]
+    assert identity["occupation"] == "lawyer"
+    assert identity["personality"] == ["protective", "direct"]
+
+
 def test_resolve_effective_voice_matches_unique_short_display_name():
     registry = {
         "book": {"slug": "demo"},

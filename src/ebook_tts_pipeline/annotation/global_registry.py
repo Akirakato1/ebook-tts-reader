@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -50,7 +51,9 @@ class GlobalRegistryService:
             characters = payload.get("characters", [])
             if not isinstance(characters, list):
                 raise AnnotationModelOutputError("Global registry JSON field 'characters' must be a list.")
-            return GlobalRegistryResult(characters=[dict(character) for character in characters])
+            return GlobalRegistryResult(
+                characters=[_normalize_global_character_delta(character) for character in characters]
+            )
         except Exception as exc:
             if self.failure_logger is not None:
                 self.failure_logger.write_failure(
@@ -88,12 +91,15 @@ def render_global_registry_prompt(
         "Do not produce sentence-level annotation or script rows.\n"
         "Merge aliases that clearly refer to the same person, such as first name, full name, title, or nickname.\n"
         "Create separate profiles only when the same person appears at a different life stage: child, teen, adult, or elder.\n"
-        "Return JSON with exactly this shape: {\"characters\":[{\"name\":str,\"profile\":object,\"evidence\":list}]}.\n"
-        "Each profile must include age_stage, gender, personality.\n"
-        "Profile optional fields: profile_id, person_id, race_or_ethnicity, accent, occupation, aliases.\n"
+        "Return JSON with exactly this shape: "
+        "{\"characters\":[{\"name\":str,\"age_stage\":str,\"gender\":str,"
+        "\"race_or_accent\":str,\"occupation\":str,\"personality_type\":str}]}.\n"
+        "Return one row per character life-stage variant; use the same name with a different age_stage "
+        "when a child, teen, adult, or elder version should have a distinct voice profile.\n"
+        "Use age_stage values child, teen, adult, elder, or unknown.\n"
+        "Use race_or_accent as a compact string such as 'Japanese; Tokyo accent', or 'unknown'.\n"
         "Keep personality to short trait adjectives useful for voice casting.\n"
-        "Use race_or_ethnicity and accent only when explicit or strongly text-grounded; otherwise null or omit.\n"
-        "Evidence should be compact chapter references and short identity notes.\n\n"
+        "Use race or accent facts only when explicit or strongly text-grounded; otherwise use 'unknown'.\n"
         f"Chapter text:\n{rendered_chapters}\n\n"
         "Return JSON only. Do not wrap the JSON in Markdown code fences."
     )
@@ -183,3 +189,72 @@ def _compact_string_list(value: Any, max_items: int) -> List[str]:
         if len(compact) >= max_items:
             break
     return compact
+
+
+def _normalize_global_character_delta(character: Any) -> Dict[str, Any]:
+    if not isinstance(character, dict):
+        raise AnnotationModelOutputError("Global registry character entries must be objects.")
+    name = str(character.get("name", "")).strip()
+    if not name:
+        raise AnnotationModelOutputError("Global registry character entries must include name.")
+    profile = character.get("profile")
+    if isinstance(profile, dict):
+        return {"name": name, "profile": dict(profile)}
+
+    race_or_ethnicity, accent = _parse_race_or_accent(character.get("race_or_accent"))
+    normalized_profile: Dict[str, Any] = {
+        "age_stage": _compact_unknown_string(character.get("age_stage")),
+        "gender": _compact_unknown_string(character.get("gender")),
+        "personality": _split_compact_list(character.get("personality_type")),
+    }
+    if race_or_ethnicity is not None:
+        normalized_profile["race_or_ethnicity"] = race_or_ethnicity
+    if accent is not None:
+        normalized_profile["accent"] = accent
+    occupation = _nullable_compact_string(character.get("occupation"))
+    if occupation is not None:
+        normalized_profile["occupation"] = occupation
+    return {"name": name, "profile": normalized_profile}
+
+
+def _parse_race_or_accent(value: Any) -> tuple[Optional[str], Optional[str]]:
+    text = str(value or "").strip()
+    if not text or text.lower() in {"unknown", "none", "null", "n/a"}:
+        return None, None
+
+    race_or_ethnicity: Optional[str] = None
+    accent: Optional[str] = None
+    for part in [item.strip() for item in text.split(";") if item.strip()]:
+        lowered = part.lower()
+        if lowered in {"unknown", "none", "null", "n/a"}:
+            continue
+        if lowered.endswith(" accent"):
+            accent = part[: -len(" accent")].strip() or None
+        elif lowered == "accent":
+            continue
+        elif race_or_ethnicity is None:
+            race_or_ethnicity = part
+        else:
+            race_or_ethnicity = f"{race_or_ethnicity}; {part}"
+    return race_or_ethnicity, accent
+
+
+def _compact_unknown_string(value: Any) -> str:
+    text = str(value or "").strip().lower().replace(" ", "_")
+    return text if text and text not in {"none", "null", "n/a"} else "unknown"
+
+
+def _nullable_compact_string(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    return None if not text or text.lower() in {"unknown", "none", "null", "n/a"} else text
+
+
+def _split_compact_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return _compact_string_list(value, max_items=5)
+    text = str(value).strip()
+    if not text or text.lower() in {"unknown", "none", "null", "n/a"}:
+        return []
+    return _compact_string_list(re.split(r"[,;]", text), max_items=5)
