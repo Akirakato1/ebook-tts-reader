@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 
 DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
@@ -28,10 +28,15 @@ class PipelineConfig:
     pause_between_sentences_ms: int = 250
 
     @classmethod
-    def from_env(cls, book_root: str) -> "PipelineConfig":
+    def from_env(
+        cls,
+        book_root: str,
+        user_env_lookup: Optional[Callable[[str], Optional[str]]] = None,
+    ) -> "PipelineConfig":
+        lookup = user_env_lookup or _lookup_user_env
         return cls(
             book_root=book_root,
-            anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
+            anthropic_api_key=_env("ANTHROPIC_API_KEY", user_env_lookup=lookup),
             anthropic_model=os.environ.get(
                 "EBOOK_TTS_ANTHROPIC_MODEL",
                 DEFAULT_ANTHROPIC_MODEL,
@@ -48,3 +53,23 @@ class PipelineConfig:
         if not self.anthropic_api_key:
             raise RuntimeError("ANTHROPIC_API_KEY is required for annotation.")
         return self.anthropic_api_key
+
+
+def _env(name: str, user_env_lookup: Callable[[str], Optional[str]]) -> Optional[str]:
+    value = os.environ.get(name)
+    if value:
+        return value
+    return user_env_lookup(name)
+
+
+def _lookup_user_env(name: str) -> Optional[str]:
+    if os.name != "nt":
+        return None
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, _ = winreg.QueryValueEx(key, name)
+            return str(value) if value else None
+    except OSError:
+        return None

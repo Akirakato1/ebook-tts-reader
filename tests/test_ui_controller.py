@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from ebook_tts_pipeline.epub_ingestion import EpubExtractResult
-from ebook_tts_pipeline.json_io import write_json_atomic
+from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.ui.controller import ChapterStage, PrototypeUiController
 
@@ -118,6 +118,148 @@ def test_controller_saves_pretty_registry_json(tmp_path):
 
     with pytest.raises(ValueError):
         controller.save_registry_text("{bad json")
+
+
+def test_controller_registry_forms_expose_only_safe_editable_fields(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    write_json_atomic(
+        paths.registry,
+        {
+            "book": {"title": "Demo", "slug": "demo"},
+            "narrator": {"role_id": "narrator", "display_name": "Narrator"},
+            "characters": {
+                "callie_adult": {
+                    "role_id": "callie_adult",
+                    "profile_id": "callie_adult",
+                    "person_id": "callie",
+                    "display_name": "Callie",
+                    "age": None,
+                    "age_stage": "adult",
+                    "aliases": ["Callie adult"],
+                    "identity_profile": {
+                        "age": None,
+                        "age_stage": "adult",
+                        "gender": "female",
+                        "personality": ["stressed", "protective"],
+                        "race_or_ethnicity": None,
+                        "accent": None,
+                    },
+                    "narrative_notes": "Original notes.",
+                    "voice_identity": {"seed": 123, "differentiators": ["darker timbre"]},
+                    "voice_variants": {
+                        "default": {
+                            "role_id": "callie_adult_default",
+                            "display_name": "Callie_default",
+                            "voice_identity": {"seed": 123, "differentiators": ["darker timbre"]},
+                            "voice_profile": {
+                                "description": "adult female; stressed, protective",
+                                "qwen_instruct": "A adult female voice.",
+                            },
+                            "voice_config_path": "voices/callie_adult_default.qvp",
+                            "voice_config_hash": "old-hash",
+                        }
+                    },
+                }
+            },
+        },
+    )
+    controller = PrototypeUiController(book_root=paths.root)
+
+    form = controller.registry_character_forms()[0]
+    editable_keys = {field.key for field in form.editable_fields}
+    readonly_keys = {field.key for field in form.readonly_fields}
+
+    assert form.role_id == "callie_adult"
+    assert "role_id" in readonly_keys
+    assert "person_id" in readonly_keys
+    assert "seed" in readonly_keys
+    assert "display_name" in editable_keys
+    assert "age_stage" in editable_keys
+    assert "personality" in editable_keys
+    assert "role_id" not in editable_keys
+    assert "seed" not in editable_keys
+
+
+def test_controller_saves_registry_form_values_and_refreshes_voice_profile(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    write_json_atomic(
+        paths.registry,
+        {
+            "book": {"title": "Demo", "slug": "demo"},
+            "narrator": {"role_id": "narrator", "display_name": "Narrator"},
+            "characters": {
+                "callie_adult": {
+                    "role_id": "callie_adult",
+                    "profile_id": "callie_adult",
+                    "person_id": "callie",
+                    "display_name": "Callie",
+                    "age": None,
+                    "age_stage": "adult",
+                    "aliases": ["Callie adult"],
+                    "identity_profile": {
+                        "age": None,
+                        "age_stage": "adult",
+                        "gender": "female",
+                        "personality": ["stressed"],
+                        "race_or_ethnicity": None,
+                        "accent": None,
+                    },
+                    "narrative_notes": "Original notes.",
+                    "voice_identity": {"seed": 123, "differentiators": ["darker timbre"]},
+                    "voice_variants": {
+                        "default": {
+                            "role_id": "callie_adult_default",
+                            "display_name": "Callie_default",
+                            "voice_identity": {"seed": 123, "differentiators": ["darker timbre"]},
+                            "voice_profile": {
+                                "description": "adult female; stressed",
+                                "qwen_instruct": "A adult female voice.",
+                            },
+                            "voice_config_path": "voices/callie_adult_default.qvp",
+                            "voice_config_hash": "old-hash",
+                        },
+                        "internal": {
+                            "role_id": "callie_adult_internal",
+                            "display_name": "Callie_internal",
+                            "voice_identity": {"seed": 123, "differentiators": ["darker timbre"]},
+                            "voice_profile": {
+                                "description": "adult female; stressed; internal",
+                                "qwen_instruct": "A adult female voice. Internal.",
+                            },
+                            "voice_config_path": "voices/callie_adult_internal.qvp",
+                            "voice_config_hash": "old-internal-hash",
+                        },
+                    },
+                }
+            },
+        },
+    )
+    controller = PrototypeUiController(book_root=paths.root)
+
+    controller.save_registry_character_form(
+        "callie_adult",
+        {
+            "display_name": "Callie",
+            "age": "14",
+            "age_stage": "teen",
+            "gender": "female",
+            "personality": "guarded, timid",
+            "race_or_ethnicity": "",
+            "accent": "",
+            "aliases": "Callie teen, Callie",
+            "narrative_notes": "Victim of grooming/exploitation; not romance.",
+        },
+    )
+
+    registry = read_json(paths.registry)
+    character = registry["characters"]["callie_adult"]
+    assert character["age"] == 14
+    assert character["age_stage"] == "teen"
+    assert character["display_name"] == "Callie"
+    assert character["identity_profile"]["personality"] == ["guarded", "timid"]
+    assert character["aliases"] == ["Callie teen", "Callie"]
+    assert "teen female" in character["voice_variants"]["default"]["voice_profile"]["qwen_instruct"]
+    assert character["voice_variants"]["default"].get("voice_config_hash") is None
 
 
 def test_controller_loads_epub_initializes_registry_segments_and_toc(tmp_path):

@@ -15,8 +15,10 @@ from ebook_tts_pipeline.epub_ingestion import EpubChapterExtractor, EpubExtractR
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.pipeline import AudiobookPipeline
+from ebook_tts_pipeline.registry import build_compact_voice_profile
 from ebook_tts_pipeline.tts.fake import FakeTtsAdapter
 from ebook_tts_pipeline.tts.qwen_adapter import QwenTtsAdapter
+from ebook_tts_pipeline.voice_identity import append_differentiators
 
 
 class ChapterStage(str, Enum):
@@ -42,6 +44,22 @@ class BookLibraryEntry:
     slug: str
     book_root: Path
     epub_path: Path
+
+
+@dataclass(frozen=True)
+class RegistryField:
+    key: str
+    label: str
+    value: str
+    multiline: bool = False
+
+
+@dataclass(frozen=True)
+class RegistryCharacterForm:
+    role_id: str
+    title: str
+    readonly_fields: List[RegistryField]
+    editable_fields: List[RegistryField]
 
 
 @dataclass(frozen=True)
@@ -154,6 +172,80 @@ class PrototypeUiController:
             raise ValueError(f"Registry JSON is invalid: {exc}") from exc
         write_json_atomic(self.paths.registry, payload)
 
+    def registry_character_forms(self) -> List[RegistryCharacterForm]:
+        if not self.paths.registry.exists():
+            return []
+        registry = read_json(self.paths.registry)
+        forms = []
+        for role_id, character in sorted(registry.get("characters", {}).items()):
+            identity = dict(character.get("identity_profile", character.get("character_profile", {})))
+            voice_identity = dict(character.get("voice_identity", {}))
+            variants = dict(character.get("voice_variants", {}))
+            qvp_paths = [
+                str(variant.get("voice_config_path", ""))
+                for variant in variants.values()
+                if variant.get("voice_config_path")
+            ]
+            forms.append(
+                RegistryCharacterForm(
+                    role_id=role_id,
+                    title=str(character.get("display_name", role_id)),
+                    readonly_fields=[
+                        RegistryField("role_id", "Role ID", str(character.get("role_id", role_id))),
+                        RegistryField("profile_id", "Profile ID", str(character.get("profile_id", ""))),
+                        RegistryField("person_id", "Person ID", str(character.get("person_id", ""))),
+                        RegistryField("seed", "Seed", str(voice_identity.get("seed", ""))),
+                        RegistryField("voice_config_path", "Voice Files", ", ".join(qvp_paths)),
+                    ],
+                    editable_fields=[
+                        RegistryField("display_name", "Character Name", str(character.get("display_name", ""))),
+                        RegistryField("age", "Age", _field_text(character.get("age", identity.get("age")))),
+                        RegistryField("age_stage", "Age Stage", str(character.get("age_stage", identity.get("age_stage", "")))),
+                        RegistryField("gender", "Gender", str(identity.get("gender", ""))),
+                        RegistryField("personality", "Personality", ", ".join(_string_list(identity.get("personality")))),
+                        RegistryField("race_or_ethnicity", "Race / Ethnicity", _field_text(identity.get("race_or_ethnicity"))),
+                        RegistryField("accent", "Accent", _field_text(identity.get("accent"))),
+                        RegistryField("aliases", "Aliases", ", ".join(_string_list(character.get("aliases")))),
+                        RegistryField("narrative_notes", "Notes", _field_text(character.get("narrative_notes")), multiline=True),
+                    ],
+                )
+            )
+        return forms
+
+    def save_registry_character_form(self, role_id: str, values: Dict[str, str]) -> None:
+        registry = read_json(self.paths.registry)
+        characters = registry.get("characters", {})
+        if role_id not in characters:
+            raise ValueError(f"Registry character not found: {role_id}")
+
+        character = characters[role_id]
+        identity = dict(character.get("identity_profile", character.get("character_profile", {})))
+        display_name = values.get("display_name", str(character.get("display_name", role_id))).strip() or role_id
+        age = _parse_age(values.get("age", ""))
+        age_stage = values.get("age_stage", str(identity.get("age_stage", "unknown"))).strip() or "unknown"
+        gender = values.get("gender", str(identity.get("gender", "unknown"))).strip() or "unknown"
+        personality = _split_csv(values.get("personality", ""))
+
+        identity.update(
+            {
+                "age": age,
+                "age_stage": age_stage,
+                "gender": gender,
+                "personality": personality,
+                "race_or_ethnicity": _blank_to_none(values.get("race_or_ethnicity", "")),
+                "accent": _blank_to_none(values.get("accent", "")),
+            }
+        )
+        character["display_name"] = display_name
+        character["age"] = age
+        character["age_stage"] = age_stage
+        character["aliases"] = _split_csv(values.get("aliases", ""))
+        character["identity_profile"] = identity
+        character["character_profile"] = dict(identity)
+        character["narrative_notes"] = _blank_to_none(values.get("narrative_notes", ""))
+        self._refresh_character_voice_profiles(character)
+        write_json_atomic(self.paths.registry, registry)
+
     def load_epub(self, epub_path: Union[str, Path], title: str, slug: str) -> EpubExtractResult:
         self.paths.root.mkdir(parents=True, exist_ok=True)
         result = self.extractor.extract(epub_path, self.paths)
@@ -264,6 +356,26 @@ class PrototypeUiController:
                 continue
         self.current_book_slug = ""
 
+    def _refresh_character_voice_profiles(self, character: Dict[str, Any]) -> None:
+        identity = dict(character.get("identity_profile", {}))
+        display_name = str(character.get("display_name", character.get("role_id", "Character")))
+        voice = build_compact_voice_profile(display_name, {"identity_profile": identity})
+        differentiators = list(character.get("voice_identity", {}).get("differentiators", []))
+        if differentiators:
+            voice["qwen_instruct"] = append_differentiators(str(voice["qwen_instruct"]), differentiators)
+
+        variants = character.setdefault("voice_variants", {})
+        default = variants.get("default")
+        if isinstance(default, dict):
+            default["display_name"] = f"{display_name}_default"
+            default["voice_profile"] = voice
+            default["voice_config_hash"] = None
+        internal = variants.get("internal")
+        if isinstance(internal, dict):
+            internal["display_name"] = f"{display_name}_internal"
+            internal["voice_profile"] = _internal_voice_profile(display_name, voice)
+            internal["voice_config_hash"] = None
+
 
 def _default_pipeline_factory(config: PipelineConfig, needs_llm: bool, fake_tts: bool) -> AudiobookPipeline:
     return AudiobookPipeline(
@@ -303,3 +415,52 @@ def _open_audio_file(path: Path) -> None:
 class _UnavailableJsonClient:
     def complete_json(self, system_prompt: str, user_prompt: str) -> Any:
         raise RuntimeError("This UI action does not perform LLM annotation.")
+
+
+def _internal_voice_profile(display_name: str, base_voice: Dict[str, Any]) -> Dict[str, str]:
+    description = str(base_voice.get("description", "")).rstrip(". ")
+    qwen_instruct = str(base_voice.get("qwen_instruct", "")).rstrip(". ")
+    return {
+        "description": (
+            f"{description}; same {display_name} identity for internal monologue, "
+            "closer, softer, reflective, less projected"
+        ).strip("; "),
+        "qwen_instruct": (
+            f"{qwen_instruct}. Keep the same {display_name} speaker identity and timbre, "
+            "but perform this as internal monologue: closer, softer, inward, reflective, "
+            "and less projected. Do not whisper unless the text itself implies whispering."
+        ).strip(),
+    }
+
+
+def _field_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _blank_to_none(value: str) -> Optional[str]:
+    text = str(value).strip()
+    return text or None
+
+
+def _parse_age(value: str) -> Any:
+    text = str(value).strip()
+    if not text:
+        return None
+    return int(text) if text.isdigit() else text
+
+
+def _split_csv(value: Any) -> List[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [part.strip() for part in str(value).split(",") if part.strip()]
+
+
+def _string_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []

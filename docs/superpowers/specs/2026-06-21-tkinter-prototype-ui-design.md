@@ -20,14 +20,15 @@ This is a prototype UI, not the final reader interface. The implementation uses 
    - Blue: TTS/Qwen scripts exist; clicking generates chapter audio.
    - Yellow: audio exists; clicking opens the audio file.
 5. The registry panel can be toggled open or closed at any time.
-6. The registry panel edits raw pretty JSON for `registry.json` and validates JSON before save.
+6. The registry panel presents character entries as safe editable fields. IDs, seeds, hashes, and voice file paths are shown read-only; profile values such as character name, age, age stage, gender, personality, aliases, accent, and notes are editable and saved back to valid JSON automatically.
 
 ## Constraints
 
 - Long operations run in a background thread so the UI remains responsive.
 - Registry edits are saved before script generation if the user clicks save.
+- The default registry editor avoids raw JSON syntax editing so users cannot accidentally break required keys, IDs, seeds, or cached voice metadata.
 - Audio generation uses the current Qwen adapter path by default, with a fake-TTS option for testing/prototyping.
-- The prototype does not include ebook reading, sentence highlighting playback, or rich character form editing. Raw JSON editing is enough for this pass.
+- The prototype does not include ebook reading, sentence highlighting playback, or full character-management operations such as splitting/merging registry IDs. The form editor is for safe profile-value correction.
 
 ## Testing
 

@@ -34,6 +34,7 @@ class PrototypeTkApp:
         self.fake_tts = tk.BooleanVar(value=fake_tts)
         self.status = tk.StringVar(value="Ready")
         self._loading_library = False
+        self.registry_fields = {}
 
         self._build_layout()
         self.refresh()
@@ -111,11 +112,27 @@ class PrototypeTkApp:
         self.registry_frame = ttk.Frame(self.body, padding=8)
         self.registry_frame.columnconfigure(0, weight=1)
         self.registry_frame.rowconfigure(0, weight=1)
-        self.registry_text = tk.Text(self.registry_frame, wrap="none", undo=True)
-        self.registry_text.grid(row=0, column=0, sticky="nsew")
+        self.registry_canvas = tk.Canvas(self.registry_frame, highlightthickness=0)
+        self.registry_scrollbar = ttk.Scrollbar(
+            self.registry_frame,
+            orient="vertical",
+            command=self.registry_canvas.yview,
+        )
+        self.registry_inner = ttk.Frame(self.registry_canvas)
+        self.registry_window = self.registry_canvas.create_window(
+            (0, 0),
+            window=self.registry_inner,
+            anchor="nw",
+        )
+        self.registry_canvas.configure(yscrollcommand=self.registry_scrollbar.set)
+        self.registry_canvas.grid(row=0, column=0, sticky="nsew")
+        self.registry_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.registry_inner.bind("<Configure>", self._resize_registry_scroll)
+        self.registry_canvas.bind("<Configure>", self._resize_registry_width)
         ttk.Button(self.registry_frame, text="Save Registry", command=self.save_registry).grid(
             row=1,
             column=0,
+            columnspan=2,
             sticky="e",
             pady=(6, 0),
         )
@@ -213,15 +230,55 @@ class PrototypeTkApp:
         self.refresh()
 
     def load_registry_panel(self) -> None:
-        self.registry_text.delete("1.0", "end")
-        self.registry_text.insert("1.0", self.controller.registry_text())
+        self.registry_fields = {}
+        for child in self.registry_inner.winfo_children():
+            child.destroy()
+        forms = self.controller.registry_character_forms()
+        if not forms:
+            ttk.Label(self.registry_inner, text="No character registry yet.").grid(row=0, column=0, sticky="w")
+            return
+
+        for row_index, form in enumerate(forms):
+            card = ttk.LabelFrame(self.registry_inner, text=form.title, padding=8)
+            card.grid(row=row_index, column=0, sticky="ew", pady=(0, 8))
+            card.columnconfigure(1, weight=1)
+
+            current_row = 0
+            for field in form.readonly_fields:
+                ttk.Label(card, text=field.label).grid(row=current_row, column=0, sticky="w", pady=1)
+                ttk.Label(card, text=field.value, foreground="#555").grid(
+                    row=current_row,
+                    column=1,
+                    sticky="ew",
+                    pady=1,
+                )
+                current_row += 1
+
+            ttk.Separator(card).grid(row=current_row, column=0, columnspan=2, sticky="ew", pady=6)
+            current_row += 1
+            self.registry_fields[form.role_id] = {}
+            for field in form.editable_fields:
+                ttk.Label(card, text=field.label).grid(row=current_row, column=0, sticky="nw", pady=2)
+                if field.multiline:
+                    widget = tk.Text(card, height=4, wrap="word", undo=True)
+                    widget.insert("1.0", field.value)
+                else:
+                    widget = ttk.Entry(card)
+                    widget.insert(0, field.value)
+                widget.grid(row=current_row, column=1, sticky="ew", pady=2)
+                self.registry_fields[form.role_id][field.key] = widget
+                current_row += 1
 
     def save_registry(self) -> None:
         try:
             self._sync_controller()
-            self.controller.save_registry_text(self.registry_text.get("1.0", "end"))
+            for role_id, fields in self.registry_fields.items():
+                self.controller.save_registry_character_form(
+                    role_id,
+                    {key: self._field_value(widget) for key, widget in fields.items()},
+                )
         except ValueError as exc:
-            messagebox.showerror("Registry JSON Error", str(exc))
+            messagebox.showerror("Registry Save Error", str(exc))
             return
         self.status.set("Registry saved.")
         self.refresh()
@@ -268,6 +325,17 @@ class PrototypeTkApp:
 
     def _resize_chapter_width(self, event) -> None:
         self.chapter_canvas.itemconfigure(self.chapter_window, width=event.width)
+
+    def _resize_registry_scroll(self, event) -> None:
+        self.registry_canvas.configure(scrollregion=self.registry_canvas.bbox("all"))
+
+    def _resize_registry_width(self, event) -> None:
+        self.registry_canvas.itemconfigure(self.registry_window, width=event.width)
+
+    def _field_value(self, widget) -> str:
+        if isinstance(widget, tk.Text):
+            return widget.get("1.0", "end").strip()
+        return widget.get().strip()
 
 
 def _slugify(value: str) -> str:

@@ -16,3 +16,14 @@ def test_default_config_is_ui_friendly_and_overridable(monkeypatch):
     assert config.qwen_model_choice == "1.7B"
     assert config.qwen_batch_size == 4
     assert config.max_tts_roles == 8
+
+
+def test_config_falls_back_to_user_env_lookup_for_anthropic_key(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    config = PipelineConfig.from_env(
+        book_root="books/demo",
+        user_env_lookup=lambda name: "user-key" if name == "ANTHROPIC_API_KEY" else None,
+    )
+
+    assert config.anthropic_api_key == "user-key"
