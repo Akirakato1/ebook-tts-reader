@@ -44,8 +44,13 @@ class ChapterSplitter:
 
 
 class SentenceSegmenter:
-    def __init__(self, tokenizer: Optional[Callable[[str], List[str]]] = None) -> None:
+    def __init__(
+        self,
+        tokenizer: Optional[Callable[[str], List[str]]] = None,
+        allow_nltk_download: bool = False,
+    ) -> None:
         self._tokenizer = tokenizer
+        self._allow_nltk_download = allow_nltk_download
 
     def segment_chapter(self, paths: BookPaths, chapter: str) -> SentenceArtifact:
         text = paths.chapter_text(chapter).read_text(encoding="utf-8")
@@ -73,7 +78,13 @@ class SentenceSegmenter:
             return self._tokenizer(text)
         import nltk
 
-        return nltk.sent_tokenize(text)
+        try:
+            return nltk.sent_tokenize(text)
+        except LookupError:
+            if self._allow_nltk_download:
+                nltk.download("punkt", quiet=True)
+                return nltk.sent_tokenize(text)
+            return fallback_sentence_tokenize(text)
 
     def _segmenter_version(self) -> str:
         if self._tokenizer is not None:
@@ -84,3 +95,11 @@ class SentenceSegmenter:
             return nltk.__version__
         except Exception:
             return "unknown"
+
+
+def fallback_sentence_tokenize(text: str) -> List[str]:
+    normalized = " ".join(text.split())
+    if not normalized:
+        return []
+    parts = re.split(r"(?<=[.!?])\s+(?=[\"'“‘A-Z0-9])", normalized)
+    return [part.strip() for part in parts if part.strip()]

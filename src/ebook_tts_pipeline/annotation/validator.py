@@ -60,8 +60,19 @@ def validate_annotation(
         name = str(character.get("name", "")).strip()
         if not name:
             errors.append("new character is missing name")
-        elif _normalize_name(name) in normalized_known:
+            continue
+        if _normalize_name(name) in normalized_known:
             errors.append(f"collides with existing character or alias: {name}")
+        profile = character.get("profile")
+        voice = character.get("voice")
+        if not isinstance(profile, dict):
+            errors.append(f"new character profile must be an object: {name}")
+        if not isinstance(voice, dict):
+            errors.append(f"new character voice must be an object: {name}")
+        else:
+            for field in ("description", "qwen_instruct"):
+                if not isinstance(voice.get(field), str) or not voice.get(field, "").strip():
+                    errors.append(f"new character voice.{field} must be a non-empty string: {name}")
 
     if errors:
         raise AnnotationValidationError("; ".join(errors))

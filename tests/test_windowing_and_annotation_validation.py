@@ -67,3 +67,31 @@ def test_annotation_validator_rejects_new_character_alias_collision():
         validate_annotation(result, expected_sentence_indices=[0, 1], known_names={"elena"})
 
     assert "collides with existing character or alias: Elena" in str(exc.value)
+
+
+def test_annotation_validator_rejects_narrator_as_new_character():
+    result = AnnotationResult(
+        new_characters=[{"name": "Narrator", "profile": {}, "voice": {}}],
+        roles=["Narrator"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 0, 0)],
+    )
+
+    with pytest.raises(AnnotationValidationError) as exc:
+        validate_annotation(result, expected_sentence_indices=[0], known_names={"Narrator"})
+
+    assert "collides with existing character or alias: Narrator" in str(exc.value)
+
+
+def test_annotation_validator_rejects_malformed_new_character_voice_profile():
+    result = AnnotationResult(
+        new_characters=[{"name": "Leigh", "profile": {}, "voice": "warm adult woman"}],
+        roles=["Narrator", "Leigh"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 0, 0), (1, 1, 1)],
+    )
+
+    with pytest.raises(AnnotationValidationError) as exc:
+        validate_annotation(result, expected_sentence_indices=[0, 1], known_names={"Narrator"})
+
+    assert "new character voice must be an object: Leigh" in str(exc.value)
