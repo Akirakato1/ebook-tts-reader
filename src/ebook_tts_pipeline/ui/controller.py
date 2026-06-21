@@ -37,6 +37,14 @@ class ChapterRow:
 
 
 @dataclass(frozen=True)
+class BookLibraryEntry:
+    title: str
+    slug: str
+    book_root: Path
+    epub_path: Path
+
+
+@dataclass(frozen=True)
 class ChapterActionResult:
     chapter: str
     stage: ChapterStage
@@ -60,17 +68,49 @@ class PrototypeUiController:
         extractor: Optional[ChapterExtractor] = None,
         audio_opener: Optional[AudioOpener] = None,
         fake_tts: bool = False,
+        library_path: Optional[Union[str, Path]] = None,
     ) -> None:
         self.book_root = Path(book_root)
         self.paths = BookPaths(self.book_root)
+        self.library_path = Path(library_path) if library_path else Path("books") / "library.json"
+        self.current_book_slug = ""
         self.pipeline_factory = pipeline_factory or _default_pipeline_factory
         self.extractor = extractor or EpubChapterExtractor()
         self.audio_opener = audio_opener or _open_audio_file
         self.fake_tts = fake_tts
+        self._sync_current_book_from_library()
 
     def set_book_root(self, book_root: Union[str, Path]) -> None:
         self.book_root = Path(book_root)
         self.paths = BookPaths(self.book_root)
+        self._sync_current_book_from_library()
+
+    def library_books(self) -> List[BookLibraryEntry]:
+        if not self.library_path.exists():
+            return []
+        payload = read_json(self.library_path)
+        books = []
+        for item in payload.get("books", []):
+            book_root = str(item.get("book_root", "")).strip()
+            if not book_root:
+                continue
+            books.append(
+                BookLibraryEntry(
+                    title=str(item.get("title", "")).strip() or str(item.get("slug", "")).strip() or book_root,
+                    slug=str(item.get("slug", "")).strip() or Path(book_root).name,
+                    book_root=Path(book_root),
+                    epub_path=Path(str(item.get("epub_path", "")).strip()),
+                )
+            )
+        return books
+
+    def select_book(self, slug: str) -> BookLibraryEntry:
+        for book in self.library_books():
+            if book.slug == slug:
+                self.current_book_slug = book.slug
+                self.set_book_root(book.book_root)
+                return book
+        raise ValueError(f"Book not found in library: {slug}")
 
     def chapter_rows(self) -> List[ChapterRow]:
         chapters_dir = self.book_root / "chapters"
@@ -119,6 +159,7 @@ class PrototypeUiController:
         result = self.extractor.extract(epub_path, self.paths)
         pipeline = self._pipeline(needs_llm=False)
         pipeline.registry.initialize_if_missing(book_title=title, book_slug=slug)
+        self.current_book_slug = slug
         toc = []
         for index, chapter in enumerate(result.chapters, start=1):
             pipeline.segment_chapter(chapter)
@@ -132,6 +173,14 @@ class PrototypeUiController:
                 }
             )
         write_json_atomic(self.book_root / "toc.json", {"chapters": toc})
+        self._register_library_book(
+            BookLibraryEntry(
+                title=title,
+                slug=slug,
+                book_root=self.book_root,
+                epub_path=Path(epub_path),
+            )
+        )
         return result
 
     def run_next_chapter_action(self, chapter: str) -> ChapterActionResult:
@@ -183,6 +232,37 @@ class PrototypeUiController:
             if title:
                 return title[:120]
         return fallback
+
+    def _register_library_book(self, entry: BookLibraryEntry) -> None:
+        existing = [book for book in self.library_books() if book.slug != entry.slug]
+        existing.append(entry)
+        existing.sort(key=lambda book: book.title.lower())
+        self.library_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(
+            self.library_path,
+            {
+                "books": [
+                    {
+                        "title": book.title,
+                        "slug": book.slug,
+                        "book_root": str(book.book_root),
+                        "epub_path": str(book.epub_path),
+                    }
+                    for book in existing
+                ]
+            },
+        )
+
+    def _sync_current_book_from_library(self) -> None:
+        resolved_root = self.book_root.resolve()
+        for book in self.library_books():
+            try:
+                if book.book_root.resolve() == resolved_root:
+                    self.current_book_slug = book.slug
+                    return
+            except OSError:
+                continue
+        self.current_book_slug = ""
 
 
 def _default_pipeline_factory(config: PipelineConfig, needs_llm: bool, fake_tts: bool) -> AudiobookPipeline:

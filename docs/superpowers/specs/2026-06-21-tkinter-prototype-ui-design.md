@@ -3,6 +3,7 @@
 ## Goal
 
 Build a simple local Python UI for the ebook-to-audiobook pipeline so the user can load an EPUB, initialize chapters/sentence segments/registry, annotate chapters, edit the registry before script generation, generate Qwen/TTS scripts, synthesize audio, and open completed chapter audio.
+The prototype also keeps a local `books/library.json` index so the user can switch between previously loaded books.
 
 ## Approach
 
@@ -12,13 +13,14 @@ This is a prototype UI, not the final reader interface. The implementation uses 
 
 1. User selects an EPUB and book output folder.
 2. The UI extracts chapters, sentence-segments each chapter, initializes `registry.json`, and shows a chapter table.
-3. Each chapter button reflects artifact state:
+3. The UI registers the book in `books/library.json`; selecting a book from the book list switches the active book root and refreshes chapters/registry.
+4. Each chapter button reflects artifact state:
    - Gray: chapter and sentence segments exist, annotation not generated.
    - Green: annotation exists and registry has been updated; clicking builds `.tts_script.json` and `.qwen_script.txt` from the current edited registry.
    - Blue: TTS/Qwen scripts exist; clicking generates chapter audio.
    - Yellow: audio exists; clicking opens the audio file.
-4. The registry panel can be toggled open or closed at any time.
-5. The registry panel edits raw pretty JSON for `registry.json` and validates JSON before save.
+5. The registry panel can be toggled open or closed at any time.
+6. The registry panel edits raw pretty JSON for `registry.json` and validates JSON before save.
 
 ## Constraints
 

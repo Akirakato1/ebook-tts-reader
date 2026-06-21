@@ -33,6 +33,7 @@ class PrototypeTkApp:
         self.book_slug = tk.StringVar(value=Path(book_root).name or "book")
         self.fake_tts = tk.BooleanVar(value=fake_tts)
         self.status = tk.StringVar(value="Ready")
+        self._loading_library = False
 
         self._build_layout()
         self.refresh()
@@ -68,8 +69,21 @@ class PrototypeTkApp:
         ttk.Checkbutton(actions, text="Fake TTS", variable=self.fake_tts).pack(side="left", padx=8)
         ttk.Label(actions, textvariable=self.status).pack(side="right")
 
-        self.body = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
-        self.body.grid(row=1, column=0, sticky="nsew")
+        self.main = ttk.Frame(self.root)
+        self.main.grid(row=1, column=0, sticky="nsew")
+        self.main.columnconfigure(1, weight=1)
+        self.main.rowconfigure(0, weight=1)
+
+        library_frame = ttk.Frame(self.main, padding=8)
+        library_frame.grid(row=0, column=0, sticky="ns")
+        ttk.Label(library_frame, text="Books").pack(anchor="w")
+        self.book_list = tk.Listbox(library_frame, width=28, exportselection=False)
+        self.book_list.pack(fill="both", expand=True, pady=(4, 0))
+        self.book_list.bind("<<ListboxSelect>>", self.select_library_book)
+        ttk.Button(library_frame, text="Refresh Books", command=self.load_library).pack(fill="x", pady=(6, 0))
+
+        self.body = ttk.PanedWindow(self.main, orient=tk.HORIZONTAL)
+        self.body.grid(row=0, column=1, sticky="nsew")
 
         self.chapter_frame = ttk.Frame(self.body, padding=8)
         self.body.add(self.chapter_frame, weight=1)
@@ -142,6 +156,7 @@ class PrototypeTkApp:
 
     def refresh(self) -> None:
         self._sync_controller()
+        self.load_library()
         for child in self.chapter_list.winfo_children():
             child.destroy()
         rows = self.controller.chapter_rows()
@@ -168,6 +183,34 @@ class PrototypeTkApp:
         self.body.add(self.registry_frame, weight=1)
         self.registry_visible.set(True)
         self.load_registry_panel()
+
+    def load_library(self) -> None:
+        self._loading_library = True
+        try:
+            self.book_list.delete(0, "end")
+            for index, book in enumerate(self.controller.library_books()):
+                self.book_list.insert("end", f"{book.title} ({book.slug})")
+                if book.slug == self.controller.current_book_slug:
+                    self.book_list.selection_set(index)
+        finally:
+            self._loading_library = False
+
+    def select_library_book(self, event=None) -> None:
+        if self._loading_library:
+            return
+        selection = self.book_list.curselection()
+        if not selection:
+            return
+        books = self.controller.library_books()
+        index = int(selection[0])
+        if index >= len(books):
+            return
+        book = self.controller.select_book(books[index].slug)
+        self.book_root.set(str(book.book_root))
+        self.book_title.set(book.title)
+        self.book_slug.set(book.slug)
+        self.epub_path.set(str(book.epub_path))
+        self.refresh()
 
     def load_registry_panel(self) -> None:
         self.registry_text.delete("1.0", "end")

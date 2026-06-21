@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a prototype Tkinter UI for loading EPUBs, initializing chapters, editing the registry, and advancing chapters through annotation, script generation, audio generation, and audio opening.
+**Goal:** Add a prototype Tkinter UI for loading EPUBs, initializing chapters, navigating previously loaded books, editing the registry, and advancing chapters through annotation, script generation, audio generation, and audio opening.
 
 **Architecture:** Add a testable `ebook_tts_pipeline.ui.controller` module with filesystem/artifact state and workflow methods. Add a thin `ebook_tts_pipeline.ui.tk_app` module that renders Tkinter widgets and delegates all pipeline work to the controller. Keep long-running actions in Tk worker threads.
 

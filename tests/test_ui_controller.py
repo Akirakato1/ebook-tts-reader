@@ -123,8 +123,10 @@ def test_controller_saves_pretty_registry_json(tmp_path):
 def test_controller_loads_epub_initializes_registry_segments_and_toc(tmp_path):
     calls = []
     paths = BookPaths(tmp_path / "book")
+    library_path = tmp_path / "library.json"
     controller = PrototypeUiController(
         book_root=paths.root,
+        library_path=library_path,
         pipeline_factory=fake_pipeline_factory(calls),
         extractor=FakeExtractor(),
         fake_tts=True,
@@ -138,9 +140,51 @@ def test_controller_loads_epub_initializes_registry_segments_and_toc(tmp_path):
     assert paths.sentence_artifact("chapter_002").exists()
     toc = paths.root / "toc.json"
     assert "Chapter One" in toc.read_text(encoding="utf-8")
+    library = controller.library_books()
+    assert len(library) == 1
+    assert library[0].title == "Demo"
+    assert library[0].slug == "demo"
+    assert library[0].book_root == paths.root
+    assert library[0].epub_path == tmp_path / "demo.epub"
     assert ("initialize", "Demo", "demo") in calls
     assert ("segment", "chapter_001") in calls
     assert ("segment", "chapter_002") in calls
+
+
+def test_controller_switches_between_library_books(tmp_path):
+    first = BookPaths(tmp_path / "first")
+    second = BookPaths(tmp_path / "second")
+    first.chapter_text("chapter_001").parent.mkdir(parents=True)
+    first.chapter_text("chapter_001").write_text("First Book\n", encoding="utf-8")
+    second.chapter_text("chapter_001").parent.mkdir(parents=True)
+    second.chapter_text("chapter_001").write_text("Second Book\n", encoding="utf-8")
+    library_path = tmp_path / "library.json"
+    write_json_atomic(
+        library_path,
+        {
+            "books": [
+                {
+                    "title": "First",
+                    "slug": "first",
+                    "book_root": str(first.root),
+                    "epub_path": str(tmp_path / "first.epub"),
+                },
+                {
+                    "title": "Second",
+                    "slug": "second",
+                    "book_root": str(second.root),
+                    "epub_path": str(tmp_path / "second.epub"),
+                },
+            ]
+        },
+    )
+    controller = PrototypeUiController(book_root=first.root, library_path=library_path)
+
+    controller.select_book("second")
+
+    assert controller.book_root == second.root
+    assert controller.current_book_slug == "second"
+    assert controller.chapter_rows()[0].title == "Second Book"
 
 
 def test_controller_chapter_action_advances_through_pipeline_stages(tmp_path):
