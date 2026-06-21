@@ -82,14 +82,15 @@ def render_global_registry_prompt(
         f"{json.dumps(known_characters, ensure_ascii=False, separators=(',', ':'))}\n\n"
         "Build a canonical character registry for audiobook voice casting.\n"
         "Existing registry is authoritative. Do not recreate characters already represented in the summaries.\n"
-        "Return only new characters found in this chapter window; do not return updates to existing characters "
-        "or echo unchanged registry records.\n"
+        "Return new characters and existing-character updates only when this chapter window adds or corrects "
+        "these key facts: name, age_stage, gender, race_or_ethnicity, accent, occupation, personality. "
+        "Do not echo unchanged registry records.\n"
         "Do not produce sentence-level annotation or script rows.\n"
         "Merge aliases that clearly refer to the same person, such as first name, full name, title, or nickname.\n"
         "Create separate profiles only when the same person appears at a different life stage: child, teen, adult, or elder.\n"
         "Return JSON with exactly this shape: {\"characters\":[{\"name\":str,\"profile\":object,\"evidence\":list}]}.\n"
         "Each profile must include age_stage, gender, personality.\n"
-        "Profile optional fields: profile_id, person_id, age, race_or_ethnicity, accent, timeline, aliases, same_person_as.\n"
+        "Profile optional fields: profile_id, person_id, age, race_or_ethnicity, accent, occupation, timeline, aliases, same_person_as.\n"
         "Keep personality to short trait adjectives useful for voice casting.\n"
         "Use race_or_ethnicity and accent only when explicit or strongly text-grounded; otherwise null or omit.\n"
         "Evidence should be compact chapter references and short identity notes.\n\n"
@@ -120,62 +121,37 @@ def _compact_character_record(role_id: str, record: Dict[str, Any]) -> Dict[str,
     age_stage = str(
         _first_present(record.get("age_stage"), identity.get("age_stage"), character_profile.get("age_stage"), "unknown")
     ).strip()
+    gender = str(_first_present(identity.get("gender"), character_profile.get("gender"), "unknown")).strip()
     return {
         "name": name,
         "age_stage": age_stage,
-        "description": _character_description(record, identity, character_profile),
+        "gender": gender,
+        "race_or_accent": _race_or_accent(identity, character_profile),
+        "occupation": str(_first_present(identity.get("occupation"), character_profile.get("occupation"), "unknown")),
+        "personality_type": _personality_type(identity, character_profile),
     }
 
 
-def _character_description(
-    record: Dict[str, Any],
+def _race_or_accent(
     identity: Dict[str, Any],
     character_profile: Dict[str, Any],
 ) -> str:
-    age = _first_present(record.get("age"), identity.get("age"), character_profile.get("age"))
-    age_stage = str(
-        _first_present(record.get("age_stage"), identity.get("age_stage"), character_profile.get("age_stage"), "")
-    ).replace("_", " ")
-    gender = str(_first_present(identity.get("gender"), character_profile.get("gender"), "")).replace("_", " ")
+    race_or_ethnicity = _first_present(identity.get("race_or_ethnicity"), character_profile.get("race_or_ethnicity"))
+    accent = _first_present(identity.get("accent"), character_profile.get("accent"))
+    parts: List[str] = []
+    if race_or_ethnicity:
+        parts.append(str(race_or_ethnicity))
+    if accent:
+        parts.append(f"{accent} accent")
+    return "; ".join(parts) if parts else "unknown"
+
+
+def _personality_type(identity: Dict[str, Any], character_profile: Dict[str, Any]) -> str:
     personality = _compact_string_list(
         _first_present(identity.get("personality"), character_profile.get("personality")),
         max_items=5,
     )
-    race_or_ethnicity = _first_present(identity.get("race_or_ethnicity"), character_profile.get("race_or_ethnicity"))
-    accent = _first_present(identity.get("accent"), character_profile.get("accent"))
-
-    identity_parts: List[str] = []
-    if age not in (None, ""):
-        identity_parts.append(f"{age}-year-old")
-    if age_stage:
-        identity_parts.append(age_stage)
-    if gender:
-        identity_parts.append(gender)
-
-    description_parts = [" ".join(identity_parts).strip()]
-    if personality:
-        description_parts.append(", ".join(personality))
-    if race_or_ethnicity:
-        description_parts.append(str(race_or_ethnicity))
-    if accent:
-        description_parts.append(f"{accent} accent")
-
-    description = "; ".join(part for part in description_parts if part).strip()
-    if description:
-        return description
-    return _fallback_voice_description(record)
-
-
-def _fallback_voice_description(record: Dict[str, Any]) -> str:
-    voice_profile = _dict_value(record.get("voice_profile"))
-    if voice_profile.get("description"):
-        return str(voice_profile["description"]).strip()
-    variants = _dict_value(record.get("voice_variants"))
-    default_variant = _dict_value(variants.get("default"))
-    default_profile = _dict_value(default_variant.get("voice_profile"))
-    if default_profile.get("description"):
-        return str(default_profile["description"]).strip()
-    return "unknown"
+    return ", ".join(personality) if personality else "unknown"
 
 
 def _dict_value(value: Any) -> Dict[str, Any]:

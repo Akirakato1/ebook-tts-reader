@@ -35,8 +35,8 @@ def test_render_global_registry_prompt_requests_canonical_characters_only():
     assert "Do not produce sentence-level annotation" in prompt
     assert "Existing registry is authoritative" in prompt
     assert "Do not recreate" in prompt
-    assert "Return only new characters" in prompt
-    assert "do not return updates to existing characters" in prompt
+    assert "Return new characters and existing-character updates" in prompt
+    assert "Do not echo unchanged registry records" in prompt
     assert "Akari Nakayama waved" in prompt
 
 
@@ -57,8 +57,9 @@ def test_global_registry_prompt_uses_minimal_character_summaries():
                     "age_stage": "adult",
                     "gender": "female",
                     "personality": ["careful", "warm", "tired", "guarded", "precise", "extra"],
-                    "race_or_ethnicity": None,
+                    "race_or_ethnicity": "Japanese",
                     "accent": "Tokyo",
+                    "occupation": "barista",
                 },
                 "character_profile": {"gender": "female"},
                 "narrative_notes": "Long backstory that is useful to a human editor but not the prompt.",
@@ -88,7 +89,10 @@ def test_global_registry_prompt_uses_minimal_character_summaries():
         {
             "name": "Akari Nakayama",
             "age_stage": "adult",
-            "description": "31-year-old adult female; careful, warm, tired, guarded, precise; Tokyo accent",
+            "gender": "female",
+            "race_or_accent": "Japanese; Tokyo accent",
+            "occupation": "barista",
+            "personality_type": "careful, warm, tired, guarded, precise",
         }
     ]
     assert "Existing character summaries" in prompt
@@ -99,7 +103,6 @@ def test_global_registry_prompt_uses_minimal_character_summaries():
     assert '"person_id":' not in prompt
     assert '"aliases":' not in prompt
     assert '"same_person_as":' not in prompt
-    assert '"gender":' not in prompt
     assert "voice_variants" not in prompt
     assert "voice_config_hash" not in prompt
     assert "global_evidence" not in prompt

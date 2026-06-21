@@ -367,6 +367,7 @@ def normalize_character_profile(name: str, raw_profile: Any) -> Dict[str, Any]:
             profile.get("race_or_ethnicity", profile.get("race", profile.get("ethnicity")))
         ),
         "accent": _nullable_string(profile.get("accent")),
+        "occupation": _nullable_string(profile.get("occupation", profile.get("job", profile.get("profession")))),
     }
     aliases = _string_list(profile.get("aliases"))
     if age_stage != "unknown":
@@ -418,7 +419,7 @@ def _merge_character_record(
         _string_list(existing_identity.get("personality")) + _string_list(incoming_identity.get("personality"))
     )
     merged_identity = dict(existing_identity)
-    for key in ("age", "age_stage", "gender", "race_or_ethnicity", "accent"):
+    for key in ("age", "age_stage", "gender", "race_or_ethnicity", "accent", "occupation"):
         incoming_value = incoming_identity.get(key)
         existing_value = merged_identity.get(key)
         if existing_value in (None, "", "unknown") and incoming_value not in (None, "", "unknown"):

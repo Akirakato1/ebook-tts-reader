@@ -191,6 +191,54 @@ def test_global_registry_merge_adds_alias_to_existing_character(tmp_path):
     assert akari["global_evidence"][0]["chapter"] == "chapter_003"
 
 
+def test_global_registry_merge_updates_key_character_facts(tmp_path):
+    paths = BookPaths(tmp_path / "demo")
+    manager = RegistryManager(paths)
+    manager.initialize_if_missing(book_title="Demo Book", book_slug="demo")
+    manager.add_new_characters(
+        chapter="chapter_001",
+        new_characters=[
+            {
+                "name": "Akari",
+                "profile": {
+                    "profile_id": "akari_adult",
+                    "person_id": "akari",
+                    "age_stage": "adult",
+                    "gender": "female",
+                    "personality": ["guarded"],
+                },
+            }
+        ],
+    )
+
+    manager.merge_global_characters(
+        chapter="global_registry",
+        characters=[
+            {
+                "name": "Akari",
+                "profile": {
+                    "profile_id": "akari_adult",
+                    "person_id": "akari",
+                    "age_stage": "adult",
+                    "gender": "female",
+                    "race_or_ethnicity": "Japanese",
+                    "accent": "Tokyo",
+                    "occupation": "barista",
+                    "personality": ["guarded", "wry"],
+                },
+                "evidence": [{"chapter": "chapter_004", "note": "Workplace scene"}],
+            }
+        ],
+    )
+
+    registry = read_json(paths.registry)
+    identity = registry["characters"]["akari_adult"]["identity_profile"]
+    assert identity["race_or_ethnicity"] == "Japanese"
+    assert identity["accent"] == "Tokyo"
+    assert identity["occupation"] == "barista"
+    assert identity["personality"] == ["guarded", "wry"]
+
+
 def test_resolve_effective_voice_matches_unique_short_display_name():
     registry = {
         "book": {"slug": "demo"},

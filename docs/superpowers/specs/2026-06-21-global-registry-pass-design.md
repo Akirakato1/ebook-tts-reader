@@ -8,7 +8,7 @@ Add a book-level character registry pass before chapter annotation so repeated c
 
 After EPUB extraction and deterministic sentence segmentation, the app can run a global registry pass. The pass sends compact whole-chapter text windows to the configured Anthropic model, defaults to the existing Haiku model, and asks only for canonical character profiles, aliases, age-stage variants, and chapter evidence. The default global-registry window is 130,000 chapter-text characters, configurable with `EBOOK_TTS_GLOBAL_REGISTRY_WINDOW_CHARS`. It does not produce sentence-level annotation.
 
-Each global-registry window receives a minimal summary of the current saved registry. Each existing character summary contains only `name`, `age_stage`, and `description`. The saved `registry.json` remains rich enough for UI editing and voice caching, but the prompt omits ids, aliases, voice variants, Qwen instructions, hashes, old evidence, and narrative notes. After a successful window, the app immediately merges the returned new characters into `registry.json`; the next window sees updated character summaries. The prompt treats the existing registry as authoritative, instructs the model not to recreate summarized characters, and requires the response to contain new characters only.
+Each global-registry window receives a minimal summary of the current saved registry. Each existing character summary contains only `name`, `age_stage`, `gender`, `race_or_accent`, `occupation`, and `personality_type`. The saved `registry.json` remains rich enough for UI editing and voice caching, but the prompt omits ids, aliases, voice variants, Qwen instructions, hashes, old evidence, and narrative notes. After a successful window, the app immediately merges returned new characters or meaningful updates into `registry.json`; the next window sees updated character summaries. The prompt treats the existing registry as authoritative, instructs the model not to recreate summarized characters, and allows updates only when a chunk adds or corrects one of those key identity facts.
 
 The registry remains user-editable in the prototype UI. Chapter annotation then runs against this locked registry and should not automatically create new registry records. If the model sees an unknown speaker during chapter annotation, it returns `proposed_new_characters`; the app records them in the annotation JSON for review but does not add them to `registry.json`.
 
@@ -27,7 +27,7 @@ The saved registry keeps the existing character record shape so downstream voice
 
 ## Error Handling
 
-Existing debug logging captures global-registry prompt/output failures. Failed global windows should not partially corrupt the registry. Successful windows are merged through the existing registry manager, which already rejects collisions; the global pass should add new records while avoiding existing summarized characters.
+Existing debug logging captures global-registry prompt/output failures. Failed global windows should not partially corrupt the registry. Successful windows are merged through the existing registry manager, which already rejects collisions; the global pass should add new records or update existing records only with newly discovered key facts.
 
 ## Testing
 
