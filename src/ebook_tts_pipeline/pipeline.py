@@ -11,7 +11,11 @@ from ebook_tts_pipeline.domain import AnnotationResult, SentenceArtifact
 from ebook_tts_pipeline.ingestion import SentenceSegmenter
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
-from ebook_tts_pipeline.registry import RegistryManager, slugify_name
+from ebook_tts_pipeline.registry import (
+    RegistryManager,
+    resolve_effective_voice,
+    voice_profile_hash,
+)
 from ebook_tts_pipeline.tts.base import TtsAdapter
 from ebook_tts_pipeline.tts.script import build_tts_script
 from ebook_tts_pipeline.windowing import build_llm_windows, build_tts_windows
@@ -61,19 +65,31 @@ class AudiobookPipeline:
 
     def prepare_voices_for_annotation(self, annotation: AnnotationResult) -> None:
         registry = self.registry.load()
-        role_records: Dict[str, Dict] = {"Narrator": registry["narrator"]}
-        for record in registry.get("characters", {}).values():
-            role_records[str(record["display_name"])] = record
+        prepared_role_ids = set()
 
-        for role_name in annotation.roles:
-            record = role_records.get(role_name)
-            if record is None:
-                raise ValueError(f"No registry record exists for annotated role: {role_name}")
-            role_id = str(record.get("role_id", slugify_name(role_name)))
+        for role_idx, type_idx, _ in annotation.script:
+            role_name = annotation.roles[role_idx]
+            type_name = annotation.types[type_idx]
+            effective = resolve_effective_voice(registry, role_name, type_name)
+            record = effective["voice_record"]
+            role_id = str(effective["role_id"])
+            role_display = str(effective["role"])
+            if role_id in prepared_role_ids:
+                continue
+            prepared_role_ids.add(role_id)
+
             voice_path = self.paths.voice_qvp(role_id)
-            self.tts_adapter.ensure_voice(role_id, record, voice_path)
+            current_hash = voice_profile_hash(record)
+            cached_hash = record.get("voice_config_hash")
+            should_generate = not voice_path.exists() or cached_hash != current_hash
+            if should_generate:
+                adapter_record = dict(record)
+                adapter_record["_force_regenerate"] = voice_path.exists() and cached_hash != current_hash
+                self.tts_adapter.ensure_voice(role_id, adapter_record, voice_path)
+                record["voice_config_hash"] = current_hash
+
             if hasattr(self.tts_adapter, "role_voice_paths"):
-                self.tts_adapter.role_voice_paths[role_name] = voice_path
+                self.tts_adapter.role_voice_paths[role_display] = voice_path
                 self.tts_adapter.role_voice_paths[role_id] = voice_path
             record["voice_config_path"] = f"voices/{role_id}.qvp"
 

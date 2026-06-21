@@ -15,7 +15,7 @@ class FakeTtsAdapter:
 
     def ensure_voice(self, role_id: str, voice_record: Dict, voice_path: Path) -> Path:
         voice_path.parent.mkdir(parents=True, exist_ok=True)
-        if not voice_path.exists():
+        if voice_record.get("_force_regenerate") or not voice_path.exists():
             voice_path.write_bytes(f"fake voice for {role_id}".encode("utf-8"))
         return voice_path
 

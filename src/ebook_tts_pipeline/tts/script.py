@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from ebook_tts_pipeline.domain import AnnotationResult, SentenceArtifact
-from ebook_tts_pipeline.registry import normalize_name
+from ebook_tts_pipeline.registry import resolve_effective_voice
 from ebook_tts_pipeline.windowing import build_tts_windows
 
 
@@ -34,12 +34,14 @@ class TtsSentenceJob:
     sentence_idx: int
     role: str
     role_id: str
+    character: Optional[str]
+    voice_variant: Optional[str]
     type: str
     text: str
     voice_config_path: Optional[str]
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload = {
             "sentence_idx": self.sentence_idx,
             "role": self.role,
             "role_id": self.role_id,
@@ -47,6 +49,11 @@ class TtsSentenceJob:
             "text": self.text,
             "voice_config_path": self.voice_config_path,
         }
+        if self.character is not None:
+            payload["character"] = self.character
+        if self.voice_variant is not None:
+            payload["voice_variant"] = self.voice_variant
+        return payload
 
     def to_adapter_job(self) -> Dict[str, Any]:
         return self.to_dict()
@@ -166,7 +173,6 @@ def _build_sentence_jobs(
     registry: Dict[str, Any],
 ) -> List[TtsSentenceJob]:
     sentence_by_idx = {sentence.idx: sentence.text for sentence in artifact.sentences}
-    role_records = _role_records(registry)
     jobs: List[TtsSentenceJob] = []
 
     for role_idx, type_idx, sentence_idx in annotation.script:
@@ -174,12 +180,15 @@ def _build_sentence_jobs(
             raise ValueError(f"sentence index not found in sentence artifact: {sentence_idx}")
         role_name = annotation.roles[role_idx]
         type_name = annotation.types[type_idx]
-        record = _lookup_role_record(role_name, role_records)
+        effective = resolve_effective_voice(registry, role_name, type_name)
+        record = effective["voice_record"]
         jobs.append(
             TtsSentenceJob(
                 sentence_idx=sentence_idx,
-                role=str(record.get("display_name", role_name)),
-                role_id=str(record.get("role_id", role_name)),
+                role=str(effective["role"]),
+                role_id=str(effective["role_id"]),
+                character=effective["character"],
+                voice_variant=effective["voice_variant"],
                 type=type_name,
                 text=sentence_by_idx[sentence_idx],
                 voice_config_path=record.get("voice_config_path"),
@@ -221,39 +230,6 @@ def _batch_from_jobs(
         types=[job.type for job in jobs],
         text=[job.text for job in jobs],
     )
-
-
-def _role_records(registry: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    records: Dict[str, Dict[str, Any]] = {}
-    narrator = dict(registry.get("narrator", {}))
-    if narrator:
-        _add_role_record(records, narrator)
-    for character in registry.get("characters", {}).values():
-        _add_role_record(records, dict(character))
-    return records
-
-
-def _add_role_record(records: Dict[str, Dict[str, Any]], record: Dict[str, Any]) -> None:
-    names = [
-        str(record.get("display_name", "")),
-        str(record.get("role_id", "")),
-        str(record.get("role_id", "")).replace("_", " "),
-    ]
-    names.extend(str(alias) for alias in record.get("aliases", []))
-    for name in names:
-        normalized = normalize_name(name)
-        if normalized:
-            records[normalized] = record
-
-
-def _lookup_role_record(
-    role_name: str,
-    records: Dict[str, Dict[str, Any]],
-) -> Dict[str, Any]:
-    normalized = normalize_name(role_name)
-    if normalized not in records:
-        raise ValueError(f"No registry record exists for annotated role: {role_name}")
-    return records[normalized]
 
 
 def _normalize_script_text(text: str) -> str:

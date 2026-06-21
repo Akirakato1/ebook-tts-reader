@@ -51,6 +51,26 @@ def test_qwen_adapter_creates_qvp_once_and_reuses_existing_file(tmp_path):
     assert len(model.voice_design_calls) == 1
 
 
+def test_qwen_adapter_regenerates_existing_qvp_when_forced(tmp_path):
+    model = FakeQwenModel()
+    torch_store = FakeTorchStore()
+    adapter = QwenTtsAdapter(model=model, torch_module=torch_store)
+    voice_path = tmp_path / "voices" / "elena_internal.qvp"
+    voice_record = {
+        "voice_profile": {"qwen_instruct": "A soft inward voice."},
+        "voice_identity": {"seed": 42},
+    }
+
+    adapter.ensure_voice("elena_internal", voice_record, voice_path)
+    adapter.ensure_voice(
+        "elena_internal",
+        {**voice_record, "_force_regenerate": True},
+        voice_path,
+    )
+
+    assert len(model.voice_design_calls) == 2
+
+
 def test_qwen_adapter_generates_sentence_audio_in_order(tmp_path):
     model = FakeQwenModel()
     torch_store = FakeTorchStore()

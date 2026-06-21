@@ -26,9 +26,17 @@ def test_registry_adds_new_character_with_stable_voice_identity(tmp_path):
     elena = registry["characters"]["elena"]
     assert elena["display_name"] == "Elena"
     assert elena["first_seen"] == "chapter_001"
-    assert elena["voice_config_path"] is None
+    assert set(elena["voice_variants"]) == {"default", "internal"}
+    assert elena["voice_variants"]["default"]["role_id"] == "elena_default"
+    assert elena["voice_variants"]["internal"]["role_id"] == "elena_internal"
+    assert elena["voice_variants"]["default"]["voice_config_path"] is None
+    assert elena["voice_variants"]["internal"]["voice_config_path"] is None
     assert isinstance(elena["voice_identity"]["seed"], int)
     assert elena["voice_identity"]["differentiators"]
+    assert (
+        elena["voice_variants"]["default"]["voice_profile"]["qwen_instruct"]
+        != elena["voice_variants"]["internal"]["voice_profile"]["qwen_instruct"]
+    )
 
 
 def test_similar_character_receives_different_voice_differentiator(tmp_path):
@@ -47,8 +55,8 @@ def test_similar_character_receives_different_voice_differentiator(tmp_path):
     manager.add_new_characters(chapter="chapter_002", new_characters=[{"name": "Mira", **repeated}])
 
     registry = read_json(paths.registry)
-    elena_voice = registry["characters"]["elena"]["voice_profile"]["qwen_instruct"]
-    mira_voice = registry["characters"]["mira"]["voice_profile"]["qwen_instruct"]
+    elena_voice = registry["characters"]["elena"]["voice_variants"]["default"]["voice_profile"]["qwen_instruct"]
+    mira_voice = registry["characters"]["mira"]["voice_variants"]["default"]["voice_profile"]["qwen_instruct"]
     assert elena_voice != mira_voice
 
 

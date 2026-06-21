@@ -23,7 +23,7 @@ class QwenTtsAdapter:
 
     def ensure_voice(self, role_id: str, voice_record: Dict, voice_path: Path) -> Path:
         self.role_voice_paths.setdefault(role_id, voice_path)
-        if voice_path.exists():
+        if voice_path.exists() and not voice_record.get("_force_regenerate"):
             return voice_path
         seed = int(voice_record.get("voice_identity", {}).get("seed", 0))
         instruct = str(voice_record["voice_profile"]["qwen_instruct"])

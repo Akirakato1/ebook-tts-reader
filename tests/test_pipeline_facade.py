@@ -1,5 +1,6 @@
 from ebook_tts_pipeline.annotation.service import AnnotationService
 from ebook_tts_pipeline.config import PipelineConfig
+from ebook_tts_pipeline.domain import AnnotationResult
 from ebook_tts_pipeline.pipeline import AudiobookPipeline
 from ebook_tts_pipeline.tts.fake import FakeTtsAdapter
 
@@ -37,6 +38,23 @@ class QueuedLlmClient:
         return self.payloads.pop(0)
 
 
+class CountingTtsAdapter(FakeTtsAdapter):
+    def __init__(self):
+        super().__init__(sample_rate=1000, samples_per_character=5)
+        self.calls = []
+        self.role_voice_paths = {}
+
+    def ensure_voice(self, role_id, voice_record, voice_path):
+        self.calls.append(
+            {
+                "role_id": role_id,
+                "force": bool(voice_record.get("_force_regenerate")),
+                "path": str(voice_path),
+            }
+        )
+        return super().ensure_voice(role_id, voice_record, voice_path)
+
+
 def test_pipeline_runs_tiny_chapter_with_fake_adapters(tmp_path):
     book_root = tmp_path / "demo"
     chapter_dir = book_root / "chapters"
@@ -62,7 +80,7 @@ def test_pipeline_runs_tiny_chapter_with_fake_adapters(tmp_path):
     assert (book_root / "tts_scripts" / "chapter_001.qwen_script.txt").exists()
     assert (book_root / "audio" / "chapter_001.wav").exists()
     assert (book_root / "audio" / "chapter_001.timeline.json").exists()
-    assert (book_root / "voices" / "elena.qvp").exists()
+    assert (book_root / "voices" / "elena_default.qvp").exists()
 
 
 def test_pipeline_annotates_multi_window_chapter_and_preserves_new_characters(tmp_path):
@@ -122,3 +140,52 @@ def test_pipeline_annotates_multi_window_chapter_and_preserves_new_characters(tm
     assert [character["name"] for character in annotation.new_characters] == ["Elena"]
     assert annotation.script == [(0, 0, 0), (1, 1, 1), (1, 2, 2)]
     assert registry["characters"]["elena"]["display_name"] == "Elena"
+
+
+def test_pipeline_prepares_default_and_internal_voice_variants_with_cache_invalidation(tmp_path):
+    adapter = CountingTtsAdapter()
+    pipeline = AudiobookPipeline(
+        config=PipelineConfig(book_root=str(tmp_path / "demo"), anthropic_api_key="fake"),
+        annotation_service=AnnotationService(QueuedLlmClient([]), repair_retries=0),
+        tts_adapter=adapter,
+    )
+    pipeline.registry.initialize_if_missing(book_title="Demo", book_slug="demo")
+    pipeline.registry.add_new_characters(
+        chapter="chapter_001",
+        new_characters=[
+            {
+                "name": "Elena",
+                "profile": {"age_range": "young adult"},
+                "voice": {
+                    "description": "young woman, soft",
+                    "qwen_instruct": "A soft young adult female voice.",
+                },
+            }
+        ],
+    )
+    annotation = AnnotationResult(
+        new_characters=[],
+        roles=["Elena"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 1, 0), (0, 2, 1)],
+    )
+
+    pipeline.prepare_voices_for_annotation(annotation)
+    pipeline.prepare_voices_for_annotation(annotation)
+
+    assert [call["role_id"] for call in adapter.calls] == ["elena_default", "elena_internal"]
+    registry = pipeline.registry.load()
+    variants = registry["characters"]["elena"]["voice_variants"]
+    assert variants["default"]["voice_config_hash"]
+    assert variants["internal"]["voice_config_hash"]
+
+    variants["internal"]["voice_profile"]["qwen_instruct"] += " More inward."
+    pipeline.registry.save(registry)
+    pipeline.prepare_voices_for_annotation(annotation)
+
+    assert [call["role_id"] for call in adapter.calls] == [
+        "elena_default",
+        "elena_internal",
+        "elena_internal",
+    ]
+    assert adapter.calls[-1]["force"] is True

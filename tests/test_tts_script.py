@@ -30,7 +30,20 @@ def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
                 "role_id": "elena",
                 "display_name": "Elena",
                 "aliases": [],
-                "voice_config_path": "voices/elena.qvp",
+                "voice_variants": {
+                    "default": {
+                        "role_id": "elena_default",
+                        "display_name": "Elena_default",
+                        "voice_config_path": "voices/elena_default.qvp",
+                        "voice_profile": {"qwen_instruct": "Elena aloud."},
+                    },
+                    "internal": {
+                        "role_id": "elena_internal",
+                        "display_name": "Elena_internal",
+                        "voice_config_path": "voices/elena_internal.qvp",
+                        "voice_profile": {"qwen_instruct": "Elena inward."},
+                    },
+                },
             }
         },
     }
@@ -56,19 +69,23 @@ def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
         },
         {
             "sentence_idx": 1,
-            "role": "Elena",
-            "role_id": "elena",
+            "role": "Elena_default",
+            "role_id": "elena_default",
+            "character": "Elena",
+            "voice_variant": "default",
             "type": "dialogue",
             "text": '"Hello," Elena said.',
-            "voice_config_path": "voices/elena.qvp",
+            "voice_config_path": "voices/elena_default.qvp",
         },
         {
             "sentence_idx": 2,
-            "role": "Elena",
-            "role_id": "elena",
+            "role": "Elena_internal",
+            "role_id": "elena_internal",
+            "character": "Elena",
+            "voice_variant": "internal",
             "type": "thought",
             "text": "She left.",
-            "voice_config_path": "voices/elena.qvp",
+            "voice_config_path": "voices/elena_internal.qvp",
         },
     ]
     assert [batch.to_dict() for batch in script.windows[0].batches] == [
@@ -84,18 +101,29 @@ def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
         },
         {
             "batch_idx": 1,
-            "role": "Elena",
-            "role_id": "elena",
-            "voice_config_path": "voices/elena.qvp",
+            "role": "Elena_default",
+            "role_id": "elena_default",
+            "voice_config_path": "voices/elena_default.qvp",
             "language": "auto",
-            "sentence_indices": [1, 2],
-            "types": ["dialogue", "thought"],
-            "text": ['"Hello," Elena said.', "She left."],
+            "sentence_indices": [1],
+            "types": ["dialogue"],
+            "text": ['"Hello," Elena said.'],
+        },
+        {
+            "batch_idx": 2,
+            "role": "Elena_internal",
+            "role_id": "elena_internal",
+            "voice_config_path": "voices/elena_internal.qvp",
+            "language": "auto",
+            "sentence_indices": [2],
+            "types": ["thought"],
+            "text": ["She left."],
         },
     ]
     assert script.qwen_dialogue_text == (
         "Narrator: It rained.\n"
-        'Elena: "Hello," Elena said. She left.'
+        'Elena_default: "Hello," Elena said.\n'
+        "Elena_internal: She left."
     )
 
 
