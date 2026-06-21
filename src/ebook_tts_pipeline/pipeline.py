@@ -114,6 +114,13 @@ class AudiobookPipeline:
 
     def synthesize_chapter(self, chapter: str, annotation: AnnotationResult) -> Dict:
         jobs = self.build_sentence_jobs(chapter, annotation)
+        return self.synthesize_jobs(chapter, jobs)
+
+    def synthesize_chapter_from_tts_script(self, chapter: str) -> Dict:
+        script = read_json(self.paths.tts_script(chapter))
+        return self.synthesize_jobs(chapter, [dict(job) for job in script["jobs"]])
+
+    def synthesize_jobs(self, chapter: str, jobs: List[Dict]) -> Dict:
         windows = build_tts_windows(
             jobs,
             max_chars=self.config.max_tts_window_chars,

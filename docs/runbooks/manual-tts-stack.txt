@@ -162,3 +162,24 @@ Run a chapter with fake TTS for pipeline validation:
 Run a chapter with real Qwen TTS after local Qwen wiring is complete:
 
   ebook-tts run-chapter --book-root books/demo --book-title "Demo" --book-slug demo --chapter chapter_001
+
+Run individual pipeline steps for UI-style workflows:
+
+  ebook-tts segment-chapter --book-root books/demo --chapter chapter_001
+  ebook-tts annotate-chapter --book-root books/demo --book-title "Demo" --book-slug demo --chapter chapter_001
+  ebook-tts build-tts-script --book-root books/demo --chapter chapter_001
+  ebook-tts prepare-voices --book-root books/demo --chapter chapter_001
+  ebook-tts synthesize-chapter --book-root books/demo --chapter chapter_001
+
+If the user edits only character voice profiles and wants to regenerate audio, keep the saved TTS text script and run only:
+
+  ebook-tts synthesize-chapter --book-root books/demo --chapter chapter_001
+
+If the user edits annotation, sentence-role assignments, or sentence text, rebuild the TTS script before audio:
+
+  ebook-tts build-tts-script --book-root books/demo --chapter chapter_001
+  ebook-tts synthesize-chapter --book-root books/demo --chapter chapter_001
+
+To force synthesis to rebuild the TTS script from the current annotation in one command:
+
+  ebook-tts synthesize-chapter --book-root books/demo --chapter chapter_001 --rebuild-tts-script
