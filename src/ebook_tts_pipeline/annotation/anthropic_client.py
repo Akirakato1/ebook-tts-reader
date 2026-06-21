@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Dict, Protocol
+from typing import Dict, Optional, Protocol
 
 
 class JsonCompletionClient(Protocol):
@@ -11,13 +11,25 @@ class JsonCompletionClient(Protocol):
 
 
 class AnnotationModelOutputError(ValueError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        raw_text: Optional[str] = None,
+        source: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.raw_text = raw_text
+        self.source = source
 
 
 def parse_json_response_text(text: str, source: str = "model response") -> Dict:
     stripped = text.strip()
     if not stripped:
-        raise AnnotationModelOutputError(f"{source} was empty; expected a JSON object.")
+        raise AnnotationModelOutputError(
+            f"{source} was empty; expected a JSON object.",
+            raw_text=text,
+            source=source,
+        )
     fence_match = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL)
     if fence_match:
         stripped = fence_match.group(1).strip()
@@ -25,10 +37,16 @@ def parse_json_response_text(text: str, source: str = "model response") -> Dict:
         payload = json.loads(stripped)
     except json.JSONDecodeError as exc:
         raise AnnotationModelOutputError(
-            f"{source} was not valid JSON: {exc}. Preview: {_preview(stripped)}"
+            f"{source} was not valid JSON: {exc}. Preview: {_preview(stripped)}",
+            raw_text=stripped,
+            source=source,
         ) from exc
     if not isinstance(payload, dict):
-        raise AnnotationModelOutputError(f"{source} must be a JSON object.")
+        raise AnnotationModelOutputError(
+            f"{source} must be a JSON object.",
+            raw_text=stripped,
+            source=source,
+        )
     return payload
 
 

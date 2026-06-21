@@ -1,21 +1,31 @@
 from __future__ import annotations
 
-from typing import Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
-from ebook_tts_pipeline.annotation.anthropic_client import JsonCompletionClient
+from ebook_tts_pipeline.annotation.anthropic_client import (
+    AnnotationModelOutputError,
+    JsonCompletionClient,
+)
 from ebook_tts_pipeline.annotation.prompts import (
     SYSTEM_PROMPT,
     render_annotation_prompt,
     render_repair_prompt,
 )
 from ebook_tts_pipeline.annotation.validator import AnnotationValidationError, validate_annotation
+from ebook_tts_pipeline.debug_logging import FailureLogger
 from ebook_tts_pipeline.domain import AnnotationResult, Sentence
 
 
 class AnnotationService:
-    def __init__(self, client: JsonCompletionClient, repair_retries: int) -> None:
+    def __init__(
+        self,
+        client: JsonCompletionClient,
+        repair_retries: int,
+        failure_logger: Optional[FailureLogger] = None,
+    ) -> None:
         self.client = client
         self.repair_retries = repair_retries
+        self.failure_logger = failure_logger
 
     def annotate_window(
         self,
@@ -24,8 +34,8 @@ class AnnotationService:
         registry: Dict,
     ) -> AnnotationResult:
         prompt = render_annotation_prompt(chapter, sentences, registry)
-        payload = self.client.complete_json(SYSTEM_PROMPT, prompt)
-        result = AnnotationResult.from_dict(payload)
+        payload = self._complete_json(chapter, sentences, "annotation", prompt)
+        result = self._annotation_result_from_payload(chapter, sentences, "annotation", prompt, payload)
         expected = [sentence.idx for sentence in sentences]
         known_names = _known_names(registry)
 
@@ -38,13 +48,108 @@ class AnnotationService:
                 )
                 return result
             except AnnotationValidationError as exc:
+                self._log_failure(
+                    "annotation_validation_failed",
+                    chapter=chapter,
+                    sentences=sentences,
+                    prompt=prompt,
+                    exc=exc,
+                    details={
+                        "attempt": attempt,
+                        "repair_available": attempt < self.repair_retries,
+                        "payload": result.to_dict(),
+                    },
+                )
                 if attempt >= self.repair_retries:
                     raise
                 repair_prompt = render_repair_prompt(prompt, result.to_dict(), str(exc))
-                payload = self.client.complete_json(SYSTEM_PROMPT, repair_prompt)
-                result = AnnotationResult.from_dict(payload)
+                payload = self._complete_json(chapter, sentences, "repair", repair_prompt)
+                result = self._annotation_result_from_payload(
+                    chapter,
+                    sentences,
+                    "repair",
+                    repair_prompt,
+                    payload,
+                )
 
         return result
+
+    def _complete_json(
+        self,
+        chapter: str,
+        sentences: List[Sentence],
+        call_type: str,
+        prompt: str,
+    ) -> Dict:
+        try:
+            return self.client.complete_json(SYSTEM_PROMPT, prompt)
+        except Exception as exc:
+            self._log_failure(
+                "annotation_model_output_error",
+                chapter=chapter,
+                sentences=sentences,
+                prompt=prompt,
+                exc=exc,
+                details={
+                    "call_type": call_type,
+                    "source": getattr(exc, "source", None),
+                    "raw_model_text": getattr(exc, "raw_text", None),
+                },
+            )
+            raise
+
+    def _annotation_result_from_payload(
+        self,
+        chapter: str,
+        sentences: List[Sentence],
+        call_type: str,
+        prompt: str,
+        payload: Dict,
+    ) -> AnnotationResult:
+        try:
+            return AnnotationResult.from_dict(payload)
+        except Exception as exc:
+            wrapped = AnnotationModelOutputError(f"Annotation JSON did not match schema: {exc}")
+            self._log_failure(
+                "annotation_payload_invalid",
+                chapter=chapter,
+                sentences=sentences,
+                prompt=prompt,
+                exc=wrapped,
+                details={
+                    "call_type": call_type,
+                    "payload": payload,
+                },
+            )
+            raise wrapped from exc
+
+    def _log_failure(
+        self,
+        event_type: str,
+        chapter: str,
+        sentences: List[Sentence],
+        prompt: str,
+        exc: BaseException,
+        details: Dict[str, Any],
+    ) -> None:
+        if self.failure_logger is None:
+            return
+        indexes = [sentence.idx for sentence in sentences]
+        log_details: Dict[str, Any] = {
+            "chapter": chapter,
+            "sentence_count": len(sentences),
+            "sentence_indices": indexes,
+            "first_sentence_idx": indexes[0] if indexes else None,
+            "last_sentence_idx": indexes[-1] if indexes else None,
+            "system_prompt": SYSTEM_PROMPT,
+            "user_prompt": prompt,
+        }
+        log_details.update(details)
+        self.failure_logger.with_context(chapter=chapter).write_failure(
+            event_type,
+            log_details,
+            exc=exc,
+        )
 
 
 def _known_names(registry: Dict) -> Set[str]:

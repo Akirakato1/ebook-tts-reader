@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 from ebook_tts_pipeline.annotation.anthropic_client import AnthropicJsonClient
 from ebook_tts_pipeline.annotation.service import AnnotationService
 from ebook_tts_pipeline.config import PipelineConfig
+from ebook_tts_pipeline.debug_logging import FailureLogger
 from ebook_tts_pipeline.domain import AnnotationResult
 from ebook_tts_pipeline.epub_ingestion import EpubChapterExtractor, EpubExtractResult
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
@@ -383,6 +384,10 @@ def _default_pipeline_factory(config: PipelineConfig, needs_llm: bool, fake_tts:
         annotation_service=AnnotationService(
             client=_build_llm_client(config) if needs_llm else _UnavailableJsonClient(),
             repair_retries=config.annotation_repair_retries,
+            failure_logger=FailureLogger(
+                config.debug_log_root,
+                context={"book_root": config.book_root},
+            ),
         ),
         tts_adapter=FakeTtsAdapter() if fake_tts else _build_qwen_adapter(config),
     )

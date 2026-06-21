@@ -26,6 +26,7 @@ class PipelineConfig:
     max_tts_window_chars: int = 6000
     max_tts_roles: int = 8
     pause_between_sentences_ms: int = 250
+    debug_log_root: str = "logs/annotation_failures"
 
     @classmethod
     def from_env(
@@ -47,6 +48,7 @@ class PipelineConfig:
             qwen_precision=os.environ.get("EBOOK_TTS_QWEN_PRECISION", "bf16"),
             qwen_attention=os.environ.get("EBOOK_TTS_QWEN_ATTENTION", "auto"),
             qwen_batch_size=int(os.environ.get("EBOOK_TTS_QWEN_BATCH_SIZE", "8")),
+            debug_log_root=os.environ.get("EBOOK_TTS_DEBUG_LOG_ROOT", "logs/annotation_failures"),
         )
 
     def require_anthropic_key(self) -> str:
