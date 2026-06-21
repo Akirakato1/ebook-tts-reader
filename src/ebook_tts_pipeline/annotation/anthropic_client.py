@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Dict, Protocol
 
 
 class JsonCompletionClient(Protocol):
     def complete_json(self, system_prompt: str, user_prompt: str) -> Dict:
         ...
+
+
+def parse_json_response_text(text: str) -> Dict:
+    stripped = text.strip()
+    fence_match = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL)
+    if fence_match:
+        stripped = fence_match.group(1).strip()
+    return json.loads(stripped)
 
 
 class AnthropicJsonClient:
@@ -37,4 +46,4 @@ class AnthropicJsonClient:
             for block in message.content
             if getattr(block, "type", None) == "text"
         )
-        return json.loads(text)
+        return parse_json_response_text(text)

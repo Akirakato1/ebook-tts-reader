@@ -22,9 +22,11 @@ def render_annotation_prompt(chapter: str, sentences: List[Sentence], registry: 
         "Return JSON with these keys:\n"
         "- new_characters: list of {name, profile, voice}\n"
         "- roles: list of role names appearing in this window\n"
+        '- Use exactly "Narrator" for narration, not "narrator" or another variant.\n'
         '- types: exactly ["narration", "dialogue", "thought"]\n'
         "- script: list of [role_idx, type_idx, sentence_idx]\n"
-        "Every sentence index in the input must appear exactly once."
+        "Every sentence index in the input must appear exactly once.\n"
+        "Do not wrap the JSON in Markdown code fences."
     )
 
 
