@@ -22,6 +22,7 @@ class PipelineConfig:
     qwen_precision: str = "bf16"
     qwen_attention: str = "auto"
     qwen_batch_size: int = 8
+    global_registry_window_chars: int = 130000
     max_llm_window_chars: int = 48000
     max_tts_window_chars: int = 6000
     max_tts_roles: int = 8
@@ -48,6 +49,9 @@ class PipelineConfig:
             qwen_precision=os.environ.get("EBOOK_TTS_QWEN_PRECISION", "bf16"),
             qwen_attention=os.environ.get("EBOOK_TTS_QWEN_ATTENTION", "auto"),
             qwen_batch_size=int(os.environ.get("EBOOK_TTS_QWEN_BATCH_SIZE", "8")),
+            global_registry_window_chars=int(
+                os.environ.get("EBOOK_TTS_GLOBAL_REGISTRY_WINDOW_CHARS", "130000")
+            ),
             debug_log_root=os.environ.get("EBOOK_TTS_DEBUG_LOG_ROOT", "logs/annotation_failures"),
         )
 

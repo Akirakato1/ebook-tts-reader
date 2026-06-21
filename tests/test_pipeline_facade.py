@@ -105,9 +105,26 @@ class FakeGlobalRegistryService:
             {
                 "book_title": book_title,
                 "chapters": [chapter.chapter for chapter in chapters],
+                "registry": registry,
             }
         )
         return type("GlobalResult", (), {"characters": self.characters})()
+
+
+class QueuedGlobalRegistryService:
+    def __init__(self, character_batches):
+        self.character_batches = list(character_batches)
+        self.calls = []
+
+    def discover_characters(self, book_title, registry, chapters):
+        self.calls.append(
+            {
+                "book_title": book_title,
+                "chapters": [chapter.chapter for chapter in chapters],
+                "registry": registry,
+            }
+        )
+        return type("GlobalResult", (), {"characters": self.character_batches.pop(0)})()
 
 
 def test_pipeline_runs_tiny_chapter_with_fake_adapters(tmp_path):
@@ -257,6 +274,70 @@ def test_pipeline_builds_global_registry_from_segmented_chapters(tmp_path):
     assert count == 1
     assert registry["characters"]["akari_nakayama_adult"]["display_name"] == "Akari Nakayama"
     assert registry["characters"]["akari_nakayama_adult"]["global_evidence"][0]["chapter"] == "chapter_001"
+
+
+def test_pipeline_builds_global_registry_in_chapter_chunks_with_updated_registry(tmp_path):
+    book_root = tmp_path / "demo"
+    chapter_dir = book_root / "chapters"
+    chapter_dir.mkdir(parents=True)
+    (chapter_dir / "chapter_001.txt").write_text("Akari waved.", encoding="utf-8")
+    (chapter_dir / "chapter_002.txt").write_text("She smiled.", encoding="utf-8")
+    (chapter_dir / "chapter_003.txt").write_text("Bento arrived.", encoding="utf-8")
+    service = QueuedGlobalRegistryService(
+        [
+            [
+                {
+                    "name": "Akari",
+                    "profile": {
+                        "profile_id": "akari_adult",
+                        "person_id": "akari",
+                        "age_stage": "adult",
+                        "gender": "female",
+                        "personality": ["careful"],
+                    },
+                    "evidence": [{"chapter": "chapter_001", "note": "Introduced"}],
+                }
+            ],
+            [
+                {
+                    "name": "Bento",
+                    "profile": {
+                        "profile_id": "bento_adult",
+                        "person_id": "bento",
+                        "age_stage": "adult",
+                        "gender": "male",
+                        "personality": ["warm"],
+                    },
+                    "evidence": [{"chapter": "chapter_003", "note": "Introduced"}],
+                }
+            ],
+        ]
+    )
+    pipeline = AudiobookPipeline(
+        config=PipelineConfig(
+            book_root=str(book_root),
+            anthropic_api_key="fake",
+            global_registry_window_chars=25,
+        ),
+        annotation_service=AnnotationService(QueuedLlmClient([]), repair_retries=0),
+        tts_adapter=FakeTtsAdapter(sample_rate=1000, samples_per_character=5),
+        tokenizer=lambda text: [text],
+        global_registry_service=service,
+    )
+
+    pipeline.registry.initialize_if_missing(book_title="Demo", book_slug="demo")
+    count = pipeline.build_global_registry(book_title="Demo")
+
+    registry = pipeline.registry.load()
+    assert count == 2
+    assert [call["chapters"] for call in service.calls] == [
+        ["chapter_001", "chapter_002"],
+        ["chapter_003"],
+    ]
+    assert service.calls[0]["registry"]["characters"] == {}
+    assert "akari_adult" in service.calls[1]["registry"]["characters"]
+    assert registry["characters"]["akari_adult"]["display_name"] == "Akari"
+    assert registry["characters"]["bento_adult"]["display_name"] == "Bento"
 
 
 def test_pipeline_locked_annotation_does_not_mutate_registry_with_new_characters(tmp_path):

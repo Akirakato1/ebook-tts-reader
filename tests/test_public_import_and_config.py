@@ -7,6 +7,7 @@ def test_default_config_is_ui_friendly_and_overridable(monkeypatch):
     monkeypatch.setenv("EBOOK_TTS_QWEN_MODEL_ROOT", "models/qwen-tts")
     monkeypatch.setenv("EBOOK_TTS_QWEN_BATCH_SIZE", "4")
     monkeypatch.setenv("EBOOK_TTS_DEBUG_LOG_ROOT", "logs/debug")
+    monkeypatch.setenv("EBOOK_TTS_GLOBAL_REGISTRY_WINDOW_CHARS", "135000")
 
     config = PipelineConfig.from_env(book_root="books/demo")
 
@@ -18,6 +19,7 @@ def test_default_config_is_ui_friendly_and_overridable(monkeypatch):
     assert config.qwen_batch_size == 4
     assert config.max_tts_roles == 8
     assert config.debug_log_root == "logs/debug"
+    assert config.global_registry_window_chars == 135000
 
 
 def test_config_falls_back_to_user_env_lookup_for_anthropic_key(monkeypatch):
@@ -29,3 +31,4 @@ def test_config_falls_back_to_user_env_lookup_for_anthropic_key(monkeypatch):
     )
 
     assert config.anthropic_api_key == "user-key"
+    assert config.global_registry_window_chars == 130000

@@ -6,7 +6,9 @@ Add a book-level character registry pass before chapter annotation so repeated c
 
 ## Pipeline Shape
 
-After EPUB extraction and deterministic sentence segmentation, the app can run a global registry pass. The pass sends compact chapter text windows to the configured Anthropic model, defaults to the existing Haiku model, and asks only for canonical character profiles, aliases, age-stage variants, and chapter evidence. It does not produce sentence-level annotation.
+After EPUB extraction and deterministic sentence segmentation, the app can run a global registry pass. The pass sends compact whole-chapter text windows to the configured Anthropic model, defaults to the existing Haiku model, and asks only for canonical character profiles, aliases, age-stage variants, and chapter evidence. The default global-registry window is 130,000 chapter-text characters, configurable with `EBOOK_TTS_GLOBAL_REGISTRY_WINDOW_CHARS`. It does not produce sentence-level annotation.
+
+Each global-registry window receives the current saved registry. After a successful window, the app immediately merges the returned characters into `registry.json`; the next window sees that updated registry. The prompt treats the existing registry as authoritative and instructs the model not to recreate characters already represented by role id, display name, alias, profile id, or person id.
 
 The registry remains user-editable in the prototype UI. Chapter annotation then runs against this locked registry and should not automatically create new registry records. If the model sees an unknown speaker during chapter annotation, it returns `proposed_new_characters`; the app records them in the annotation JSON for review but does not add them to `registry.json`.
 

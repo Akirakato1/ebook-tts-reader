@@ -59,13 +59,19 @@ class AudiobookPipeline:
             )
             for chapter_file in sorted((self.paths.root / "chapters").glob("*.txt"))
         ]
-        result = self.global_registry_service.discover_characters(
-            book_title=title,
-            registry=registry,
-            chapters=chapters,
-        )
-        self.registry.merge_global_characters("global_registry", result.characters)
-        return len(result.characters)
+        discovered_count = 0
+        for chunk in _chunk_global_registry_chapters(
+            chapters,
+            max_chars=self.config.global_registry_window_chars,
+        ):
+            result = self.global_registry_service.discover_characters(
+                book_title=title,
+                registry=self.registry.load(),
+                chapters=chunk,
+            )
+            self.registry.merge_global_characters("global_registry", result.characters)
+            discovered_count += len(result.characters)
+        return discovered_count
 
     def annotate_chapter(self, chapter: str, lock_registry: bool = False) -> AnnotationResult:
         artifact = SentenceArtifact.from_dict(read_json(self.paths.sentence_artifact(chapter)))
@@ -217,3 +223,30 @@ class AudiobookPipeline:
             if title:
                 return title[:120]
         return chapter_file.stem
+
+
+def _chunk_global_registry_chapters(
+    chapters: List[GlobalRegistryChapter],
+    max_chars: int,
+) -> List[List[GlobalRegistryChapter]]:
+    if max_chars <= 0:
+        return [chapters] if chapters else []
+
+    chunks: List[List[GlobalRegistryChapter]] = []
+    current: List[GlobalRegistryChapter] = []
+    current_chars = 0
+
+    for chapter in chapters:
+        chapter_chars = len(chapter.text)
+        if current and current_chars + chapter_chars > max_chars:
+            chunks.append(current)
+            current = []
+            current_chars = 0
+
+        current.append(chapter)
+        current_chars += chapter_chars
+
+    if current:
+        chunks.append(current)
+
+    return chunks

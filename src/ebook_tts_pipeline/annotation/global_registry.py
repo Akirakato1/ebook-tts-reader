@@ -80,6 +80,8 @@ def render_global_registry_prompt(
         f"Book title: {book_title}\n\n"
         f"Existing registry: {json.dumps(known_characters, ensure_ascii=False)}\n\n"
         "Build a canonical character registry for audiobook voice casting.\n"
+        "Existing registry is authoritative. Do not recreate characters already represented by role_id, "
+        "display_name, aliases, profile_id, or person_id.\n"
         "Do not produce sentence-level annotation or script rows.\n"
         "Merge aliases that clearly refer to the same person, such as first name, full name, title, or nickname.\n"
         "Create separate profiles only when the same person appears at a different life stage: child, teen, adult, or elder.\n"

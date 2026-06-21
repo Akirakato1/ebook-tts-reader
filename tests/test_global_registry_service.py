@@ -32,6 +32,8 @@ def test_render_global_registry_prompt_requests_canonical_characters_only():
     assert "Chapter One" in prompt
     assert "canonical character registry" in prompt
     assert "Do not produce sentence-level annotation" in prompt
+    assert "Existing registry is authoritative" in prompt
+    assert "Do not recreate" in prompt
     assert "Akari Nakayama waved" in prompt
 
 
