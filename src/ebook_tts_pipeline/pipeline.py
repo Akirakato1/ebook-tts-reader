@@ -13,6 +13,7 @@ from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.registry import RegistryManager, slugify_name
 from ebook_tts_pipeline.tts.base import TtsAdapter
+from ebook_tts_pipeline.tts.script import build_tts_script
 from ebook_tts_pipeline.windowing import build_llm_windows, build_tts_windows
 
 
@@ -80,18 +81,17 @@ class AudiobookPipeline:
 
     def build_sentence_jobs(self, chapter: str, annotation: AnnotationResult) -> List[Dict]:
         artifact = SentenceArtifact.from_dict(read_json(self.paths.sentence_artifact(chapter)))
-        sentence_by_idx = {sentence.idx: sentence.text for sentence in artifact.sentences}
-        jobs: List[Dict] = []
-        for role_idx, type_idx, sentence_idx in annotation.script:
-            jobs.append(
-                {
-                    "sentence_idx": sentence_idx,
-                    "role": annotation.roles[role_idx],
-                    "type": annotation.types[type_idx],
-                    "text": sentence_by_idx[sentence_idx],
-                }
-            )
-        return jobs
+        script = build_tts_script(
+            chapter=chapter,
+            annotation=annotation,
+            artifact=artifact,
+            registry=self.registry.load(),
+            max_chars=self.config.max_tts_window_chars,
+            max_roles=self.config.max_tts_roles,
+            language="auto",
+        )
+        write_json_atomic(self.paths.tts_script(chapter), script.to_dict())
+        return [job.to_adapter_job() for job in script.jobs]
 
     def synthesize_chapter(self, chapter: str, annotation: AnnotationResult) -> Dict:
         jobs = self.build_sentence_jobs(chapter, annotation)

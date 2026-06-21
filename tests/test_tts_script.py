@@ -1,0 +1,184 @@
+from ebook_tts_pipeline.domain import AnnotationResult, Sentence, SentenceArtifact
+from ebook_tts_pipeline.tts.script import build_tts_script
+
+
+def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
+    artifact = SentenceArtifact(
+        chapter="chapter_001",
+        source_path="chapters/chapter_001.txt",
+        segmenter={"name": "test"},
+        sentences=[
+            Sentence(0, "It rained."),
+            Sentence(1, '"Hello," Elena said.'),
+            Sentence(2, "She left."),
+        ],
+    )
+    annotation = AnnotationResult(
+        new_characters=[],
+        roles=["Narrator", "Elena"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 0, 0), (1, 1, 1), (1, 2, 2)],
+    )
+    registry = {
+        "narrator": {
+            "role_id": "narrator",
+            "display_name": "Narrator",
+            "voice_config_path": "voices/narrator.qvp",
+        },
+        "characters": {
+            "elena": {
+                "role_id": "elena",
+                "display_name": "Elena",
+                "aliases": [],
+                "voice_config_path": "voices/elena.qvp",
+            }
+        },
+    }
+
+    script = build_tts_script(
+        chapter="chapter_001",
+        annotation=annotation,
+        artifact=artifact,
+        registry=registry,
+        max_chars=1000,
+        max_roles=8,
+        language="auto",
+    )
+
+    assert [job.to_dict() for job in script.jobs] == [
+        {
+            "sentence_idx": 0,
+            "role": "Narrator",
+            "role_id": "narrator",
+            "type": "narration",
+            "text": "It rained.",
+            "voice_config_path": "voices/narrator.qvp",
+        },
+        {
+            "sentence_idx": 1,
+            "role": "Elena",
+            "role_id": "elena",
+            "type": "dialogue",
+            "text": '"Hello," Elena said.',
+            "voice_config_path": "voices/elena.qvp",
+        },
+        {
+            "sentence_idx": 2,
+            "role": "Elena",
+            "role_id": "elena",
+            "type": "thought",
+            "text": "She left.",
+            "voice_config_path": "voices/elena.qvp",
+        },
+    ]
+    assert [batch.to_dict() for batch in script.windows[0].batches] == [
+        {
+            "batch_idx": 0,
+            "role": "Narrator",
+            "role_id": "narrator",
+            "voice_config_path": "voices/narrator.qvp",
+            "language": "auto",
+            "sentence_indices": [0],
+            "types": ["narration"],
+            "text": ["It rained."],
+        },
+        {
+            "batch_idx": 1,
+            "role": "Elena",
+            "role_id": "elena",
+            "voice_config_path": "voices/elena.qvp",
+            "language": "auto",
+            "sentence_indices": [1, 2],
+            "types": ["dialogue", "thought"],
+            "text": ['"Hello," Elena said.', "She left."],
+        },
+    ]
+
+
+def test_tts_script_respects_role_limit_when_creating_windows():
+    sentences = [Sentence(idx, f"Sentence {idx}.") for idx in range(9)]
+    artifact = SentenceArtifact(
+        chapter="chapter_001",
+        source_path="chapters/chapter_001.txt",
+        segmenter={"name": "test"},
+        sentences=sentences,
+    )
+    roles = [f"Role {idx}" for idx in range(9)]
+    annotation = AnnotationResult(
+        new_characters=[],
+        roles=roles,
+        types=["narration", "dialogue", "thought"],
+        script=[(idx, 1, idx) for idx in range(9)],
+    )
+    registry = {
+        "narrator": {
+            "role_id": "narrator",
+            "display_name": "Narrator",
+            "voice_config_path": "voices/narrator.qvp",
+        },
+        "characters": {
+            f"role_{idx}": {
+                "role_id": f"role_{idx}",
+                "display_name": f"Role {idx}",
+                "aliases": [],
+                "voice_config_path": f"voices/role_{idx}.qvp",
+            }
+            for idx in range(9)
+        },
+    }
+
+    script = build_tts_script(
+        chapter="chapter_001",
+        annotation=annotation,
+        artifact=artifact,
+        registry=registry,
+        max_chars=1000,
+        max_roles=8,
+        language="auto",
+    )
+
+    assert [window.role_count for window in script.windows] == [8, 1]
+    assert [window.sentence_indices for window in script.windows] == [
+        list(range(8)),
+        [8],
+    ]
+
+
+def test_tts_script_orders_jobs_by_sentence_index_even_when_annotation_rows_drift():
+    artifact = SentenceArtifact(
+        chapter="chapter_001",
+        source_path="chapters/chapter_001.txt",
+        segmenter={"name": "test"},
+        sentences=[
+            Sentence(0, "First."),
+            Sentence(1, "Second."),
+            Sentence(2, "Third."),
+        ],
+    )
+    annotation = AnnotationResult(
+        new_characters=[],
+        roles=["Narrator"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 0, 0), (0, 0, 2), (0, 0, 1)],
+    )
+    registry = {
+        "narrator": {
+            "role_id": "narrator",
+            "display_name": "Narrator",
+            "voice_config_path": "voices/narrator.qvp",
+        },
+        "characters": {},
+    }
+
+    script = build_tts_script(
+        chapter="chapter_001",
+        annotation=annotation,
+        artifact=artifact,
+        registry=registry,
+        max_chars=1000,
+        max_roles=8,
+        language="auto",
+    )
+
+    assert [job.sentence_idx for job in script.jobs] == [0, 1, 2]
+    assert [job.text for job in script.jobs] == ["First.", "Second.", "Third."]

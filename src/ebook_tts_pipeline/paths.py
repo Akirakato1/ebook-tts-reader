@@ -29,6 +29,9 @@ class BookPaths:
     def annotation(self, chapter: str) -> Path:
         return self.root / "annotations" / f"{chapter}.annotation.json"
 
+    def tts_script(self, chapter: str) -> Path:
+        return self.root / "tts_scripts" / f"{chapter}.tts_script.json"
+
     def chapter_audio(self, chapter: str) -> Path:
         return self.root / "audio" / f"{chapter}.wav"
 
