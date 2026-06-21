@@ -32,3 +32,4 @@ def test_config_falls_back_to_user_env_lookup_for_anthropic_key(monkeypatch):
 
     assert config.anthropic_api_key == "user-key"
     assert config.global_registry_window_chars == 130000
+    assert config.qwen_batch_size == 24

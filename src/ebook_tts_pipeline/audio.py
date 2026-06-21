@@ -92,9 +92,13 @@ class ChapterAudioBuilder:
                         chunks.append(samples)
                         cursor_samples = end_samples
                         emitted_sentences += 1
-                        pause_ms = self._pause_after_item(
-                            current=item,
-                            next_job=ordered_jobs[emitted_sentences] if emitted_sentences < total_jobs else None,
+                        pause_ms = (
+                            item.pause_after_ms
+                            if item.pause_after_ms is not None
+                            else self._pause_after_item(
+                                current=item,
+                                next_job=ordered_jobs[emitted_sentences] if emitted_sentences < total_jobs else None,
+                            )
                         )
                         pause_samples = int(sample_rate * pause_ms / 1000)
                         if emitted_sentences < total_jobs and pause_samples:

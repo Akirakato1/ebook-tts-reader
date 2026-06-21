@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -14,6 +15,17 @@ HF_MODEL_MAP = {
     ("Base", "1.7B"): "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
     ("VoiceDesign", "1.7B"): "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
 }
+
+
+@dataclass(frozen=True)
+class _GenerationBlock:
+    role: str
+    voice_path: Path
+    jobs: List[Dict]
+
+    @property
+    def text(self) -> str:
+        return " ".join(_normalize_block_text(str(job["text"])) for job in self.jobs if str(job["text"]).strip())
 
 
 class QwenTtsRuntime:
@@ -148,7 +160,7 @@ class QwenTtsAdapter:
         device: str = "auto",
         precision: str = "bf16",
         attention: str = "auto",
-        max_batch_size: int = 8,
+        max_batch_size: int = 24,
     ) -> None:
         self.torch = torch_module if torch_module is not None else self._load_torch()
         self.model = model if model is not None else self._load_default_model(
@@ -161,6 +173,7 @@ class QwenTtsAdapter:
         self.role_voice_paths = role_voice_paths or {}
         self.language = language
         self.max_batch_size = max(1, int(max_batch_size))
+        self._voice_prompt_cache: Dict[str, Any] = {}
 
     def ensure_voice(self, role_id: str, voice_record: Dict, voice_path: Path) -> Path:
         self.role_voice_paths.setdefault(role_id, voice_path)
@@ -189,6 +202,7 @@ class QwenTtsAdapter:
         )
         voice_path.parent.mkdir(parents=True, exist_ok=True)
         self.torch.save(prompt, voice_path)
+        self._voice_prompt_cache.pop(str(voice_path), None)
         return voice_path
 
     def generate_sentences(self, jobs: List[Dict]) -> List[GeneratedSentenceAudio]:
@@ -198,23 +212,9 @@ class QwenTtsAdapter:
         return generated
 
     def generate_sentence_batches(self, jobs: List[Dict]) -> Iterator[List[GeneratedSentenceAudio]]:
-        current_batch: List[Dict] = []
-        current_role: Optional[str] = None
-
-        for job in jobs:
-            role = str(job["role"])
-            if current_batch and role != current_role:
-                yield from self._generate_role_batches(current_role or "", current_batch)
-                current_batch = []
-            current_role = role
-            current_batch.append(job)
-
-        if current_batch:
-            yield from self._generate_role_batches(current_role or "", current_batch)
-
-    def _generate_role_batches(self, role: str, jobs: List[Dict]) -> Iterator[List[GeneratedSentenceAudio]]:
-        for start in range(0, len(jobs), self.max_batch_size):
-            generated = self._generate_role_chunk(role, jobs[start:start + self.max_batch_size])
+        blocks = self._build_generation_blocks(jobs)
+        for start in range(0, len(blocks), self.max_batch_size):
+            generated = self._generate_block_batch(blocks[start:start + self.max_batch_size])
             try:
                 yield generated
             finally:
@@ -222,25 +222,115 @@ class QwenTtsAdapter:
                 gc.collect()
                 self._clear_device_cache()
 
-    def _generate_role_chunk(self, role: str, jobs: List[Dict]) -> List[GeneratedSentenceAudio]:
-        voice_path = self.role_voice_paths[role]
-        prompt = self.torch.load(voice_path, map_location="cpu", weights_only=False)
-        wavs, sample_rate = self.model.generate_voice_clone(
-            text=[str(job["text"]) for job in jobs],
-            language=[self.language] * len(jobs),
-            voice_clone_prompt=prompt,
-        )
-        return [
-            GeneratedSentenceAudio(
-                sentence_idx=int(job["sentence_idx"]),
-                role=role,
-                speech_type=str(job["type"]),
-                samples=np.asarray(wavs[index], dtype=np.float32),
-                sample_rate=sample_rate,
-                unit_idx=int(job.get("unit_idx", job["sentence_idx"])),
+    def _build_generation_blocks(self, jobs: List[Dict]) -> List[_GenerationBlock]:
+        blocks: List[_GenerationBlock] = []
+        current_jobs: List[Dict] = []
+        current_role: Optional[str] = None
+        current_voice_path: Optional[Path] = None
+
+        for job in jobs:
+            role = str(job["role"])
+            voice_path = self.role_voice_paths[role]
+            if current_jobs and (role != current_role or voice_path != current_voice_path):
+                blocks.append(
+                    _GenerationBlock(
+                        role=current_role or "",
+                        voice_path=current_voice_path or voice_path,
+                        jobs=current_jobs,
+                    )
+                )
+                current_jobs = []
+            current_role = role
+            current_voice_path = voice_path
+            current_jobs.append(job)
+
+        if current_jobs:
+            blocks.append(
+                _GenerationBlock(
+                    role=current_role or "",
+                    voice_path=current_voice_path or self.role_voice_paths[str(current_jobs[0]["role"])],
+                    jobs=current_jobs,
+                )
             )
-            for index, job in enumerate(jobs)
-        ]
+        return blocks
+
+    def _generate_block_batch(self, blocks: List[_GenerationBlock]) -> List[GeneratedSentenceAudio]:
+        prompts = [self._load_voice_prompt(block.voice_path) for block in blocks]
+        wavs, sample_rate = self.model.generate_voice_clone(
+            text=[block.text for block in blocks],
+            language=[self.language] * len(blocks),
+            voice_clone_prompt=prompts,
+        )
+        generated: List[GeneratedSentenceAudio] = []
+        for index, block in enumerate(blocks):
+            generated.extend(
+                self._split_block_audio(
+                    block=block,
+                    samples=np.asarray(wavs[index], dtype=np.float32),
+                    sample_rate=sample_rate,
+                )
+            )
+        return generated
+
+    def _load_voice_prompt(self, voice_path: Path) -> Any:
+        cache_key = str(voice_path)
+        if cache_key not in self._voice_prompt_cache:
+            self._voice_prompt_cache[cache_key] = self._normalize_prompt_for_batch(
+                self.torch.load(voice_path, map_location="cpu", weights_only=False)
+            )
+        return self._voice_prompt_cache[cache_key]
+
+    def _normalize_prompt_for_batch(self, prompt: Any) -> Any:
+        if isinstance(prompt, dict) and "prompt" in prompt:
+            prompt = prompt["prompt"]
+        if isinstance(prompt, list) and len(prompt) == 1:
+            return prompt[0]
+        return prompt
+
+    def _split_block_audio(
+        self,
+        block: _GenerationBlock,
+        samples: np.ndarray,
+        sample_rate: int,
+    ) -> List[GeneratedSentenceAudio]:
+        if len(block.jobs) == 1:
+            job = block.jobs[0]
+            return [
+                GeneratedSentenceAudio(
+                    sentence_idx=int(job["sentence_idx"]),
+                    role=block.role,
+                    speech_type=str(job["type"]),
+                    samples=samples,
+                    sample_rate=sample_rate,
+                    unit_idx=int(job.get("unit_idx", job["sentence_idx"])),
+                )
+            ]
+
+        weights = [_audio_timeline_weight(str(job["text"])) for job in block.jobs]
+        total_weight = sum(weights) or len(weights)
+        boundaries = [0]
+        consumed_weight = 0
+        for weight in weights[:-1]:
+            consumed_weight += weight
+            boundaries.append(int(round(len(samples) * consumed_weight / total_weight)))
+        boundaries.append(len(samples))
+
+        generated: List[GeneratedSentenceAudio] = []
+        for index, job in enumerate(block.jobs):
+            start = boundaries[index]
+            end = boundaries[index + 1]
+            generated.append(
+                GeneratedSentenceAudio(
+                    sentence_idx=int(job["sentence_idx"]),
+                    role=block.role,
+                    speech_type=str(job["type"]),
+                    samples=samples[start:end],
+                    sample_rate=sample_rate,
+                    unit_idx=int(job.get("unit_idx", job["sentence_idx"])),
+                    pause_after_ms=0 if index < len(block.jobs) - 1 else None,
+                )
+            )
+        return generated
 
     def _set_seed(self, seed: int) -> None:
         if hasattr(self.torch, "manual_seed"):
@@ -273,3 +363,11 @@ class QwenTtsAdapter:
             precision=precision,
             attention=attention,
         )
+
+
+def _normalize_block_text(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _audio_timeline_weight(text: str) -> int:
+    return max(1, len(_normalize_block_text(text)))

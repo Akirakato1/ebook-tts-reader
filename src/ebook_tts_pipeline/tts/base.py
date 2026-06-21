@@ -15,6 +15,7 @@ class GeneratedSentenceAudio:
     samples: np.ndarray
     sample_rate: int
     unit_idx: Optional[int] = None
+    pause_after_ms: Optional[int] = None
 
 
 class TtsAdapter(Protocol):

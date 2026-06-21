@@ -19,12 +19,13 @@ class FakeQwenModel:
 
     def generate_voice_clone(self, text, language, voice_clone_prompt, **kwargs):
         self.voice_clone_calls.append({"text": text, "language": language, "prompt": voice_clone_prompt})
-        return [np.ones(50 if index == 0 else 25, dtype=np.float32) for index, _ in enumerate(text)], 24000
+        return [np.ones(10 * (index + 1), dtype=np.float32) for index, _ in enumerate(text)], 24000
 
 
 class FakeTorchStore:
     def __init__(self):
         self.saved = {}
+        self.loads = []
 
     def save(self, value, path):
         self.saved[str(path)] = value
@@ -32,6 +33,7 @@ class FakeTorchStore:
         path.write_bytes(b"qvp")
 
     def load(self, path, map_location="cpu", weights_only=False):
+        self.loads.append(str(path))
         return self.saved[str(path)]
 
 
@@ -51,6 +53,12 @@ def test_qwen_adapter_creates_qvp_once_and_reuses_existing_file(tmp_path):
     assert first == voice_path
     assert second == voice_path
     assert len(model.voice_design_calls) == 1
+
+
+def test_qwen_adapter_default_batch_size_matches_ui_default():
+    adapter = QwenTtsAdapter(model=FakeQwenModel(), torch_module=FakeTorchStore())
+
+    assert adapter.max_batch_size == 24
 
 
 def test_qwen_adapter_regenerates_existing_qvp_when_forced(tmp_path):
@@ -88,14 +96,15 @@ def test_qwen_adapter_generates_sentence_audio_in_order(tmp_path):
     )
 
     assert [item.sentence_idx for item in generated] == [0, 1]
-    assert [len(item.samples) for item in generated] == [50, 25]
+    assert [call["text"] for call in model.voice_clone_calls] == [["Hello. Again."]]
+    assert [len(item.samples) for item in generated] == [5, 5]
 
 
-def test_qwen_adapter_splits_large_same_role_batches(tmp_path):
+def test_qwen_adapter_generates_contiguous_same_role_run_as_one_block(tmp_path):
     model = FakeQwenModel()
     torch_store = FakeTorchStore()
     voice_path = tmp_path / "voices" / "narrator.qvp"
-    torch_store.save({"prompt": "saved"}, voice_path)
+    torch_store.save({"prompt": "narrator"}, voice_path)
     adapter = QwenTtsAdapter(
         model=model,
         torch_module=torch_store,
@@ -111,34 +120,41 @@ def test_qwen_adapter_splits_large_same_role_batches(tmp_path):
         ]
     )
 
-    assert [call["text"] for call in model.voice_clone_calls] == [["One.", "Two."], ["Three."]]
+    assert [call["text"] for call in model.voice_clone_calls] == [["One. Two. Three."]]
     assert [item.sentence_idx for item in generated] == [0, 1, 2]
+    assert generated[0].pause_after_ms == 0
+    assert generated[1].pause_after_ms == 0
+    assert generated[2].pause_after_ms is None
 
 
-def test_qwen_adapter_streams_large_same_role_batches(tmp_path):
+def test_qwen_adapter_batches_mixed_role_blocks_in_script_order(tmp_path):
     model = FakeQwenModel()
     torch_store = FakeTorchStore()
-    voice_path = tmp_path / "voices" / "narrator.qvp"
-    torch_store.save({"prompt": "saved"}, voice_path)
+    narrator_path = tmp_path / "voices" / "narrator.qvp"
+    elena_path = tmp_path / "voices" / "elena.qvp"
+    torch_store.save({"prompt": "narrator"}, narrator_path)
+    torch_store.save({"prompt": "elena"}, elena_path)
     adapter = QwenTtsAdapter(
         model=model,
         torch_module=torch_store,
-        role_voice_paths={"Narrator": voice_path},
-        max_batch_size=2,
+        role_voice_paths={"Narrator": narrator_path, "Elena": elena_path},
+        max_batch_size=3,
     )
 
     batches = list(
         adapter.generate_sentence_batches(
             [
                 {"sentence_idx": 0, "role": "Narrator", "type": "narration", "text": "One."},
-                {"sentence_idx": 1, "role": "Narrator", "type": "narration", "text": "Two."},
-                {"sentence_idx": 2, "role": "Narrator", "type": "narration", "text": "Three."},
+                {"sentence_idx": 1, "role": "Elena", "type": "dialogue", "text": "Hello."},
+                {"sentence_idx": 2, "role": "Narrator", "type": "narration", "text": "Two."},
             ]
         )
     )
 
-    assert [call["text"] for call in model.voice_clone_calls] == [["One.", "Two."], ["Three."]]
-    assert [[item.sentence_idx for item in batch] for batch in batches] == [[0, 1], [2]]
+    assert [call["text"] for call in model.voice_clone_calls] == [["One.", "Hello.", "Two."]]
+    assert model.voice_clone_calls[0]["prompt"] == ["narrator", "elena", "narrator"]
+    assert [[item.sentence_idx for item in batch] for batch in batches] == [[0, 1, 2]]
+    assert torch_store.loads.count(str(narrator_path)) == 1
 
 
 class RuntimeFakeModel:
