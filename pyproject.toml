@@ -31,6 +31,7 @@ qwen = [
 
 [project.scripts]
 ebook-tts = "ebook_tts_pipeline.cli:main"
+ebook-tts-ui = "ebook_tts_pipeline.ui.tk_app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -4,6 +4,12 @@ from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.registry import RegistryManager
 
 
+def test_project_exposes_tkinter_ui_entry_point():
+    pyproject = read_json_like_toml_scripts()
+
+    assert pyproject["ebook-tts-ui"] == "ebook_tts_pipeline.ui.tk_app:main"
+
+
 def test_cli_has_run_chapter_command():
     parser = build_parser()
     args = parser.parse_args(
@@ -167,3 +173,19 @@ def _write_narrator_annotation(paths):
             "script": [[0, 0, 0]],
         },
     )
+
+
+def read_json_like_toml_scripts():
+    scripts = {}
+    in_scripts = False
+    for line in open("pyproject.toml", encoding="utf-8"):
+        stripped = line.strip()
+        if stripped == "[project.scripts]":
+            in_scripts = True
+            continue
+        if in_scripts and stripped.startswith("["):
+            break
+        if in_scripts and "=" in stripped:
+            key, value = stripped.split("=", 1)
+            scripts[key.strip()] = value.strip().strip('"')
+    return scripts
