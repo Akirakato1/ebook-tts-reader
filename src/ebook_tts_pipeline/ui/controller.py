@@ -201,6 +201,7 @@ class PrototypeUiController:
             "qwen_batch_size": config.qwen_batch_size,
             "tts_speed": config.tts_speed,
             "pause_between_sentences_ms": config.pause_between_sentences_ms,
+            "intra_sentence_pause_ms": config.intra_sentence_pause_ms,
         }
         if not self.paths.settings.exists():
             return defaults
@@ -212,6 +213,10 @@ class PrototypeUiController:
                 payload.get("pause_between_sentences_ms"),
                 defaults["pause_between_sentences_ms"],
             ),
+            "intra_sentence_pause_ms": _nonnegative_int(
+                payload.get("intra_sentence_pause_ms"),
+                defaults["intra_sentence_pause_ms"],
+            ),
         }
 
     def save_tts_settings(self, values: Dict[str, Any]) -> None:
@@ -219,6 +224,7 @@ class PrototypeUiController:
             "qwen_batch_size": _positive_int(values.get("qwen_batch_size"), 8),
             "tts_speed": _positive_float(values.get("tts_speed"), 1.0),
             "pause_between_sentences_ms": _nonnegative_int(values.get("pause_between_sentences_ms"), 250),
+            "intra_sentence_pause_ms": _nonnegative_int(values.get("intra_sentence_pause_ms"), 50),
         }
         write_json_atomic(self.paths.settings, settings)
 
@@ -472,6 +478,7 @@ class PrototypeUiController:
             qwen_batch_size=settings["qwen_batch_size"],
             tts_speed=settings["tts_speed"],
             pause_between_sentences_ms=settings["pause_between_sentences_ms"],
+            intra_sentence_pause_ms=settings["intra_sentence_pause_ms"],
         )
         return self.pipeline_factory(config, needs_llm, self.fake_tts)
 

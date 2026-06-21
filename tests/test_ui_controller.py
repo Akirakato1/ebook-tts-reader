@@ -110,6 +110,7 @@ def fake_pipeline_factory(calls):
                 config.qwen_batch_size,
                 config.tts_speed,
                 config.pause_between_sentences_ms,
+                config.intra_sentence_pause_ms,
             )
         )
         return FakePipeline(config, calls)
@@ -174,6 +175,7 @@ def test_controller_saves_tts_settings_and_applies_them_to_pipeline_config(tmp_p
             "qwen_batch_size": "24",
             "tts_speed": "1.25",
             "pause_between_sentences_ms": "150",
+            "intra_sentence_pause_ms": "35",
         }
     )
     settings = controller.tts_settings()
@@ -183,8 +185,9 @@ def test_controller_saves_tts_settings_and_applies_them_to_pipeline_config(tmp_p
         "qwen_batch_size": 24,
         "tts_speed": 1.25,
         "pause_between_sentences_ms": 150,
+        "intra_sentence_pause_ms": 35,
     }
-    assert ("factory", True, True, 24, 1.25, 150) in calls
+    assert ("factory", True, True, 24, 1.25, 150, 35) in calls
 
 
 def test_controller_registry_forms_expose_only_safe_editable_fields(tmp_path):

@@ -38,6 +38,7 @@ class PrototypeTkApp:
         self.tts_batch_size = tk.StringVar(value="8")
         self.tts_speed = tk.StringVar(value="1.0")
         self.tts_pause_ms = tk.StringVar(value="250")
+        self.tts_intra_pause_ms = tk.StringVar(value="50")
         self.status = tk.StringVar(value="Ready")
         self._loading_library = False
         self.registry_fields = {}
@@ -85,6 +86,8 @@ class PrototypeTkApp:
         ttk.Entry(settings, textvariable=self.tts_speed, width=6).pack(side="left", padx=(4, 10))
         ttk.Label(settings, text="Pause ms").pack(side="left")
         ttk.Entry(settings, textvariable=self.tts_pause_ms, width=6).pack(side="left", padx=(4, 10))
+        ttk.Label(settings, text="Intra ms").pack(side="left")
+        ttk.Entry(settings, textvariable=self.tts_intra_pause_ms, width=6).pack(side="left", padx=(4, 10))
         ttk.Button(settings, text="Save TTS Settings", command=self.save_tts_settings).pack(side="left")
 
         self.main = ttk.Frame(self.root)
@@ -335,6 +338,7 @@ class PrototypeTkApp:
         self.tts_batch_size.set(str(settings["qwen_batch_size"]))
         self.tts_speed.set(str(settings["tts_speed"]))
         self.tts_pause_ms.set(str(settings["pause_between_sentences_ms"]))
+        self.tts_intra_pause_ms.set(str(settings["intra_sentence_pause_ms"]))
 
     def save_tts_settings(self) -> None:
         try:
@@ -344,6 +348,7 @@ class PrototypeTkApp:
                     "qwen_batch_size": self.tts_batch_size.get(),
                     "tts_speed": self.tts_speed.get(),
                     "pause_between_sentences_ms": self.tts_pause_ms.get(),
+                    "intra_sentence_pause_ms": self.tts_intra_pause_ms.get(),
                 }
             )
         except ValueError as exc:

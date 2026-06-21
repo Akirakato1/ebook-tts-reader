@@ -215,6 +215,7 @@ class AudiobookPipeline:
         builder = ChapterAudioBuilder(
             tts_adapter=self.tts_adapter,
             pause_between_sentences_ms=self.config.pause_between_sentences_ms,
+            intra_sentence_pause_ms=self.config.intra_sentence_pause_ms,
             tts_speed=self.config.tts_speed,
         )
         return builder.build_chapter_audio_from_windows(

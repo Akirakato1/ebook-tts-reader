@@ -4,7 +4,7 @@ import gc
 import shutil
 import wave
 from pathlib import Path
-from typing import Dict, Iterator, List, Union
+from typing import Dict, Iterator, List, Optional, Union
 
 import numpy as np
 
@@ -18,9 +18,11 @@ class ChapterAudioBuilder:
         tts_adapter: TtsAdapter,
         pause_between_sentences_ms: int,
         tts_speed: float = 1.0,
+        intra_sentence_pause_ms: int = 50,
     ) -> None:
         self.tts_adapter = tts_adapter
         self.pause_between_sentences_ms = pause_between_sentences_ms
+        self.intra_sentence_pause_ms = max(0, int(intra_sentence_pause_ms))
         self.tts_speed = max(0.1, float(tts_speed))
 
     def build_chapter_audio(
@@ -58,6 +60,7 @@ class ChapterAudioBuilder:
         cursor_samples = 0
         timeline_sentences: List[Dict] = []
         chunk_paths: List[Path] = []
+        ordered_jobs = [job for jobs in job_windows for job in jobs]
         emitted_sentences = 0
         chunk_index = 0
 
@@ -68,7 +71,6 @@ class ChapterAudioBuilder:
                         continue
                     if sample_rate is None:
                         sample_rate = generated[0].sample_rate
-                    pause_samples = int(sample_rate * self.pause_between_sentences_ms / 1000)
                     chunks: List[np.ndarray] = []
 
                     for item in generated:
@@ -90,6 +92,11 @@ class ChapterAudioBuilder:
                         chunks.append(samples)
                         cursor_samples = end_samples
                         emitted_sentences += 1
+                        pause_ms = self._pause_after_item(
+                            current=item,
+                            next_job=ordered_jobs[emitted_sentences] if emitted_sentences < total_jobs else None,
+                        )
+                        pause_samples = int(sample_rate * pause_ms / 1000)
                         if emitted_sentences < total_jobs and pause_samples:
                             chunks.append(np.zeros(pause_samples, dtype=np.float32))
                             cursor_samples += pause_samples
@@ -136,6 +143,14 @@ class ChapterAudioBuilder:
         source_positions = np.linspace(0, len(samples) - 1, num=len(samples), dtype=np.float32)
         target_positions = np.linspace(0, len(samples) - 1, num=target_len, dtype=np.float32)
         return np.interp(target_positions, source_positions, samples).astype(np.float32)
+
+    def _pause_after_item(self, current: GeneratedSentenceAudio, next_job: Optional[Dict]) -> int:
+        if next_job is None:
+            return 0
+        next_sentence_idx = int(next_job["sentence_idx"])
+        if next_sentence_idx == current.sentence_idx:
+            return self.intra_sentence_pause_ms
+        return self.pause_between_sentences_ms
 
     def _write_wav(self, path: Path, samples: np.ndarray, sample_rate: int) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

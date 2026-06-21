@@ -53,6 +53,77 @@ def test_audio_builder_timeline_preserves_unit_indices(tmp_path):
     ]
 
 
+def test_audio_builder_uses_short_pause_between_units_in_same_sentence(tmp_path):
+    adapter = FakeTtsAdapter(sample_rate=1000, samples_per_character=10)
+    builder = ChapterAudioBuilder(
+        tts_adapter=adapter,
+        pause_between_sentences_ms=100,
+        intra_sentence_pause_ms=20,
+    )
+    jobs = [
+        {"sentence_idx": 0, "unit_idx": 0, "role": "Elena", "type": "dialogue", "text": '"Hello"'},
+        {"sentence_idx": 0, "unit_idx": 1, "role": "Narrator", "type": "narration", "text": "she said"},
+        {"sentence_idx": 1, "unit_idx": 2, "role": "Narrator", "type": "narration", "text": "Then left"},
+    ]
+
+    result = builder.build_chapter_audio(
+        chapter="chapter_001",
+        jobs=jobs,
+        audio_path=tmp_path / "chapter_001.wav",
+        timeline_path=tmp_path / "chapter_001.timeline.json",
+    )
+
+    sentences = result["sentences"]
+    assert sentences[1]["start_ms"] - sentences[0]["end_ms"] == 20
+    assert sentences[2]["start_ms"] - sentences[1]["end_ms"] == 100
+
+
+class UnitStreamingAdapter:
+    def __init__(self):
+        self.calls = []
+
+    def generate_sentences(self, jobs):
+        raise AssertionError("builder should consume streaming batches when available")
+
+    def generate_sentence_batches(self, jobs):
+        self.calls.append([job["unit_idx"] for job in jobs])
+        for job in jobs:
+            yield [
+                GeneratedSentenceAudio(
+                    sentence_idx=int(job["sentence_idx"]),
+                    unit_idx=int(job["unit_idx"]),
+                    role=str(job["role"]),
+                    speech_type=str(job["type"]),
+                    samples=np.ones(10, dtype=np.float32),
+                    sample_rate=1000,
+                )
+            ]
+
+
+def test_audio_builder_uses_unit_pause_across_generation_window_boundaries(tmp_path):
+    adapter = UnitStreamingAdapter()
+    builder = ChapterAudioBuilder(
+        tts_adapter=adapter,
+        pause_between_sentences_ms=100,
+        intra_sentence_pause_ms=20,
+    )
+
+    result = builder.build_chapter_audio_from_windows(
+        chapter="chapter_001",
+        job_windows=[
+            [{"sentence_idx": 0, "unit_idx": 0, "role": "Elena", "type": "dialogue", "text": '"Hello"'}],
+            [{"sentence_idx": 0, "unit_idx": 1, "role": "Narrator", "type": "narration", "text": "she said"}],
+            [{"sentence_idx": 1, "unit_idx": 2, "role": "Narrator", "type": "narration", "text": "Then left"}],
+        ],
+        audio_path=tmp_path / "chapter_001.wav",
+        timeline_path=tmp_path / "chapter_001.timeline.json",
+    )
+
+    assert adapter.calls == [[0], [1], [2]]
+    assert [item["start_ms"] for item in result["sentences"]] == [0, 30, 140]
+    assert [item["end_ms"] for item in result["sentences"]] == [10, 40, 150]
+
+
 def test_audio_builder_applies_tts_speed_to_generated_samples(tmp_path):
     adapter = FakeTtsAdapter(sample_rate=1000, samples_per_character=10)
     builder = ChapterAudioBuilder(tts_adapter=adapter, pause_between_sentences_ms=0, tts_speed=2.0)
