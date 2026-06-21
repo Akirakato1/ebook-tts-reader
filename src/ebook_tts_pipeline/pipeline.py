@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Callable, Dict, List, Optional
 
+from ebook_tts_pipeline.annotation.merge import merge_annotation_windows
 from ebook_tts_pipeline.annotation.service import AnnotationService
+from ebook_tts_pipeline.annotation.validator import validate_annotation
 from ebook_tts_pipeline.audio import ChapterAudioBuilder
 from ebook_tts_pipeline.config import PipelineConfig
 from ebook_tts_pipeline.domain import AnnotationResult, SentenceArtifact
@@ -11,7 +13,7 @@ from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.registry import RegistryManager, slugify_name
 from ebook_tts_pipeline.tts.base import TtsAdapter
-from ebook_tts_pipeline.windowing import build_tts_windows
+from ebook_tts_pipeline.windowing import build_llm_windows, build_tts_windows
 
 
 class AudiobookPipeline:
@@ -34,15 +36,27 @@ class AudiobookPipeline:
 
     def annotate_chapter(self, chapter: str) -> AnnotationResult:
         artifact = SentenceArtifact.from_dict(read_json(self.paths.sentence_artifact(chapter)))
-        registry = self.registry.load()
-        result = self.annotation_service.annotate_window(
-            chapter=chapter,
-            sentences=artifact.sentences,
-            registry=registry,
+        initial_known_names = self.registry.known_names()
+        window_results: List[AnnotationResult] = []
+
+        for window in build_llm_windows(artifact.sentences, self.config.max_llm_window_chars):
+            result = self.annotation_service.annotate_window(
+                chapter=chapter,
+                sentences=window.sentences,
+                registry=self.registry.load(),
+            )
+            window_results.append(result)
+            if result.new_characters:
+                self.registry.add_new_characters(chapter, result.new_characters)
+
+        merged = merge_annotation_windows(window_results, self.registry.load())
+        validate_annotation(
+            merged,
+            expected_sentence_indices=[sentence.idx for sentence in artifact.sentences],
+            known_names=initial_known_names,
         )
-        write_json_atomic(self.paths.annotation(chapter), result.to_dict())
-        self.registry.add_new_characters(chapter, result.new_characters)
-        return result
+        write_json_atomic(self.paths.annotation(chapter), merged.to_dict())
+        return merged
 
     def prepare_voices_for_annotation(self, annotation: AnnotationResult) -> None:
         registry = self.registry.load()
