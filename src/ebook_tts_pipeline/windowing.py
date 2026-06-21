@@ -16,7 +16,11 @@ class TtsWindow:
     jobs: List[Dict[str, Any]]
 
 
-def build_llm_windows(sentences: List[Sentence], max_chars: int) -> List[LlmWindow]:
+def build_llm_windows(
+    sentences: List[Sentence],
+    max_chars: int,
+    max_sentences: int = 0,
+) -> List[LlmWindow]:
     windows: List[LlmWindow] = []
     current: List[Sentence] = []
     current_chars = 0
@@ -24,7 +28,9 @@ def build_llm_windows(sentences: List[Sentence], max_chars: int) -> List[LlmWind
         sentence_size = len(sentence.text)
         if sentence_size > max_chars:
             raise ValueError(f"sentence {sentence.idx} exceeds max LLM window size")
-        if current and current_chars + sentence_size > max_chars:
+        would_exceed_chars = current_chars + sentence_size > max_chars
+        would_exceed_sentences = max_sentences > 0 and len(current) >= max_sentences
+        if current and (would_exceed_chars or would_exceed_sentences):
             windows.append(LlmWindow(sentences=current))
             current = []
             current_chars = 0

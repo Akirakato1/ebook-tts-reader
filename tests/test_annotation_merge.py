@@ -39,3 +39,39 @@ def test_merge_annotation_windows_preserves_new_characters_and_reindexes_roles()
     assert [character["name"] for character in merged.new_characters] == ["Elena"]
     assert merged.roles == ["Narrator", "Elena"]
     assert merged.script == [(0, 0, 0), (1, 1, 1), (1, 2, 2), (0, 0, 3)]
+
+
+def test_merge_annotation_windows_preserves_disambiguating_alias_for_duplicate_display_names():
+    registry = {
+        "characters": {
+            "callie_child": {
+                "role_id": "callie_child",
+                "display_name": "Callie",
+                "age_stage": "child",
+                "aliases": ["Callie child"],
+            },
+            "callie_adult": {
+                "role_id": "callie_adult",
+                "display_name": "Callie",
+                "age_stage": "adult",
+                "aliases": ["Callie adult"],
+            },
+        }
+    }
+    first = AnnotationResult(
+        new_characters=[],
+        roles=["Callie child"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 1, 0)],
+    )
+    second = AnnotationResult(
+        new_characters=[],
+        roles=["callie_adult"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 2, 1)],
+    )
+
+    merged = merge_annotation_windows([first, second], registry)
+
+    assert merged.roles == ["Callie child", "Callie adult"]
+    assert merged.script == [(0, 1, 0), (1, 2, 1)]

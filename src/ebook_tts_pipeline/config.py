@@ -24,6 +24,7 @@ class PipelineConfig:
     qwen_batch_size: int = 8
     global_registry_window_chars: int = 130000
     max_llm_window_chars: int = 48000
+    max_llm_window_sentences: int = 300
     max_tts_window_chars: int = 6000
     max_tts_roles: int = 8
     pause_between_sentences_ms: int = 250
@@ -52,6 +53,7 @@ class PipelineConfig:
             global_registry_window_chars=int(
                 os.environ.get("EBOOK_TTS_GLOBAL_REGISTRY_WINDOW_CHARS", "130000")
             ),
+            max_llm_window_sentences=int(os.environ.get("EBOOK_TTS_MAX_LLM_WINDOW_SENTENCES", "300")),
             debug_log_root=os.environ.get("EBOOK_TTS_DEBUG_LOG_ROOT", "logs/annotation_failures"),
         )
 

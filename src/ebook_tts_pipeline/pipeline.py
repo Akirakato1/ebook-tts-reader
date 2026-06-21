@@ -87,7 +87,11 @@ class AudiobookPipeline:
         initial_known_names = known_annotation_role_names(self.registry.load())
         window_results: List[AnnotationResult] = []
 
-        for window in build_llm_windows(artifact.sentences, self.config.max_llm_window_chars):
+        for window in build_llm_windows(
+            artifact.sentences,
+            self.config.max_llm_window_chars,
+            max_sentences=self.config.max_llm_window_sentences,
+        ):
             window_results.extend(
                 self._annotate_sentences_with_fallback(
                     chapter,

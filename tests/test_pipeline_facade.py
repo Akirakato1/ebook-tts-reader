@@ -238,6 +238,35 @@ def test_pipeline_splits_annotation_window_after_unparseable_model_output(tmp_pa
     assert annotation.script == [(0, 0, 0), (0, 0, 1), (0, 0, 2), (0, 0, 3)]
 
 
+def test_pipeline_caps_initial_annotation_windows_by_sentence_count(tmp_path):
+    book_root = tmp_path / "demo"
+    chapter_dir = book_root / "chapters"
+    chapter_dir.mkdir(parents=True)
+    (chapter_dir / "chapter_001.txt").write_text(
+        "One. Two. Three. Four.",
+        encoding="utf-8",
+    )
+    client = SplitSensitiveLlmClient(max_sentences=2)
+    pipeline = AudiobookPipeline(
+        config=PipelineConfig(
+            book_root=str(book_root),
+            anthropic_api_key="fake",
+            max_llm_window_chars=1000,
+            max_llm_window_sentences=2,
+        ),
+        annotation_service=AnnotationService(client, repair_retries=0),
+        tts_adapter=FakeTtsAdapter(sample_rate=1000, samples_per_character=5),
+        tokenizer=lambda text: ["One.", "Two.", "Three.", "Four."],
+    )
+
+    pipeline.registry.initialize_if_missing(book_title="Demo", book_slug="demo")
+    pipeline.segment_chapter("chapter_001")
+    annotation = pipeline.annotate_chapter("chapter_001")
+
+    assert client.calls == [[0, 1], [2, 3]]
+    assert annotation.script == [(0, 0, 0), (0, 0, 1), (0, 0, 2), (0, 0, 3)]
+
+
 def test_pipeline_builds_global_registry_from_segmented_chapters(tmp_path):
     book_root = tmp_path / "demo"
     chapter_dir = book_root / "chapters"

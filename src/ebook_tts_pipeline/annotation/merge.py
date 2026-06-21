@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any, Dict, List
 
 from ebook_tts_pipeline.annotation.validator import ALLOWED_TYPES
@@ -54,14 +55,45 @@ def _canonical_role_name(role_name: str, registry: Dict[str, Any]) -> str:
         return "Narrator"
 
     normalized = normalize_name(role_name)
+    display_counts = Counter(
+        normalize_name(str(record.get("display_name", "")))
+        for record in registry.get("characters", {}).values()
+        if record.get("display_name")
+    )
     for record in registry.get("characters", {}).values():
-        names = [
-            str(record.get("display_name", "")),
-            str(record.get("role_id", "")),
-            str(record.get("role_id", "")).replace("_", " "),
-        ]
-        names.extend(str(alias) for alias in record.get("aliases", []))
+        display_name = str(record.get("display_name", ""))
+        names = _role_lookup_names(record)
         if normalized in {normalize_name(name) for name in names if name}:
-            return str(record.get("display_name", role_name))
+            if display_counts[normalize_name(display_name)] <= 1:
+                return display_name or role_name
+            return _disambiguating_role_name(record, role_name)
 
     return role_name
+
+
+def _role_lookup_names(record: Dict[str, Any]) -> List[str]:
+    names = [
+        str(record.get("display_name", "")),
+        str(record.get("role_id", "")),
+        str(record.get("role_id", "")).replace("_", " "),
+    ]
+    names.extend(str(alias) for alias in record.get("aliases", []))
+    return names
+
+
+def _disambiguating_role_name(record: Dict[str, Any], fallback: str) -> str:
+    normalized_fallback = normalize_name(fallback)
+    aliases = [str(alias) for alias in record.get("aliases", []) if str(alias).strip()]
+    for alias in aliases:
+        if normalize_name(alias) == normalized_fallback:
+            return alias
+
+    display_name = str(record.get("display_name", "")).strip()
+    age_stage = str(record.get("age_stage", "")).replace("_", " ").strip()
+    if display_name and age_stage and age_stage.lower() != "unknown":
+        return f"{display_name} {age_stage}"
+
+    role_id = str(record.get("role_id", "")).strip()
+    if role_id:
+        return role_id.replace("_", " ")
+    return fallback
