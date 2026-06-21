@@ -60,6 +60,35 @@ class RecordingAudioBuilder(ChapterAudioBuilder):
         super()._write_wav(path, samples, sample_rate)
 
 
+class StreamingBatchAdapter:
+    def __init__(self):
+        self.calls = []
+
+    def generate_sentences(self, jobs):
+        raise AssertionError("builder should consume streaming batches when available")
+
+    def generate_sentence_batches(self, jobs):
+        self.calls.append([job["sentence_idx"] for job in jobs])
+        yield [
+            GeneratedSentenceAudio(
+                sentence_idx=int(jobs[0]["sentence_idx"]),
+                role=str(jobs[0]["role"]),
+                speech_type=str(jobs[0]["type"]),
+                samples=np.ones(10, dtype=np.float32),
+                sample_rate=1000,
+            )
+        ]
+        yield [
+            GeneratedSentenceAudio(
+                sentence_idx=int(jobs[1]["sentence_idx"]),
+                role=str(jobs[1]["role"]),
+                speech_type=str(jobs[1]["type"]),
+                samples=np.ones(20, dtype=np.float32),
+                sample_rate=1000,
+            )
+        ]
+
+
 def test_windowed_audio_builder_spools_chunks_and_removes_temporary_files(tmp_path):
     adapter = RecordingWindowAdapter()
     builder = RecordingAudioBuilder(tts_adapter=adapter, pause_between_sentences_ms=0)
@@ -82,4 +111,30 @@ def test_windowed_audio_builder_spools_chunks_and_removes_temporary_files(tmp_pa
     with wave.open(str(audio_path), "rb") as wav:
         assert wav.getnframes() == 20
         assert wav.getframerate() == 1000
+    assert not any(tmp_path.glob("chapter_001.chunks*"))
+
+
+def test_windowed_audio_builder_spools_each_streamed_tts_batch(tmp_path):
+    adapter = StreamingBatchAdapter()
+    builder = RecordingAudioBuilder(tts_adapter=adapter, pause_between_sentences_ms=0)
+    audio_path = tmp_path / "chapter_001.wav"
+
+    result = builder.build_chapter_audio_from_windows(
+        chapter="chapter_001",
+        job_windows=[
+            [
+                {"sentence_idx": 0, "role": "Narrator", "type": "narration", "text": "One."},
+                {"sentence_idx": 1, "role": "Narrator", "type": "narration", "text": "Two."},
+            ]
+        ],
+        audio_path=audio_path,
+        timeline_path=tmp_path / "chapter_001.timeline.json",
+    )
+
+    assert adapter.calls == [[0, 1]]
+    assert builder.wav_writes == ["00000.wav", "00001.wav"]
+    assert [sentence["start_ms"] for sentence in result["sentences"]] == [0, 10]
+    assert [sentence["end_ms"] for sentence in result["sentences"]] == [10, 30]
+    with wave.open(str(audio_path), "rb") as wav:
+        assert wav.getnframes() == 30
     assert not any(tmp_path.glob("chapter_001.chunks*"))

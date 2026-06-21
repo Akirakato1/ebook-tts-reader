@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Iterator, List
 
 import numpy as np
 
@@ -34,3 +34,6 @@ class FakeTtsAdapter:
                 )
             )
         return generated
+
+    def generate_sentence_batches(self, jobs: List[Dict]) -> Iterator[List[GeneratedSentenceAudio]]:
+        yield self.generate_sentences(jobs)

@@ -115,6 +115,32 @@ def test_qwen_adapter_splits_large_same_role_batches(tmp_path):
     assert [item.sentence_idx for item in generated] == [0, 1, 2]
 
 
+def test_qwen_adapter_streams_large_same_role_batches(tmp_path):
+    model = FakeQwenModel()
+    torch_store = FakeTorchStore()
+    voice_path = tmp_path / "voices" / "narrator.qvp"
+    torch_store.save({"prompt": "saved"}, voice_path)
+    adapter = QwenTtsAdapter(
+        model=model,
+        torch_module=torch_store,
+        role_voice_paths={"Narrator": voice_path},
+        max_batch_size=2,
+    )
+
+    batches = list(
+        adapter.generate_sentence_batches(
+            [
+                {"sentence_idx": 0, "role": "Narrator", "type": "narration", "text": "One."},
+                {"sentence_idx": 1, "role": "Narrator", "type": "narration", "text": "Two."},
+                {"sentence_idx": 2, "role": "Narrator", "type": "narration", "text": "Three."},
+            ]
+        )
+    )
+
+    assert [call["text"] for call in model.voice_clone_calls] == [["One.", "Two."], ["Three."]]
+    assert [[item.sentence_idx for item in batch] for batch in batches] == [[0, 1], [2]]
+
+
 class RuntimeFakeModel:
     calls = []
 

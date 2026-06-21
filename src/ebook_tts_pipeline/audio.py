@@ -4,12 +4,12 @@ import gc
 import shutil
 import wave
 from pathlib import Path
-from typing import Dict, List, Union
+from typing import Dict, Iterator, List, Union
 
 import numpy as np
 
 from ebook_tts_pipeline.json_io import write_json_atomic
-from ebook_tts_pipeline.tts.base import TtsAdapter
+from ebook_tts_pipeline.tts.base import GeneratedSentenceAudio, TtsAdapter
 
 
 class ChapterAudioBuilder:
@@ -53,44 +53,46 @@ class ChapterAudioBuilder:
         timeline_sentences: List[Dict] = []
         chunk_paths: List[Path] = []
         emitted_sentences = 0
+        chunk_index = 0
 
         try:
-            for window_idx, jobs in enumerate(job_windows):
-                generated = self.tts_adapter.generate_sentences(jobs)
-                if not generated:
-                    continue
-                if sample_rate is None:
-                    sample_rate = generated[0].sample_rate
-                pause_samples = int(sample_rate * self.pause_between_sentences_ms / 1000)
-                chunks: List[np.ndarray] = []
+            for jobs in job_windows:
+                for generated in self._iter_generated_batches(jobs):
+                    if not generated:
+                        continue
+                    if sample_rate is None:
+                        sample_rate = generated[0].sample_rate
+                    pause_samples = int(sample_rate * self.pause_between_sentences_ms / 1000)
+                    chunks: List[np.ndarray] = []
 
-                for item in generated:
-                    if item.sample_rate != sample_rate:
-                        raise ValueError("All generated sentence audio must use the same sample rate.")
-                    start_samples = cursor_samples
-                    end_samples = start_samples + len(item.samples)
-                    timeline_sentences.append(
-                        {
-                            "sentence_idx": item.sentence_idx,
-                            "role": item.role,
-                            "type": item.speech_type,
-                            "start_ms": int(round(start_samples * 1000 / sample_rate)),
-                            "end_ms": int(round(end_samples * 1000 / sample_rate)),
-                        }
-                    )
-                    chunks.append(item.samples.astype(np.float32))
-                    cursor_samples = end_samples
-                    emitted_sentences += 1
-                    if emitted_sentences < total_jobs and pause_samples:
-                        chunks.append(np.zeros(pause_samples, dtype=np.float32))
-                        cursor_samples += pause_samples
+                    for item in generated:
+                        if item.sample_rate != sample_rate:
+                            raise ValueError("All generated sentence audio must use the same sample rate.")
+                        start_samples = cursor_samples
+                        end_samples = start_samples + len(item.samples)
+                        timeline_sentences.append(
+                            {
+                                "sentence_idx": item.sentence_idx,
+                                "role": item.role,
+                                "type": item.speech_type,
+                                "start_ms": int(round(start_samples * 1000 / sample_rate)),
+                                "end_ms": int(round(end_samples * 1000 / sample_rate)),
+                            }
+                        )
+                        chunks.append(item.samples.astype(np.float32))
+                        cursor_samples = end_samples
+                        emitted_sentences += 1
+                        if emitted_sentences < total_jobs and pause_samples:
+                            chunks.append(np.zeros(pause_samples, dtype=np.float32))
+                            cursor_samples += pause_samples
 
-                chunk_path = chunk_dir / f"{window_idx:05d}.wav"
-                self._write_wav(chunk_path, np.concatenate(chunks), sample_rate)
-                chunk_paths.append(chunk_path)
-                del generated
-                del chunks
-                gc.collect()
+                    chunk_path = chunk_dir / f"{chunk_index:05d}.wav"
+                    chunk_index += 1
+                    self._write_wav(chunk_path, np.concatenate(chunks), sample_rate)
+                    chunk_paths.append(chunk_path)
+                    del generated
+                    del chunks
+                    gc.collect()
 
             if sample_rate is None or not chunk_paths:
                 raise ValueError("Cannot build audio without generated sentence audio.")
@@ -107,6 +109,15 @@ class ChapterAudioBuilder:
         finally:
             if chunk_dir.exists():
                 shutil.rmtree(chunk_dir)
+
+    def _iter_generated_batches(self, jobs: List[Dict]) -> Iterator[List[GeneratedSentenceAudio]]:
+        batch_generator = getattr(self.tts_adapter, "generate_sentence_batches", None)
+        if batch_generator is not None:
+            yield from batch_generator(jobs)
+            return
+        generated = self.tts_adapter.generate_sentences(jobs)
+        if generated:
+            yield generated
 
     def _write_wav(self, path: Path, samples: np.ndarray, sample_rate: int) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

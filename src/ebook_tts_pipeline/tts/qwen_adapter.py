@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import gc
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import numpy as np
 
@@ -193,28 +193,34 @@ class QwenTtsAdapter:
 
     def generate_sentences(self, jobs: List[Dict]) -> List[GeneratedSentenceAudio]:
         generated: List[GeneratedSentenceAudio] = []
+        for batch in self.generate_sentence_batches(jobs):
+            generated.extend(batch)
+        return generated
+
+    def generate_sentence_batches(self, jobs: List[Dict]) -> Iterator[List[GeneratedSentenceAudio]]:
         current_batch: List[Dict] = []
         current_role: Optional[str] = None
 
         for job in jobs:
             role = str(job["role"])
             if current_batch and role != current_role:
-                generated.extend(self._generate_role_batch(current_role or "", current_batch))
+                yield from self._generate_role_batches(current_role or "", current_batch)
                 current_batch = []
             current_role = role
             current_batch.append(job)
 
         if current_batch:
-            generated.extend(self._generate_role_batch(current_role or "", current_batch))
+            yield from self._generate_role_batches(current_role or "", current_batch)
 
-        return generated
-
-    def _generate_role_batch(self, role: str, jobs: List[Dict]) -> List[GeneratedSentenceAudio]:
-        generated: List[GeneratedSentenceAudio] = []
+    def _generate_role_batches(self, role: str, jobs: List[Dict]) -> Iterator[List[GeneratedSentenceAudio]]:
         for start in range(0, len(jobs), self.max_batch_size):
-            generated.extend(self._generate_role_chunk(role, jobs[start:start + self.max_batch_size]))
-            self._clear_device_cache()
-        return generated
+            generated = self._generate_role_chunk(role, jobs[start:start + self.max_batch_size])
+            try:
+                yield generated
+            finally:
+                del generated
+                gc.collect()
+                self._clear_device_cache()
 
     def _generate_role_chunk(self, role: str, jobs: List[Dict]) -> List[GeneratedSentenceAudio]:
         voice_path = self.role_voice_paths[role]
