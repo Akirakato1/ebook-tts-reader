@@ -69,6 +69,19 @@ def validate_annotation(
             errors.append("roles must include Narrator when narration appears")
 
     normalized_known = {_normalize_name(name) for name in known_names}
+    declared_role_names = _declared_character_names(result.new_characters) | _declared_character_names(
+        result.proposed_new_characters
+    )
+    unknown_roles = [
+        role
+        for role in result.roles
+        if _normalize_name(role) != _normalize_name("Narrator")
+        and _normalize_name(role) not in normalized_known
+        and _normalize_name(role) not in declared_role_names
+    ]
+    if unknown_roles:
+        errors.append(f"unknown or ambiguous role names: {unknown_roles}")
+
     for character in result.new_characters:
         name = str(character.get("name", "")).strip()
         if not name:
@@ -106,3 +119,22 @@ def validate_annotation(
 
     if errors:
         raise AnnotationValidationError("; ".join(errors))
+
+
+def _declared_character_names(characters: List[dict]) -> Set[str]:
+    names: Set[str] = set()
+    for character in characters:
+        name = str(character.get("name", "")).strip()
+        if name:
+            names.add(_normalize_name(name))
+        profile = character.get("profile")
+        if not isinstance(profile, dict):
+            continue
+        profile_id = _derived_profile_id(name, profile)
+        if profile_id:
+            names.add(_normalize_name(profile_id))
+        aliases = profile.get("aliases")
+        if isinstance(aliases, list):
+            names.update(_normalize_name(str(alias)) for alias in aliases if str(alias).strip())
+    names.discard("")
+    return names

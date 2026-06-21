@@ -83,6 +83,49 @@ def test_annotation_service_repairs_invalid_result_once():
     assert "missing sentence indexes: [1]" in client.calls[1]["user"]
 
 
+def test_annotation_service_repairs_ambiguous_registry_role_name():
+    client = FakeLlmClient(
+        [
+            {
+                "new_characters": [],
+                "roles": ["Narrator", "Callie"],
+                "types": ["narration", "dialogue", "thought"],
+                "script": [[1, 1, 0]],
+            },
+            {
+                "new_characters": [],
+                "roles": ["Narrator", "Callie child"],
+                "types": ["narration", "dialogue", "thought"],
+                "script": [[1, 1, 0]],
+            },
+        ]
+    )
+    service = AnnotationService(client=client, repair_retries=1)
+    registry = {
+        "characters": {
+            "callie_adult": {
+                "display_name": "Callie",
+                "aliases": ["Callie adult"],
+            },
+            "callie_child": {
+                "display_name": "Callie",
+                "aliases": ["Callie child"],
+            },
+        }
+    }
+
+    result = service.annotate_window(
+        chapter="chapter_001",
+        sentences=[Sentence(0, '"Go," Callie said.')],
+        registry=registry,
+        lock_registry=True,
+    )
+
+    assert len(client.calls) == 2
+    assert "unknown or ambiguous role names: ['Callie']" in client.calls[1]["user"]
+    assert result.roles == ["Narrator", "Callie child"]
+
+
 def test_annotation_service_logs_model_output_failure(tmp_path):
     logger = FailureLogger(tmp_path / "logs", context={"book_root": "books/demo"})
     service = AnnotationService(

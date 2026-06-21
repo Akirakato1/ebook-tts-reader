@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import replace
 from typing import Any, Dict, List, Optional, Set
 
@@ -158,12 +159,26 @@ class AnnotationService:
 
 def _known_names(registry: Dict) -> Set[str]:
     names = {"Narrator"}
-    for character in registry.get("characters", {}).values():
+    characters = [
+        character
+        for character in registry.get("characters", {}).values()
+        if isinstance(character, dict)
+    ]
+    display_counts = Counter(
+        _normalize_name(str(character.get("display_name", "")))
+        for character in characters
+        if character.get("display_name")
+    )
+    for character in characters:
         display_name = str(character.get("display_name", ""))
-        if display_name:
+        if display_name and display_counts[_normalize_name(display_name)] == 1:
             names.add(display_name)
         names.update(str(alias) for alias in character.get("aliases", []))
     return names
+
+
+def _normalize_name(name: str) -> str:
+    return "".join(ch for ch in name.lower() if ch.isalnum())
 
 
 def _lock_annotation_result(result: AnnotationResult) -> AnnotationResult:

@@ -51,6 +51,7 @@ def render_annotation_prompt(
         "- Do not append chapter, window, or sentence numbers to person_id or profile_id; use stable identity names like callie, callie_teen, or trevor_child.\n"
         "- Use the age-stage profile name in roles when needed to avoid ambiguity, such as Callie teen rather than Callie.\n"
         "- Known character summaries contain name and aliases; use one of those exact strings for roles.\n"
+        "- If multiple known character summaries share the same name, use an alias with the age stage for that role.\n"
         "- roles: list of role names appearing in this window\n"
         '- Use exactly "Narrator" for narration, not "narrator" or another variant.\n'
         '- types: exactly ["narration", "dialogue", "thought"]\n'
