@@ -91,3 +91,27 @@ Add instructions that the existing registry is authoritative and that the model 
 
 Run: `.\.venv\Scripts\python.exe -m pytest -q`
 Expected: all tests pass.
+
+### Task 4: Compact Prompt Registry
+
+**Files:**
+- Modify: `src/ebook_tts_pipeline/annotation/global_registry.py`
+- Test: `tests/test_global_registry_service.py`
+
+- [ ] **Step 1: Write the failing test**
+
+Assert that the prompt receives a compact identity-only registry with ids, names, aliases, age, gender, and personality, while omitting `voice_variants`, `qwen_instruct`, hashes, old evidence, and narrative notes.
+
+- [ ] **Step 2: Run the test and see it fail**
+
+Run: `.\.venv\Scripts\python.exe -m pytest tests\test_global_registry_service.py -q`
+Expected: fail because the prompt currently serializes full saved character records.
+
+- [ ] **Step 3: Implement compact projection**
+
+Add `compact_registry_for_global_prompt` and use it in `render_global_registry_prompt`. Also instruct the model to return only new or genuinely updated characters for the current chapter window.
+
+- [ ] **Step 4: Verify full suite**
+
+Run: `.\.venv\Scripts\python.exe -m pytest -q`
+Expected: all tests pass.

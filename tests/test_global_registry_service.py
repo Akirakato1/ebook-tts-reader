@@ -1,6 +1,7 @@
 from ebook_tts_pipeline.annotation.global_registry import (
     GlobalRegistryChapter,
     GlobalRegistryService,
+    compact_registry_for_global_prompt,
     render_global_registry_prompt,
 )
 
@@ -34,7 +35,76 @@ def test_render_global_registry_prompt_requests_canonical_characters_only():
     assert "Do not produce sentence-level annotation" in prompt
     assert "Existing registry is authoritative" in prompt
     assert "Do not recreate" in prompt
+    assert "Return only new characters or genuinely updated existing characters" in prompt
     assert "Akari Nakayama waved" in prompt
+
+
+def test_global_registry_prompt_uses_compact_identity_registry():
+    registry = {
+        "characters": {
+            "akari_adult": {
+                "role_id": "akari_adult",
+                "profile_id": "akari_adult",
+                "person_id": "akari",
+                "display_name": "Akari Nakayama",
+                "age": 31,
+                "age_stage": "adult",
+                "aliases": ["Akari", "Ms. Nakayama"],
+                "same_person_as": ["Akari child"],
+                "identity_profile": {
+                    "age": 31,
+                    "age_stage": "adult",
+                    "gender": "female",
+                    "personality": ["careful", "warm", "tired", "guarded", "precise", "extra"],
+                    "race_or_ethnicity": None,
+                    "accent": "Tokyo",
+                },
+                "character_profile": {"gender": "female"},
+                "narrative_notes": "Long backstory that is useful to a human editor but not the prompt.",
+                "voice_identity": {"seed": 123, "differentiators": ["brighter timbre"]},
+                "voice_variants": {
+                    "default": {
+                        "voice_profile": {
+                            "description": "adult female",
+                            "qwen_instruct": "A generated Qwen voice instruction.",
+                        },
+                        "voice_config_hash": "abc",
+                    }
+                },
+                "global_evidence": ["chapter evidence should not be resent"],
+            }
+        }
+    }
+
+    compact = compact_registry_for_global_prompt(registry)
+    prompt = render_global_registry_prompt(
+        book_title="Demo Book",
+        registry=registry,
+        chapters=[GlobalRegistryChapter(chapter="chapter_002", title="Next", text="Akari returned.")],
+    )
+
+    assert compact == {
+        "akari_adult": {
+            "role_id": "akari_adult",
+            "profile_id": "akari_adult",
+            "person_id": "akari",
+            "display_name": "Akari Nakayama",
+            "age": 31,
+            "age_stage": "adult",
+            "gender": "female",
+            "aliases": ["Akari", "Ms. Nakayama"],
+            "same_person_as": ["Akari child"],
+            "personality": ["careful", "warm", "tired", "guarded", "precise"],
+            "accent": "Tokyo",
+        }
+    }
+    assert "Existing registry (compact identity only)" in prompt
+    assert "Akari Nakayama" in prompt
+    assert "qwen_instruct" not in prompt
+    assert "voice_variants" not in prompt
+    assert "voice_config_hash" not in prompt
+    assert "global_evidence" not in prompt
+    assert "narrative_notes" not in prompt
 
 
 def test_global_registry_service_returns_characters_with_evidence():
