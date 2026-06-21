@@ -21,9 +21,9 @@ The prototype UI gets a `Build Global Registry` button. Loading a book still ext
 The global registry LLM response uses:
 
 - `characters`: list of `{name, profile, evidence}`
-- `evidence`: compact chapter/sentence references and short notes used for debugging identity merges
+- `evidence`: compact chapter/sentence references and short notes for debugging the current LLM response; evidence is not persisted into saved character records
 
-The saved registry keeps the existing character record shape so downstream voice caching and script generation continue to work.
+The saved character registry keeps identity fields, aliases, and voice cache fields only. Deprecated plot/provenance fields such as `timeline`, `same_person_as`, `character_profile`, `narrative_notes`, `first_seen`, and `global_evidence` are pruned on save or merge.
 
 ## Error Handling
 

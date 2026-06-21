@@ -167,8 +167,8 @@ def test_controller_registry_forms_expose_only_safe_editable_fields(tmp_path):
                         "personality": ["stressed", "protective"],
                         "race_or_ethnicity": None,
                         "accent": None,
+                        "occupation": "caregiver",
                     },
-                    "narrative_notes": "Original notes.",
                     "voice_identity": {"seed": 123, "differentiators": ["darker timbre"]},
                     "voice_variants": {
                         "default": {
@@ -200,6 +200,8 @@ def test_controller_registry_forms_expose_only_safe_editable_fields(tmp_path):
     assert "display_name" in editable_keys
     assert "age_stage" in editable_keys
     assert "personality" in editable_keys
+    assert "occupation" in editable_keys
+    assert "narrative_notes" not in editable_keys
     assert "role_id" not in editable_keys
     assert "seed" not in editable_keys
 
@@ -227,8 +229,14 @@ def test_controller_saves_registry_form_values_and_refreshes_voice_profile(tmp_p
                         "personality": ["stressed"],
                         "race_or_ethnicity": None,
                         "accent": None,
+                        "occupation": None,
                     },
+                    "timeline": "legacy",
+                    "same_person_as": ["legacy_callie"],
+                    "character_profile": {"gender": "female"},
                     "narrative_notes": "Original notes.",
+                    "first_seen": "chapter_001",
+                    "global_evidence": [{"chapter": "chapter_001"}],
                     "voice_identity": {"seed": 123, "differentiators": ["darker timbre"]},
                     "voice_variants": {
                         "default": {
@@ -270,6 +278,7 @@ def test_controller_saves_registry_form_values_and_refreshes_voice_profile(tmp_p
             "personality": "guarded, timid",
             "race_or_ethnicity": "",
             "accent": "",
+            "occupation": "student",
             "aliases": "Callie teen, Callie",
             "narrative_notes": "Victim of grooming/exploitation; not romance.",
         },
@@ -281,7 +290,14 @@ def test_controller_saves_registry_form_values_and_refreshes_voice_profile(tmp_p
     assert character["age_stage"] == "teen"
     assert character["display_name"] == "Callie"
     assert character["identity_profile"]["personality"] == ["guarded", "timid"]
+    assert character["identity_profile"]["occupation"] == "student"
     assert character["aliases"] == ["Callie teen", "Callie"]
+    assert "timeline" not in character
+    assert "same_person_as" not in character
+    assert "character_profile" not in character
+    assert "narrative_notes" not in character
+    assert "first_seen" not in character
+    assert "global_evidence" not in character
     assert "teen female" in character["voice_variants"]["default"]["voice_profile"]["qwen_instruct"]
     assert character["voice_variants"]["default"].get("voice_config_hash") is None
 

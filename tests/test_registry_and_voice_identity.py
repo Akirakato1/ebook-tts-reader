@@ -28,7 +28,6 @@ def test_registry_adds_new_character_with_stable_voice_identity(tmp_path):
     assert elena["profile_id"] == "elena_adult"
     assert elena["person_id"] == "elena"
     assert elena["age_stage"] == "adult"
-    assert elena["first_seen"] == "chapter_001"
     assert set(elena["voice_variants"]) == {"default", "internal"}
     assert elena["voice_variants"]["default"]["role_id"] == "elena_adult_default"
     assert elena["voice_variants"]["internal"]["role_id"] == "elena_adult_internal"
@@ -43,6 +42,12 @@ def test_registry_adds_new_character_with_stable_voice_identity(tmp_path):
         elena["voice_variants"]["default"]["voice_profile"]["qwen_instruct"]
         != elena["voice_variants"]["internal"]["voice_profile"]["qwen_instruct"]
     )
+    assert "first_seen" not in elena
+    assert "timeline" not in elena
+    assert "same_person_as" not in elena
+    assert "character_profile" not in elena
+    assert "narrative_notes" not in elena
+    assert "global_evidence" not in elena
 
 
 def test_similar_character_receives_different_voice_differentiator(tmp_path):
@@ -102,8 +107,9 @@ def test_registry_creates_distinct_age_stage_profiles_for_same_person(tmp_path):
     adult = registry["characters"]["callie_adult"]
     assert teen["person_id"] == adult["person_id"] == "callie"
     assert teen["age"] == 14
-    assert teen["narrative_notes"] == "Victim of grooming and exploitation; not a romance."
-    assert adult["same_person_as"] == ["callie_teen"]
+    assert "narrative_notes" not in teen
+    assert "timeline" not in teen
+    assert "same_person_as" not in adult
     assert "grooming" not in teen["voice_variants"]["default"]["voice_profile"]["qwen_instruct"].lower()
     assert "callie_teen_default" == teen["voice_variants"]["default"]["role_id"]
     assert "callie_adult_default" == adult["voice_variants"]["default"]["role_id"]
@@ -188,7 +194,7 @@ def test_global_registry_merge_adds_alias_to_existing_character(tmp_path):
     assert akari["display_name"] == "Akari"
     assert "Miss Nakayama" in akari["aliases"]
     assert "direct" in akari["identity_profile"]["personality"]
-    assert akari["global_evidence"][0]["chapter"] == "chapter_003"
+    assert "global_evidence" not in akari
 
 
 def test_global_registry_merge_updates_key_character_facts(tmp_path):

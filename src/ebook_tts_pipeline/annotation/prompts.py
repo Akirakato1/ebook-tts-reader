@@ -40,12 +40,11 @@ def render_annotation_prompt(
         '- Example profile object: {"age_stage":"adult","gender":"female","personality":["guarded"]}.\n'
         "- For each new character, profile must be compact and only contain identity fields needed for future voice/profile decisions.\n"
         "- profile required fields: age_stage, gender, personality.\n"
-        "- profile optional fields: profile_id, person_id, age, race_or_ethnicity, accent, timeline, aliases, same_person_as, narrative_notes.\n"
+        "- profile optional fields: profile_id, person_id, age, race_or_ethnicity, accent, occupation, aliases.\n"
         '- age_stage must be one of "child", "teen", "adult", "elder", or "unknown".\n'
         "- personality must be a short list of trait adjectives, such as shy, bright, charismatic, timid, guarded, hardened.\n"
         "- Use race_or_ethnicity and accent only when explicit or strongly text-grounded; otherwise use null or omit.\n"
         "- Do not put relationships, plot summary, backstory, grooming, abuse, or exploitation facts into voice-like fields.\n"
-        "- Put relationship or abuse context only in narrative_notes when needed for disambiguation or safety.\n"
         "- Never frame grooming, exploitation, coercion, or child abuse as romance or consensual adult intimacy.\n"
         "- If the same underlying person appears at a different life stage, create a distinct profile_id such as callie_teen, callie_adult, trevor_child, or andrew_adult, and reuse the same person_id.\n"
         "- Do not append chapter, window, or sentence numbers to person_id or profile_id; use stable identity names like callie, callie_teen, or trevor_child.\n"

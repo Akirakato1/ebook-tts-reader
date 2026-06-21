@@ -17,7 +17,7 @@ from ebook_tts_pipeline.epub_ingestion import EpubChapterExtractor, EpubExtractR
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.pipeline import AudiobookPipeline
-from ebook_tts_pipeline.registry import build_compact_voice_profile
+from ebook_tts_pipeline.registry import build_compact_voice_profile, prune_deprecated_registry_fields
 from ebook_tts_pipeline.tts.fake import FakeTtsAdapter
 from ebook_tts_pipeline.tts.qwen_adapter import QwenTtsAdapter
 from ebook_tts_pipeline.voice_identity import append_differentiators
@@ -172,6 +172,7 @@ class PrototypeUiController:
             payload = json.loads(text)
         except json.JSONDecodeError as exc:
             raise ValueError(f"Registry JSON is invalid: {exc}") from exc
+        prune_deprecated_registry_fields(payload)
         write_json_atomic(self.paths.registry, payload)
 
     def registry_character_forms(self) -> List[RegistryCharacterForm]:
@@ -207,8 +208,8 @@ class PrototypeUiController:
                         RegistryField("personality", "Personality", ", ".join(_string_list(identity.get("personality")))),
                         RegistryField("race_or_ethnicity", "Race / Ethnicity", _field_text(identity.get("race_or_ethnicity"))),
                         RegistryField("accent", "Accent", _field_text(identity.get("accent"))),
+                        RegistryField("occupation", "Occupation", _field_text(identity.get("occupation"))),
                         RegistryField("aliases", "Aliases", ", ".join(_string_list(character.get("aliases")))),
-                        RegistryField("narrative_notes", "Notes", _field_text(character.get("narrative_notes")), multiline=True),
                     ],
                 )
             )
@@ -236,6 +237,7 @@ class PrototypeUiController:
                 "personality": personality,
                 "race_or_ethnicity": _blank_to_none(values.get("race_or_ethnicity", "")),
                 "accent": _blank_to_none(values.get("accent", "")),
+                "occupation": _blank_to_none(values.get("occupation", "")),
             }
         )
         character["display_name"] = display_name
@@ -243,9 +245,8 @@ class PrototypeUiController:
         character["age_stage"] = age_stage
         character["aliases"] = _split_csv(values.get("aliases", ""))
         character["identity_profile"] = identity
-        character["character_profile"] = dict(identity)
-        character["narrative_notes"] = _blank_to_none(values.get("narrative_notes", ""))
         self._refresh_character_voice_profiles(character)
+        prune_deprecated_registry_fields(registry)
         write_json_atomic(self.paths.registry, registry)
 
     def load_epub(self, epub_path: Union[str, Path], title: str, slug: str) -> EpubExtractResult:

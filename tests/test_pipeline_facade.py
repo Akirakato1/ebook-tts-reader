@@ -273,7 +273,7 @@ def test_pipeline_builds_global_registry_from_segmented_chapters(tmp_path):
     registry = pipeline.registry.load()
     assert count == 1
     assert registry["characters"]["akari_nakayama_adult"]["display_name"] == "Akari Nakayama"
-    assert registry["characters"]["akari_nakayama_adult"]["global_evidence"][0]["chapter"] == "chapter_001"
+    assert "global_evidence" not in registry["characters"]["akari_nakayama_adult"]
 
 
 def test_pipeline_builds_global_registry_in_chapter_chunks_with_updated_registry(tmp_path):

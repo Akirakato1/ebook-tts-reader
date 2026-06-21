@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from collections import Counter
 from typing import Any, Dict, List, Set
@@ -12,6 +11,15 @@ from ebook_tts_pipeline.voice_identity import (
     append_differentiators,
     choose_differentiators,
     role_seed,
+)
+
+DEPRECATED_CHARACTER_FIELDS = (
+    "timeline",
+    "same_person_as",
+    "character_profile",
+    "narrative_notes",
+    "first_seen",
+    "global_evidence",
 )
 
 
@@ -227,7 +235,6 @@ class RegistryManager:
             "narrator": {
                 "role_id": "narrator",
                 "display_name": "Narrator",
-                "character_profile": {"role": "narrator"},
                 "voice_identity": {
                     "seed": role_seed(book_slug, "narrator"),
                     "differentiators": ["calm baseline narrator timbre"],
@@ -246,6 +253,7 @@ class RegistryManager:
         return read_json(self.paths.registry)
 
     def save(self, registry: Dict[str, Any]) -> None:
+        prune_deprecated_registry_fields(registry)
         write_json_atomic(self.paths.registry, registry)
 
     def known_names(self) -> Set[str]:
@@ -284,12 +292,8 @@ class RegistryManager:
                 "display_name": name,
                 "age": profile.get("age"),
                 "age_stage": profile["age_stage"],
-                "timeline": profile.get("timeline"),
-                "same_person_as": profile["same_person_as"],
                 "aliases": profile["aliases"],
                 "identity_profile": profile["identity_profile"],
-                "character_profile": profile["identity_profile"],
-                "narrative_notes": profile.get("narrative_notes"),
                 "voice_identity": {
                     "seed": seed,
                     "differentiators": differentiators,
@@ -310,8 +314,8 @@ class RegistryManager:
                         "voice_config_path": None,
                     },
                 },
-                "first_seen": chapter,
             }
+            prune_deprecated_character_fields(registry["characters"][role_id])
             normalized_known.add(normalize_name(role_id))
             normalized_known.add(normalize_name(role_id.replace("_", " ")))
             normalized_known.update(normalize_name(alias) for alias in profile["aliases"])
@@ -342,12 +346,8 @@ class RegistryManager:
                 new_characters=[{"name": name, "profile": character.get("profile", {})}],
             )
             registry = self.load()
-            role_id = str(profile["profile_id"])
-            if role_id in registry["characters"]:
-                registry["characters"][role_id]["global_evidence"] = _dedupe_evidence(
-                    list(character.get("evidence", []))
-                )
 
+        prune_deprecated_registry_fields(registry)
         self.save(registry)
 
 
@@ -377,11 +377,8 @@ def normalize_character_profile(name: str, raw_profile: Any) -> Dict[str, Any]:
         "person_id": person_id,
         "age": profile.get("age"),
         "age_stage": age_stage,
-        "timeline": _nullable_string(profile.get("timeline")),
-        "same_person_as": _string_list(profile.get("same_person_as")),
         "aliases": _dedupe_preserving_order(aliases),
         "identity_profile": identity_profile,
-        "narrative_notes": _nullable_string(profile.get("narrative_notes", profile.get("notes"))),
     }
 
 
@@ -431,13 +428,19 @@ def _merge_character_record(
         aliases.append(name)
     record["aliases"] = _dedupe_preserving_order(aliases)
     record["identity_profile"] = merged_identity
-    record["character_profile"] = dict(merged_identity)
-    if record.get("narrative_notes") in (None, "") and profile.get("narrative_notes"):
-        record["narrative_notes"] = profile.get("narrative_notes")
-    record["global_evidence"] = _dedupe_evidence(
-        list(record.get("global_evidence", [])) + _string_list_or_objects(evidence)
-    )
+    prune_deprecated_character_fields(record)
     _refresh_record_voice_profiles(book_slug, record)
+
+
+def prune_deprecated_character_fields(character: Dict[str, Any]) -> None:
+    for key in DEPRECATED_CHARACTER_FIELDS:
+        character.pop(key, None)
+
+
+def prune_deprecated_registry_fields(registry: Dict[str, Any]) -> None:
+    for character in registry.get("characters", {}).values():
+        if isinstance(character, dict):
+            prune_deprecated_character_fields(character)
 
 
 def _refresh_record_voice_profiles(book_slug: str, record: Dict[str, Any]) -> None:
@@ -468,25 +471,6 @@ def _refresh_record_voice_profiles(book_slug: str, record: Dict[str, Any]) -> No
         "voice_config_path": variants.get("internal", {}).get("voice_config_path"),
         "voice_config_hash": None,
     }
-
-
-def _string_list_or_objects(value: Any) -> List[Any]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return value
-    return [value]
-
-
-def _dedupe_evidence(values: List[Any]) -> List[Any]:
-    seen = set()
-    deduped = []
-    for value in values:
-        key = json.dumps(value, sort_keys=True, ensure_ascii=False) if isinstance(value, dict) else str(value)
-        if key not in seen:
-            seen.add(key)
-            deduped.append(value)
-    return deduped
 
 
 def build_compact_voice_profile(display_name: str, profile: Dict[str, Any]) -> Dict[str, str]:

@@ -37,6 +37,9 @@ def test_render_global_registry_prompt_requests_canonical_characters_only():
     assert "Do not recreate" in prompt
     assert "Return new characters and existing-character updates" in prompt
     assert "Do not echo unchanged registry records" in prompt
+    assert "timeline" not in prompt
+    assert "same_person_as" not in prompt
+    assert "narrative_notes" not in prompt
     assert "Akari Nakayama waved" in prompt
 
 
