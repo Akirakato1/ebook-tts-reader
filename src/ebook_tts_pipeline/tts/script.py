@@ -8,6 +8,27 @@ from ebook_tts_pipeline.registry import normalize_name
 from ebook_tts_pipeline.windowing import build_tts_windows
 
 
+def render_qwen_dialogue_script(jobs: List[Dict[str, Any]]) -> str:
+    lines: List[str] = []
+    current_role: Optional[str] = None
+    current_text: List[str] = []
+
+    for job in jobs:
+        role = str(job["role"])
+        text = _normalize_script_text(str(job["text"]))
+        if current_role is not None and role != current_role:
+            lines.append(f"{current_role}: {' '.join(current_text)}")
+            current_text = []
+        current_role = role
+        if text:
+            current_text.append(text)
+
+    if current_role is not None:
+        lines.append(f"{current_role}: {' '.join(current_text)}")
+
+    return "\n".join(lines)
+
+
 @dataclass(frozen=True)
 class TtsSentenceJob:
     sentence_idx: int
@@ -90,11 +111,16 @@ class TtsScript:
     jobs: List[TtsSentenceJob]
     windows: List[TtsScriptWindow]
 
+    @property
+    def qwen_dialogue_text(self) -> str:
+        return render_qwen_dialogue_script([job.to_adapter_job() for job in self.jobs])
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "chapter": self.chapter,
             "job_count": len(self.jobs),
             "window_count": len(self.windows),
+            "qwen_dialogue_text": self.qwen_dialogue_text,
             "jobs": [job.to_dict() for job in self.jobs],
             "windows": [window.to_dict() for window in self.windows],
         }
@@ -228,3 +254,7 @@ def _lookup_role_record(
     if normalized not in records:
         raise ValueError(f"No registry record exists for annotated role: {role_name}")
     return records[normalized]
+
+
+def _normalize_script_text(text: str) -> str:
+    return " ".join(text.split())

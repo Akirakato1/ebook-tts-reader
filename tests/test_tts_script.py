@@ -1,5 +1,5 @@
 from ebook_tts_pipeline.domain import AnnotationResult, Sentence, SentenceArtifact
-from ebook_tts_pipeline.tts.script import build_tts_script
+from ebook_tts_pipeline.tts.script import build_tts_script, render_qwen_dialogue_script
 
 
 def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
@@ -93,6 +93,10 @@ def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
             "text": ['"Hello," Elena said.', "She left."],
         },
     ]
+    assert script.qwen_dialogue_text == (
+        "Narrator: It rained.\n"
+        'Elena: "Hello," Elena said. She left.'
+    )
 
 
 def test_tts_script_respects_role_limit_when_creating_windows():
@@ -182,3 +186,40 @@ def test_tts_script_orders_jobs_by_sentence_index_even_when_annotation_rows_drif
 
     assert [job.sentence_idx for job in script.jobs] == [0, 1, 2]
     assert [job.text for job in script.jobs] == ["First.", "Second.", "Third."]
+
+
+def test_render_qwen_dialogue_script_uses_one_role_prefix_per_contiguous_block():
+    script = render_qwen_dialogue_script(
+        [
+            {
+                "sentence_idx": 0,
+                "role": "Narrator",
+                "type": "narration",
+                "text": "First sentence.",
+            },
+            {
+                "sentence_idx": 1,
+                "role": "Narrator",
+                "type": "narration",
+                "text": "Second sentence.",
+            },
+            {
+                "sentence_idx": 2,
+                "role": "Elena",
+                "type": "dialogue",
+                "text": "Hello.",
+            },
+            {
+                "sentence_idx": 3,
+                "role": "Narrator",
+                "type": "narration",
+                "text": "Back to narration.",
+            },
+        ]
+    )
+
+    assert script == (
+        "Narrator: First sentence. Second sentence.\n"
+        "Elena: Hello.\n"
+        "Narrator: Back to narration."
+    )

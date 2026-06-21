@@ -32,6 +32,9 @@ class BookPaths:
     def tts_script(self, chapter: str) -> Path:
         return self.root / "tts_scripts" / f"{chapter}.tts_script.json"
 
+    def qwen_script(self, chapter: str) -> Path:
+        return self.root / "tts_scripts" / f"{chapter}.qwen_script.txt"
+
     def chapter_audio(self, chapter: str) -> Path:
         return self.root / "audio" / f"{chapter}.wav"
 

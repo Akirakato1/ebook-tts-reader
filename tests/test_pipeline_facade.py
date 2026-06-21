@@ -59,6 +59,7 @@ def test_pipeline_runs_tiny_chapter_with_fake_adapters(tmp_path):
     assert (book_root / "sentence_segments" / "chapter_001.sentences.json").exists()
     assert (book_root / "annotations" / "chapter_001.annotation.json").exists()
     assert (book_root / "tts_scripts" / "chapter_001.tts_script.json").exists()
+    assert (book_root / "tts_scripts" / "chapter_001.qwen_script.txt").exists()
     assert (book_root / "audio" / "chapter_001.wav").exists()
     assert (book_root / "audio" / "chapter_001.timeline.json").exists()
     assert (book_root / "voices" / "elena.qvp").exists()

@@ -91,6 +91,9 @@ class AudiobookPipeline:
             language="auto",
         )
         write_json_atomic(self.paths.tts_script(chapter), script.to_dict())
+        qwen_script_path = self.paths.qwen_script(chapter)
+        qwen_script_path.parent.mkdir(parents=True, exist_ok=True)
+        qwen_script_path.write_text(script.qwen_dialogue_text + "\n", encoding="utf-8")
         return [job.to_adapter_job() for job in script.jobs]
 
     def synthesize_chapter(self, chapter: str, annotation: AnnotationResult) -> Dict:
