@@ -55,6 +55,17 @@ def test_cli_has_discrete_pipeline_step_commands():
     build_tts = parser.parse_args(
         ["build-tts-script", "--book-root", "books/demo", "--chapter", "chapter_001"]
     )
+    build_global = parser.parse_args(
+        [
+            "build-global-registry",
+            "--book-root",
+            "books/demo",
+            "--book-title",
+            "Demo",
+            "--book-slug",
+            "demo",
+        ]
+    )
     prepare = parser.parse_args(
         ["prepare-voices", "--book-root", "books/demo", "--chapter", "chapter_001", "--fake-tts"]
     )
@@ -73,6 +84,8 @@ def test_cli_has_discrete_pipeline_step_commands():
     assert segment.command == "segment-chapter"
     assert annotate.command == "annotate-chapter"
     assert build_tts.command == "build-tts-script"
+    assert build_global.command == "build-global-registry"
+    assert build_global.book_title == "Demo"
     assert prepare.command == "prepare-voices"
     assert synthesize.command == "synthesize-chapter"
     assert synthesize.fake_tts is True

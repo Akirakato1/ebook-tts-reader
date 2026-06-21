@@ -143,6 +143,54 @@ def test_registry_rejects_alias_collision(tmp_path):
         raise AssertionError("Expected alias collision")
 
 
+def test_global_registry_merge_adds_alias_to_existing_character(tmp_path):
+    paths = BookPaths(tmp_path / "demo")
+    manager = RegistryManager(paths)
+    manager.initialize_if_missing(book_title="Demo Book", book_slug="demo")
+    manager.add_new_characters(
+        chapter="chapter_001",
+        new_characters=[
+            {
+                "name": "Akari",
+                "profile": {
+                    "profile_id": "akari_nakayama_adult",
+                    "person_id": "akari_nakayama",
+                    "age_stage": "adult",
+                    "gender": "female",
+                    "personality": ["professional"],
+                    "aliases": ["Akari"],
+                },
+            }
+        ],
+    )
+
+    manager.merge_global_characters(
+        chapter="global_registry",
+        characters=[
+            {
+                "name": "Akari Nakayama",
+                "profile": {
+                    "profile_id": "akari_nakayama_adult",
+                    "person_id": "akari_nakayama",
+                    "age_stage": "adult",
+                    "gender": "female",
+                    "personality": ["professional", "direct"],
+                    "aliases": ["Akari", "Miss Nakayama"],
+                },
+                "evidence": [{"chapter": "chapter_003", "note": "Full name appears"}],
+            }
+        ],
+    )
+
+    registry = read_json(paths.registry)
+    assert list(registry["characters"]) == ["akari_nakayama_adult"]
+    akari = registry["characters"]["akari_nakayama_adult"]
+    assert akari["display_name"] == "Akari"
+    assert "Miss Nakayama" in akari["aliases"]
+    assert "direct" in akari["identity_profile"]["personality"]
+    assert akari["global_evidence"][0]["chapter"] == "chapter_003"
+
+
 def test_resolve_effective_voice_matches_unique_short_display_name():
     registry = {
         "book": {"slug": "demo"},

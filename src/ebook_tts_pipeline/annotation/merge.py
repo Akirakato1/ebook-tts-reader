@@ -14,7 +14,9 @@ def merge_annotation_windows(
     roles: List[str] = []
     script = []
     new_characters = []
+    proposed_new_characters = []
     seen_new_character_names = set()
+    seen_proposed_character_names = set()
 
     for result in results:
         for character in result.new_characters:
@@ -23,6 +25,13 @@ def merge_annotation_windows(
             if normalized and normalized not in seen_new_character_names:
                 new_characters.append(character)
                 seen_new_character_names.add(normalized)
+
+        for character in result.proposed_new_characters:
+            name = str(character.get("name", "")).strip()
+            normalized = normalize_name(name)
+            if normalized and normalized not in seen_proposed_character_names:
+                proposed_new_characters.append(character)
+                seen_proposed_character_names.add(normalized)
 
         for role_idx, type_idx, sentence_idx in result.script:
             role_name = _canonical_role_name(result.roles[role_idx], registry)
@@ -36,6 +45,7 @@ def merge_annotation_windows(
         roles=roles,
         types=list(ALLOWED_TYPES),
         script=script,
+        proposed_new_characters=proposed_new_characters,
     )
 
 

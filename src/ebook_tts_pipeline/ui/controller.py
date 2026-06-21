@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 
 from ebook_tts_pipeline.annotation.anthropic_client import AnthropicJsonClient
+from ebook_tts_pipeline.annotation.global_registry import GlobalRegistryService
 from ebook_tts_pipeline.annotation.service import AnnotationService
 from ebook_tts_pipeline.config import PipelineConfig
 from ebook_tts_pipeline.debug_logging import FailureLogger
@@ -297,8 +298,16 @@ class PrototypeUiController:
         pipeline = self._pipeline(needs_llm=True)
         if stage == ChapterStage.RAW:
             pipeline.segment_chapter(chapter)
-        pipeline.annotate_chapter(chapter)
+        pipeline.annotate_chapter(chapter, lock_registry=True)
         return ChapterActionResult(chapter=chapter, stage=ChapterStage.ANNOTATED, message="Annotated chapter.")
+
+    def build_global_registry(self) -> int:
+        pipeline = self._pipeline(needs_llm=True)
+        registry = pipeline.registry.load()
+        count = pipeline.build_global_registry(
+            book_title=str(registry.get("book", {}).get("title", "Untitled Book")),
+        )
+        return count
 
     def _pipeline(self, needs_llm: bool) -> AudiobookPipeline:
         return self.pipeline_factory(PipelineConfig.from_env(str(self.book_root)), needs_llm, self.fake_tts)
@@ -384,6 +393,13 @@ def _default_pipeline_factory(config: PipelineConfig, needs_llm: bool, fake_tts:
         annotation_service=AnnotationService(
             client=_build_llm_client(config) if needs_llm else _UnavailableJsonClient(),
             repair_retries=config.annotation_repair_retries,
+            failure_logger=FailureLogger(
+                config.debug_log_root,
+                context={"book_root": config.book_root},
+            ),
+        ),
+        global_registry_service=GlobalRegistryService(
+            client=_build_llm_client(config) if needs_llm else _UnavailableJsonClient(),
             failure_logger=FailureLogger(
                 config.debug_log_root,
                 context={"book_root": config.book_root},

@@ -31,3 +31,16 @@ def test_annotation_prompt_rejects_numbered_person_ids():
     )
 
     assert "Do not append chapter, window, or sentence numbers to person_id or profile_id" in prompt
+
+
+def test_locked_annotation_prompt_uses_proposed_new_characters():
+    prompt = render_annotation_prompt(
+        "chapter_001",
+        [Sentence(0, '"Hello," Akari said.')],
+        {"characters": {"akari_adult": {"display_name": "Akari", "aliases": []}}},
+        lock_registry=True,
+    )
+
+    assert "proposed_new_characters" in prompt
+    assert "Do not add to new_characters" in prompt
+    assert "new_characters: []" in prompt

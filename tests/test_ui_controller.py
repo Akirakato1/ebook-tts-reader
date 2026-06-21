@@ -32,6 +32,9 @@ class FakeRegistry:
                 {"book": {"title": book_title, "slug": book_slug}, "characters": {}},
             )
 
+    def load(self):
+        return read_json(self.paths.registry)
+
 
 class FakePipeline:
     def __init__(self, config, calls):
@@ -47,8 +50,8 @@ class FakePipeline:
             {"chapter": chapter, "source_path": f"chapters/{chapter}.txt", "sentences": []},
         )
 
-    def annotate_chapter(self, chapter):
-        self.calls.append(("annotate", chapter))
+    def annotate_chapter(self, chapter, lock_registry=False):
+        self.calls.append(("annotate", chapter, lock_registry))
         self.paths.annotation(chapter).parent.mkdir(parents=True, exist_ok=True)
         write_json_atomic(
             self.paths.annotation(chapter),
@@ -59,6 +62,27 @@ class FakePipeline:
                 "script": [],
             },
         )
+
+    def build_global_registry(self, book_title=None):
+        self.calls.append(("build_global_registry", book_title))
+        registry = read_json(self.paths.registry)
+        registry["characters"] = {
+            "akari_adult": {
+                "role_id": "akari_adult",
+                "display_name": "Akari",
+                "aliases": [],
+                "identity_profile": {
+                    "age": None,
+                    "age_stage": "adult",
+                    "gender": "female",
+                    "personality": ["professional"],
+                    "race_or_ethnicity": None,
+                    "accent": None,
+                },
+            }
+        }
+        write_json_atomic(self.paths.registry, registry)
+        return 1
 
     def build_sentence_jobs(self, chapter, annotation):
         self.calls.append(("build_scripts", chapter))
@@ -357,7 +381,29 @@ def test_controller_chapter_action_advances_through_pipeline_stages(tmp_path):
     assert third.stage == ChapterStage.AUDIO
     assert fourth.stage == ChapterStage.AUDIO
     assert opened == [paths.chapter_audio("chapter_001")]
-    assert ("annotate", "chapter_001") in calls
+    assert ("annotate", "chapter_001", True) in calls
     assert ("build_scripts", "chapter_001") in calls
     assert ("prepare_voices",) in calls
     assert ("synthesize", "chapter_001") in calls
+
+
+def test_controller_builds_global_registry(tmp_path):
+    calls = []
+    paths = BookPaths(tmp_path / "book")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text("Chapter One\nText.", encoding="utf-8")
+    write_json_atomic(
+        paths.registry,
+        {"book": {"title": "Demo", "slug": "demo"}, "characters": {}},
+    )
+    controller = PrototypeUiController(
+        book_root=paths.root,
+        pipeline_factory=fake_pipeline_factory(calls),
+        fake_tts=True,
+    )
+
+    count = controller.build_global_registry()
+
+    assert count == 1
+    assert ("build_global_registry", "Demo") in calls
+    assert read_json(paths.registry)["characters"]["akari_adult"]["display_name"] == "Akari"

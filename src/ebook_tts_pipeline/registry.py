@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections import Counter
 from typing import Any, Dict, List, Set
@@ -317,6 +318,38 @@ class RegistryManager:
 
         self.save(registry)
 
+    def merge_global_characters(self, chapter: str, characters: List[Dict[str, Any]]) -> None:
+        registry = self.load()
+        book_slug = str(registry["book"]["slug"])
+
+        for character in characters:
+            name = str(character.get("name", "")).strip()
+            if not name:
+                continue
+            profile = normalize_character_profile(name, character.get("profile", {}))
+            role_id = _find_matching_character_id(registry, name, profile)
+            if role_id:
+                _merge_character_record(
+                    registry["characters"][role_id],
+                    name=name,
+                    profile=profile,
+                    evidence=character.get("evidence", []),
+                    book_slug=book_slug,
+                )
+                continue
+            self.add_new_characters(
+                chapter=chapter,
+                new_characters=[{"name": name, "profile": character.get("profile", {})}],
+            )
+            registry = self.load()
+            role_id = str(profile["profile_id"])
+            if role_id in registry["characters"]:
+                registry["characters"][role_id]["global_evidence"] = _dedupe_evidence(
+                    list(character.get("evidence", []))
+                )
+
+        self.save(registry)
+
 
 def normalize_character_profile(name: str, raw_profile: Any) -> Dict[str, Any]:
     profile = dict(raw_profile) if isinstance(raw_profile, dict) else {}
@@ -349,6 +382,110 @@ def normalize_character_profile(name: str, raw_profile: Any) -> Dict[str, Any]:
         "identity_profile": identity_profile,
         "narrative_notes": _nullable_string(profile.get("narrative_notes", profile.get("notes"))),
     }
+
+
+def _find_matching_character_id(
+    registry: Dict[str, Any],
+    name: str,
+    profile: Dict[str, Any],
+) -> str:
+    candidates = {
+        normalize_name(name),
+        normalize_name(str(profile.get("profile_id", ""))),
+        normalize_name(str(profile.get("profile_id", "")).replace("_", " ")),
+        normalize_name(str(profile.get("person_id", ""))),
+    }
+    candidates.update(normalize_name(alias) for alias in profile.get("aliases", []))
+    candidates.discard("")
+    for role_id, record in registry.get("characters", {}).items():
+        names = _character_lookup_names(record)
+        names.add(normalize_name(str(record.get("person_id", ""))))
+        if candidates & names:
+            return str(role_id)
+    return ""
+
+
+def _merge_character_record(
+    record: Dict[str, Any],
+    name: str,
+    profile: Dict[str, Any],
+    evidence: Any,
+    book_slug: str,
+) -> None:
+    existing_identity = dict(record.get("identity_profile", record.get("character_profile", {})))
+    incoming_identity = dict(profile.get("identity_profile", {}))
+    personality = _dedupe_preserving_order(
+        _string_list(existing_identity.get("personality")) + _string_list(incoming_identity.get("personality"))
+    )
+    merged_identity = dict(existing_identity)
+    for key in ("age", "age_stage", "gender", "race_or_ethnicity", "accent"):
+        incoming_value = incoming_identity.get(key)
+        existing_value = merged_identity.get(key)
+        if existing_value in (None, "", "unknown") and incoming_value not in (None, "", "unknown"):
+            merged_identity[key] = incoming_value
+    merged_identity["personality"] = personality
+
+    aliases = _string_list(record.get("aliases")) + _string_list(profile.get("aliases"))
+    if normalize_name(name) != normalize_name(str(record.get("display_name", ""))):
+        aliases.append(name)
+    record["aliases"] = _dedupe_preserving_order(aliases)
+    record["identity_profile"] = merged_identity
+    record["character_profile"] = dict(merged_identity)
+    if record.get("narrative_notes") in (None, "") and profile.get("narrative_notes"):
+        record["narrative_notes"] = profile.get("narrative_notes")
+    record["global_evidence"] = _dedupe_evidence(
+        list(record.get("global_evidence", [])) + _string_list_or_objects(evidence)
+    )
+    _refresh_record_voice_profiles(book_slug, record)
+
+
+def _refresh_record_voice_profiles(book_slug: str, record: Dict[str, Any]) -> None:
+    role_id = str(record.get("role_id", "character"))
+    display_name = str(record.get("display_name", role_id))
+    seed = int(record.get("voice_identity", {}).get("seed", role_seed(book_slug, role_id)))
+    differentiators = list(
+        record.get("voice_identity", {}).get("differentiators", choose_differentiators(book_slug, role_id))
+    )
+    voice = build_compact_voice_profile(display_name, {"identity_profile": record.get("identity_profile", {})})
+    voice["qwen_instruct"] = append_differentiators(str(voice["qwen_instruct"]), differentiators)
+    variants = record.setdefault("voice_variants", {})
+    variants["default"] = {
+        **dict(variants.get("default", {})),
+        "role_id": f"{role_id}_default",
+        "display_name": f"{display_name}_default",
+        "voice_identity": {"seed": seed, "differentiators": differentiators},
+        "voice_profile": voice,
+        "voice_config_path": variants.get("default", {}).get("voice_config_path"),
+        "voice_config_hash": None,
+    }
+    variants["internal"] = {
+        **dict(variants.get("internal", {})),
+        "role_id": f"{role_id}_internal",
+        "display_name": f"{display_name}_internal",
+        "voice_identity": {"seed": seed, "differentiators": differentiators},
+        "voice_profile": _internal_voice_profile(display_name, voice),
+        "voice_config_path": variants.get("internal", {}).get("voice_config_path"),
+        "voice_config_hash": None,
+    }
+
+
+def _string_list_or_objects(value: Any) -> List[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _dedupe_evidence(values: List[Any]) -> List[Any]:
+    seen = set()
+    deduped = []
+    for value in values:
+        key = json.dumps(value, sort_keys=True, ensure_ascii=False) if isinstance(value, dict) else str(value)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(value)
+    return deduped
 
 
 def build_compact_voice_profile(display_name: str, profile: Dict[str, Any]) -> Dict[str, str]:

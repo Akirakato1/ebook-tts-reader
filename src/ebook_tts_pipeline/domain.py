@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Tuple
 
 
@@ -45,6 +45,7 @@ class AnnotationResult:
     roles: List[str]
     types: List[str]
     script: List[Tuple[int, int, int]]
+    proposed_new_characters: List[Dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AnnotationResult":
@@ -53,12 +54,16 @@ class AnnotationResult:
             roles=[str(role) for role in data["roles"]],
             types=[str(item) for item in data["types"]],
             script=[tuple(int(value) for value in row) for row in data["script"]],
+            proposed_new_characters=list(data.get("proposed_new_characters", [])),
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload = {
             "new_characters": self.new_characters,
             "roles": self.roles,
             "types": self.types,
             "script": [list(row) for row in self.script],
         }
+        if self.proposed_new_characters:
+            payload["proposed_new_characters"] = self.proposed_new_characters
+        return payload

@@ -95,6 +95,21 @@ class WindowRecordingTtsAdapter:
         ]
 
 
+class FakeGlobalRegistryService:
+    def __init__(self, characters):
+        self.characters = characters
+        self.calls = []
+
+    def discover_characters(self, book_title, registry, chapters):
+        self.calls.append(
+            {
+                "book_title": book_title,
+                "chapters": [chapter.chapter for chapter in chapters],
+            }
+        )
+        return type("GlobalResult", (), {"characters": self.characters})()
+
+
 def test_pipeline_runs_tiny_chapter_with_fake_adapters(tmp_path):
     book_root = tmp_path / "demo"
     chapter_dir = book_root / "chapters"
@@ -204,6 +219,86 @@ def test_pipeline_splits_annotation_window_after_unparseable_model_output(tmp_pa
 
     assert client.calls == [[0, 1, 2, 3], [0, 1], [2, 3]]
     assert annotation.script == [(0, 0, 0), (0, 0, 1), (0, 0, 2), (0, 0, 3)]
+
+
+def test_pipeline_builds_global_registry_from_segmented_chapters(tmp_path):
+    book_root = tmp_path / "demo"
+    chapter_dir = book_root / "chapters"
+    chapter_dir.mkdir(parents=True)
+    (chapter_dir / "chapter_001.txt").write_text("Akari Nakayama waved.", encoding="utf-8")
+    pipeline = AudiobookPipeline(
+        config=PipelineConfig(book_root=str(book_root), anthropic_api_key="fake"),
+        annotation_service=AnnotationService(QueuedLlmClient([]), repair_retries=0),
+        tts_adapter=FakeTtsAdapter(sample_rate=1000, samples_per_character=5),
+        tokenizer=lambda text: ["Akari Nakayama waved."],
+        global_registry_service=FakeGlobalRegistryService(
+            [
+                {
+                    "name": "Akari Nakayama",
+                    "profile": {
+                        "profile_id": "akari_nakayama_adult",
+                        "person_id": "akari_nakayama",
+                        "age_stage": "adult",
+                        "gender": "female",
+                        "personality": ["professional"],
+                        "aliases": ["Akari"],
+                    },
+                    "evidence": [{"chapter": "chapter_001", "note": "Full name"}],
+                }
+            ]
+        ),
+    )
+
+    pipeline.registry.initialize_if_missing(book_title="Demo", book_slug="demo")
+    pipeline.segment_chapter("chapter_001")
+    count = pipeline.build_global_registry(book_title="Demo")
+
+    registry = pipeline.registry.load()
+    assert count == 1
+    assert registry["characters"]["akari_nakayama_adult"]["display_name"] == "Akari Nakayama"
+    assert registry["characters"]["akari_nakayama_adult"]["global_evidence"][0]["chapter"] == "chapter_001"
+
+
+def test_pipeline_locked_annotation_does_not_mutate_registry_with_new_characters(tmp_path):
+    book_root = tmp_path / "demo"
+    chapter_dir = book_root / "chapters"
+    chapter_dir.mkdir(parents=True)
+    (chapter_dir / "chapter_001.txt").write_text('"Hello," Mystery said.', encoding="utf-8")
+    client = QueuedLlmClient(
+        [
+            {
+                "new_characters": [
+                    {
+                        "name": "Mystery",
+                        "profile": {"age_stage": "adult", "gender": "unknown", "personality": ["quiet"]},
+                    }
+                ],
+                "proposed_new_characters": [
+                    {
+                        "name": "Mystery",
+                        "profile": {"age_stage": "adult", "gender": "unknown", "personality": ["quiet"]},
+                    }
+                ],
+                "roles": ["Mystery"],
+                "types": ["narration", "dialogue", "thought"],
+                "script": [[0, 1, 0]],
+            }
+        ]
+    )
+    pipeline = AudiobookPipeline(
+        config=PipelineConfig(book_root=str(book_root), anthropic_api_key="fake"),
+        annotation_service=AnnotationService(client, repair_retries=0),
+        tts_adapter=FakeTtsAdapter(sample_rate=1000, samples_per_character=5),
+        tokenizer=lambda text: ['"Hello," Mystery said.'],
+    )
+
+    pipeline.registry.initialize_if_missing(book_title="Demo", book_slug="demo")
+    pipeline.segment_chapter("chapter_001")
+    annotation = pipeline.annotate_chapter("chapter_001", lock_registry=True)
+
+    assert pipeline.registry.load()["characters"] == {}
+    assert annotation.new_characters == []
+    assert annotation.proposed_new_characters[0]["name"] == "Mystery"
 
 
 def test_pipeline_prepares_default_and_internal_voice_variants_with_cache_invalidation_and_force(tmp_path):

@@ -5,6 +5,7 @@ from typing import Any
 from typing import List, Optional
 
 from ebook_tts_pipeline.annotation.anthropic_client import AnthropicJsonClient
+from ebook_tts_pipeline.annotation.global_registry import GlobalRegistryService
 from ebook_tts_pipeline.annotation.service import AnnotationService
 from ebook_tts_pipeline.config import PipelineConfig
 from ebook_tts_pipeline.debug_logging import FailureLogger
@@ -38,6 +39,11 @@ def build_parser() -> argparse.ArgumentParser:
     build_tts_script = subparsers.add_parser("build-tts-script")
     _add_book_chapter_args(build_tts_script)
 
+    build_global_registry = subparsers.add_parser("build-global-registry")
+    build_global_registry.add_argument("--book-root", required=True)
+    build_global_registry.add_argument("--book-title", required=True)
+    build_global_registry.add_argument("--book-slug", required=True)
+
     prepare_voices = subparsers.add_parser("prepare-voices")
     _add_book_chapter_args(prepare_voices)
     prepare_voices.add_argument("--fake-tts", action="store_true")
@@ -68,7 +74,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         config = PipelineConfig.from_env(book_root=args.book_root)
         pipeline = _build_pipeline(config, needs_llm=True, fake_tts=True)
         pipeline.registry.initialize_if_missing(book_title=args.book_title, book_slug=args.book_slug)
-        pipeline.annotate_chapter(args.chapter)
+        pipeline.annotate_chapter(args.chapter, lock_registry=True)
+        return 0
+    if args.command == "build-global-registry":
+        config = PipelineConfig.from_env(book_root=args.book_root)
+        pipeline = _build_pipeline(config, needs_llm=True, fake_tts=True)
+        pipeline.registry.initialize_if_missing(book_title=args.book_title, book_slug=args.book_slug)
+        pipeline.build_global_registry(book_title=args.book_title)
         return 0
     if args.command == "build-tts-script":
         config = PipelineConfig.from_env(book_root=args.book_root)
@@ -111,6 +123,13 @@ def _build_pipeline(config: PipelineConfig, needs_llm: bool, fake_tts: bool) -> 
         annotation_service=AnnotationService(
             client=_build_llm_client(config) if needs_llm else _UnavailableJsonClient(),
             repair_retries=config.annotation_repair_retries,
+            failure_logger=FailureLogger(
+                config.debug_log_root,
+                context={"book_root": config.book_root},
+            ),
+        ),
+        global_registry_service=GlobalRegistryService(
+            client=_build_llm_client(config) if needs_llm else _UnavailableJsonClient(),
             failure_logger=FailureLogger(
                 config.debug_log_root,
                 context={"book_root": config.book_root},

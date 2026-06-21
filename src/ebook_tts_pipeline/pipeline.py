@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Callable, Dict, List, Optional
 
 from ebook_tts_pipeline.annotation.anthropic_client import AnnotationModelOutputError
+from ebook_tts_pipeline.annotation.global_registry import (
+    GlobalRegistryChapter,
+    GlobalRegistryService,
+)
 from ebook_tts_pipeline.annotation.merge import merge_annotation_windows
 from ebook_tts_pipeline.annotation.service import AnnotationService
 from ebook_tts_pipeline.annotation.validator import AnnotationValidationError, validate_annotation
@@ -28,6 +32,7 @@ class AudiobookPipeline:
         config: PipelineConfig,
         annotation_service: AnnotationService,
         tts_adapter: TtsAdapter,
+        global_registry_service: Optional[GlobalRegistryService] = None,
         tokenizer: Optional[Callable[[str], List[str]]] = None,
     ) -> None:
         self.config = config
@@ -35,18 +40,46 @@ class AudiobookPipeline:
         self.registry = RegistryManager(self.paths)
         self.segmenter = SentenceSegmenter(tokenizer=tokenizer)
         self.annotation_service = annotation_service
+        self.global_registry_service = global_registry_service
         self.tts_adapter = tts_adapter
 
     def segment_chapter(self, chapter: str) -> SentenceArtifact:
         return self.segmenter.segment_chapter(self.paths, chapter)
 
-    def annotate_chapter(self, chapter: str) -> AnnotationResult:
+    def build_global_registry(self, book_title: Optional[str] = None) -> int:
+        if self.global_registry_service is None:
+            raise RuntimeError("Global registry service is not configured.")
+        registry = self.registry.load()
+        title = book_title or str(registry.get("book", {}).get("title", "Untitled Book"))
+        chapters = [
+            GlobalRegistryChapter(
+                chapter=chapter_file.stem,
+                title=self._chapter_title(chapter_file),
+                text=chapter_file.read_text(encoding="utf-8", errors="replace"),
+            )
+            for chapter_file in sorted((self.paths.root / "chapters").glob("*.txt"))
+        ]
+        result = self.global_registry_service.discover_characters(
+            book_title=title,
+            registry=registry,
+            chapters=chapters,
+        )
+        self.registry.merge_global_characters("global_registry", result.characters)
+        return len(result.characters)
+
+    def annotate_chapter(self, chapter: str, lock_registry: bool = False) -> AnnotationResult:
         artifact = SentenceArtifact.from_dict(read_json(self.paths.sentence_artifact(chapter)))
         initial_known_names = self.registry.known_names()
         window_results: List[AnnotationResult] = []
 
         for window in build_llm_windows(artifact.sentences, self.config.max_llm_window_chars):
-            window_results.extend(self._annotate_sentences_with_fallback(chapter, window.sentences))
+            window_results.extend(
+                self._annotate_sentences_with_fallback(
+                    chapter,
+                    window.sentences,
+                    lock_registry=lock_registry,
+                )
+            )
 
         merged = merge_annotation_windows(window_results, self.registry.load())
         validate_annotation(
@@ -61,23 +94,33 @@ class AudiobookPipeline:
         self,
         chapter: str,
         sentences: List[Sentence],
+        lock_registry: bool = False,
     ) -> List[AnnotationResult]:
         try:
             result = self.annotation_service.annotate_window(
                 chapter=chapter,
                 sentences=sentences,
                 registry=self.registry.load(),
+                lock_registry=lock_registry,
             )
         except (AnnotationModelOutputError, AnnotationValidationError):
             if len(sentences) <= 1:
                 raise
             midpoint = len(sentences) // 2
             return (
-                self._annotate_sentences_with_fallback(chapter, sentences[:midpoint])
-                + self._annotate_sentences_with_fallback(chapter, sentences[midpoint:])
+                self._annotate_sentences_with_fallback(
+                    chapter,
+                    sentences[:midpoint],
+                    lock_registry=lock_registry,
+                )
+                + self._annotate_sentences_with_fallback(
+                    chapter,
+                    sentences[midpoint:],
+                    lock_registry=lock_registry,
+                )
             )
 
-        if result.new_characters:
+        if result.new_characters and not lock_registry:
             self.registry.add_new_characters(chapter, result.new_characters)
         return [result]
 
@@ -167,3 +210,10 @@ class AudiobookPipeline:
         annotation = self.annotate_chapter(chapter)
         self.prepare_voices_for_annotation(annotation)
         return self.synthesize_chapter(chapter, annotation)
+
+    def _chapter_title(self, chapter_file) -> str:
+        for line in chapter_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            title = " ".join(line.split())
+            if title:
+                return title[:120]
+        return chapter_file.stem

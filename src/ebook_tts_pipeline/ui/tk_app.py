@@ -67,6 +67,7 @@ class PrototypeTkApp:
         actions = ttk.Frame(top)
         actions.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(8, 0))
         ttk.Button(actions, text="Initialize Book", command=self.load_book).pack(side="left")
+        ttk.Button(actions, text="Build Global Registry", command=self.build_global_registry).pack(side="left", padx=4)
         ttk.Button(actions, text="Refresh", command=self.refresh).pack(side="left", padx=4)
         ttk.Button(actions, text="Toggle Registry", command=self.toggle_registry).pack(side="left", padx=4)
         ttk.Checkbutton(actions, text="Fake TTS", variable=self.fake_tts).pack(side="left", padx=8)
@@ -172,6 +173,14 @@ class PrototypeTkApp:
             return f"Initialized {len(result.chapters)} chapters."
 
         self._run_background("Initializing book...", work)
+
+    def build_global_registry(self) -> None:
+        def work() -> str:
+            self._sync_controller()
+            count = self.controller.build_global_registry()
+            return f"Global registry updated with {count} discovered characters."
+
+        self._run_background("Building global registry...", work)
 
     def refresh(self) -> None:
         self._sync_controller()

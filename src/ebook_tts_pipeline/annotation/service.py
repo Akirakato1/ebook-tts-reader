@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Set
 
 from ebook_tts_pipeline.annotation.anthropic_client import (
@@ -32,10 +33,12 @@ class AnnotationService:
         chapter: str,
         sentences: List[Sentence],
         registry: Dict,
+        lock_registry: bool = False,
     ) -> AnnotationResult:
-        prompt = render_annotation_prompt(chapter, sentences, registry)
+        prompt = render_annotation_prompt(chapter, sentences, registry, lock_registry=lock_registry)
         payload = self._complete_json(chapter, sentences, "annotation", prompt)
         result = self._annotation_result_from_payload(chapter, sentences, "annotation", prompt, payload)
+        result = _lock_annotation_result(result) if lock_registry else result
         expected = [sentence.idx for sentence in sentences]
         known_names = _known_names(registry)
 
@@ -71,6 +74,7 @@ class AnnotationService:
                     repair_prompt,
                     payload,
                 )
+                result = _lock_annotation_result(result) if lock_registry else result
 
         return result
 
@@ -160,3 +164,13 @@ def _known_names(registry: Dict) -> Set[str]:
             names.add(display_name)
         names.update(str(alias) for alias in character.get("aliases", []))
     return names
+
+
+def _lock_annotation_result(result: AnnotationResult) -> AnnotationResult:
+    if not result.new_characters:
+        return result
+    return replace(
+        result,
+        new_characters=[],
+        proposed_new_characters=list(result.proposed_new_characters) + list(result.new_characters),
+    )

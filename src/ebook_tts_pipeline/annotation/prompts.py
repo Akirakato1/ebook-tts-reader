@@ -12,16 +12,28 @@ SYSTEM_PROMPT = (
 )
 
 
-def render_annotation_prompt(chapter: str, sentences: List[Sentence], registry: Dict) -> str:
+def render_annotation_prompt(
+    chapter: str,
+    sentences: List[Sentence],
+    registry: Dict,
+    lock_registry: bool = False,
+) -> str:
     rendered_sentences = "\n".join(f"[{sentence.idx}] {sentence.text}" for sentence in sentences)
     allowed_indexes = [sentence.idx for sentence in sentences]
     known_characters = registry.get("characters", {})
+    character_schema = (
+        "- new_characters: []\n"
+        "- proposed_new_characters: list of {name, profile} for any speaker not in the locked registry.\n"
+        "- Do not add to new_characters when the registry is locked.\n"
+        if lock_registry
+        else "- new_characters: list of {name, profile}\n"
+    )
     return (
         f"Known characters: {json.dumps(known_characters, ensure_ascii=False)}\n\n"
         f"Chapter: {chapter}\n\n"
         f"Chapter text:\n{rendered_sentences}\n\n"
         "Return JSON with these keys:\n"
-        "- new_characters: list of {name, profile}\n"
+        f"{character_schema}"
         "- Do not include Narrator in new_characters.\n"
         "- Every new_characters item must include profile.\n"
         "- profile must be a JSON object, never null, never a string.\n"
