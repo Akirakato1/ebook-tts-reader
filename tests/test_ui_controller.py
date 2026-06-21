@@ -198,6 +198,7 @@ def test_controller_registry_forms_expose_only_safe_editable_fields(tmp_path):
     assert "person_id" in readonly_keys
     assert "seed" in readonly_keys
     assert "display_name" in editable_keys
+    assert "age" not in editable_keys
     assert "age_stage" in editable_keys
     assert "personality" in editable_keys
     assert "occupation" in editable_keys
@@ -286,7 +287,8 @@ def test_controller_saves_registry_form_values_and_refreshes_voice_profile(tmp_p
 
     registry = read_json(paths.registry)
     character = registry["characters"]["callie_adult"]
-    assert character["age"] == 14
+    assert "age" not in character
+    assert "age" not in character["identity_profile"]
     assert character["age_stage"] == "teen"
     assert character["display_name"] == "Callie"
     assert character["identity_profile"]["personality"] == ["guarded", "timid"]

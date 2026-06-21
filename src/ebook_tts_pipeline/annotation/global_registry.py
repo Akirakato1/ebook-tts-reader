@@ -90,7 +90,7 @@ def render_global_registry_prompt(
         "Create separate profiles only when the same person appears at a different life stage: child, teen, adult, or elder.\n"
         "Return JSON with exactly this shape: {\"characters\":[{\"name\":str,\"profile\":object,\"evidence\":list}]}.\n"
         "Each profile must include age_stage, gender, personality.\n"
-        "Profile optional fields: profile_id, person_id, age, race_or_ethnicity, accent, occupation, aliases.\n"
+        "Profile optional fields: profile_id, person_id, race_or_ethnicity, accent, occupation, aliases.\n"
         "Keep personality to short trait adjectives useful for voice casting.\n"
         "Use race_or_ethnicity and accent only when explicit or strongly text-grounded; otherwise null or omit.\n"
         "Evidence should be compact chapter references and short identity notes.\n\n"

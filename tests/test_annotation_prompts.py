@@ -41,6 +41,7 @@ def test_annotation_prompt_uses_lean_character_profile_schema():
     )
 
     assert "occupation" in prompt
+    assert "person_id, age," not in prompt
     assert "timeline" not in prompt
     assert "same_person_as" not in prompt
     assert "narrative_notes" not in prompt

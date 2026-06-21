@@ -202,7 +202,6 @@ class PrototypeUiController:
                     ],
                     editable_fields=[
                         RegistryField("display_name", "Character Name", str(character.get("display_name", ""))),
-                        RegistryField("age", "Age", _field_text(character.get("age", identity.get("age")))),
                         RegistryField("age_stage", "Age Stage", str(character.get("age_stage", identity.get("age_stage", "")))),
                         RegistryField("gender", "Gender", str(identity.get("gender", ""))),
                         RegistryField("personality", "Personality", ", ".join(_string_list(identity.get("personality")))),
@@ -224,14 +223,12 @@ class PrototypeUiController:
         character = characters[role_id]
         identity = dict(character.get("identity_profile", character.get("character_profile", {})))
         display_name = values.get("display_name", str(character.get("display_name", role_id))).strip() or role_id
-        age = _parse_age(values.get("age", ""))
         age_stage = values.get("age_stage", str(identity.get("age_stage", "unknown"))).strip() or "unknown"
         gender = values.get("gender", str(identity.get("gender", "unknown"))).strip() or "unknown"
         personality = _split_csv(values.get("personality", ""))
 
         identity.update(
             {
-                "age": age,
                 "age_stage": age_stage,
                 "gender": gender,
                 "personality": personality,
@@ -241,7 +238,6 @@ class PrototypeUiController:
             }
         )
         character["display_name"] = display_name
-        character["age"] = age
         character["age_stage"] = age_stage
         character["aliases"] = _split_csv(values.get("aliases", ""))
         character["identity_profile"] = identity
@@ -464,13 +460,6 @@ def _field_text(value: Any) -> str:
 def _blank_to_none(value: str) -> Optional[str]:
     text = str(value).strip()
     return text or None
-
-
-def _parse_age(value: str) -> Any:
-    text = str(value).strip()
-    if not text:
-        return None
-    return int(text) if text.isdigit() else text
 
 
 def _split_csv(value: Any) -> List[str]:

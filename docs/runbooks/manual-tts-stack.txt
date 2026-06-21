@@ -97,13 +97,13 @@ The registry treats age-stage versions of the same underlying person as separate
   trevor_child
   andrew_adult
 
-Use the same person_id to link those profiles when the text supports that they are the same underlying person. Do not force one voice profile across life stages; age, experience, and personality changes should produce separate default/internal voice files.
+Use the same person_id to link those profiles when the text supports that they are the same underlying person. Do not force one voice profile across life stages; age stage, experience, and personality changes should produce separate default/internal voice files.
 
 New-character LLM output should be compact. It should provide identity fields only:
 
-  age, age_stage, gender, personality, race_or_ethnicity, accent, occupation, person_id, profile_id, aliases
+  age_stage, gender, personality, race_or_ethnicity, accent, occupation, person_id, profile_id, aliases
 
-The registry generates the Qwen voice prompt from age, age stage, gender, personality, occupation, and text-grounded race/accent. Relationship facts and plot facts should not be stored in the registry or qwen_instruct.
+The registry generates the Qwen voice prompt from age stage, gender, personality, occupation, and text-grounded race/accent. Relationship facts and plot facts should not be stored in the registry or qwen_instruct.
 
 If abuse, grooming, exploitation, coercion, or child sexual abuse appears in the source text, never describe it as romance or consensual adult intimacy. Keep that context out of voice/profile fields unless a future safety-specific UI field is added.
 

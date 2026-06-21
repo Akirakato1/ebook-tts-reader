@@ -40,7 +40,7 @@ def render_annotation_prompt(
         '- Example profile object: {"age_stage":"adult","gender":"female","personality":["guarded"]}.\n'
         "- For each new character, profile must be compact and only contain identity fields needed for future voice/profile decisions.\n"
         "- profile required fields: age_stage, gender, personality.\n"
-        "- profile optional fields: profile_id, person_id, age, race_or_ethnicity, accent, occupation, aliases.\n"
+        "- profile optional fields: profile_id, person_id, race_or_ethnicity, accent, occupation, aliases.\n"
         '- age_stage must be one of "child", "teen", "adult", "elder", or "unknown".\n'
         "- personality must be a short list of trait adjectives, such as shy, bright, charismatic, timid, guarded, hardened.\n"
         "- Use race_or_ethnicity and accent only when explicit or strongly text-grounded; otherwise use null or omit.\n"

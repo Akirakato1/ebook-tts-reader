@@ -28,6 +28,8 @@ def test_registry_adds_new_character_with_stable_voice_identity(tmp_path):
     assert elena["profile_id"] == "elena_adult"
     assert elena["person_id"] == "elena"
     assert elena["age_stage"] == "adult"
+    assert "age" not in elena
+    assert "age" not in elena["identity_profile"]
     assert set(elena["voice_variants"]) == {"default", "internal"}
     assert elena["voice_variants"]["default"]["role_id"] == "elena_adult_default"
     assert elena["voice_variants"]["internal"]["role_id"] == "elena_adult_internal"
@@ -106,7 +108,8 @@ def test_registry_creates_distinct_age_stage_profiles_for_same_person(tmp_path):
     teen = registry["characters"]["callie_teen"]
     adult = registry["characters"]["callie_adult"]
     assert teen["person_id"] == adult["person_id"] == "callie"
-    assert teen["age"] == 14
+    assert "age" not in teen
+    assert "age" not in teen["identity_profile"]
     assert "narrative_notes" not in teen
     assert "timeline" not in teen
     assert "same_person_as" not in adult

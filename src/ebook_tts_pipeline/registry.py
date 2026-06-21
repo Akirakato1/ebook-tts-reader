@@ -14,6 +14,7 @@ from ebook_tts_pipeline.voice_identity import (
 )
 
 DEPRECATED_CHARACTER_FIELDS = (
+    "age",
     "timeline",
     "same_person_as",
     "character_profile",
@@ -290,7 +291,6 @@ class RegistryManager:
                 "profile_id": role_id,
                 "person_id": profile["person_id"],
                 "display_name": name,
-                "age": profile.get("age"),
                 "age_stage": profile["age_stage"],
                 "aliases": profile["aliases"],
                 "identity_profile": profile["identity_profile"],
@@ -359,7 +359,6 @@ def normalize_character_profile(name: str, raw_profile: Any) -> Dict[str, Any]:
     profile_id = profile_id_for_character(name, {**profile, "person_id": person_id, "age_stage": age_stage})
     personality = _string_list(profile.get("personality"))
     identity_profile = {
-        "age": profile.get("age"),
         "age_stage": age_stage,
         "gender": gender,
         "personality": personality,
@@ -375,7 +374,6 @@ def normalize_character_profile(name: str, raw_profile: Any) -> Dict[str, Any]:
     return {
         "profile_id": profile_id,
         "person_id": person_id,
-        "age": profile.get("age"),
         "age_stage": age_stage,
         "aliases": _dedupe_preserving_order(aliases),
         "identity_profile": identity_profile,
@@ -416,7 +414,7 @@ def _merge_character_record(
         _string_list(existing_identity.get("personality")) + _string_list(incoming_identity.get("personality"))
     )
     merged_identity = dict(existing_identity)
-    for key in ("age", "age_stage", "gender", "race_or_ethnicity", "accent", "occupation"):
+    for key in ("age_stage", "gender", "race_or_ethnicity", "accent", "occupation"):
         incoming_value = incoming_identity.get(key)
         existing_value = merged_identity.get(key)
         if existing_value in (None, "", "unknown") and incoming_value not in (None, "", "unknown"):
@@ -435,6 +433,9 @@ def _merge_character_record(
 def prune_deprecated_character_fields(character: Dict[str, Any]) -> None:
     for key in DEPRECATED_CHARACTER_FIELDS:
         character.pop(key, None)
+    identity = character.get("identity_profile")
+    if isinstance(identity, dict):
+        identity.pop("age", None)
 
 
 def prune_deprecated_registry_fields(registry: Dict[str, Any]) -> None:
@@ -475,7 +476,6 @@ def _refresh_record_voice_profiles(book_slug: str, record: Dict[str, Any]) -> No
 
 def build_compact_voice_profile(display_name: str, profile: Dict[str, Any]) -> Dict[str, str]:
     identity = dict(profile.get("identity_profile", profile))
-    age = identity.get("age")
     age_stage = str(identity.get("age_stage", "unknown")).replace("_", " ")
     gender = str(identity.get("gender", "unknown"))
     personality = _string_list(identity.get("personality"))
@@ -483,8 +483,6 @@ def build_compact_voice_profile(display_name: str, profile: Dict[str, Any]) -> D
     race_or_ethnicity = _nullable_string(identity.get("race_or_ethnicity"))
 
     age_gender_parts: List[str] = []
-    if age not in (None, ""):
-        age_gender_parts.append(f"{age}-year-old")
     if age_stage != "unknown":
         age_gender_parts.append(age_stage)
     if gender != "unknown":

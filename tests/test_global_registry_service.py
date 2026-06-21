@@ -104,6 +104,7 @@ def test_global_registry_prompt_uses_minimal_character_summaries():
     assert '"role_id":' not in prompt
     assert '"profile_id":' not in prompt
     assert '"person_id":' not in prompt
+    assert '"age":' not in prompt
     assert '"aliases":' not in prompt
     assert '"same_person_as":' not in prompt
     assert "voice_variants" not in prompt
