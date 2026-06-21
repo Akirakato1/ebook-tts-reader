@@ -1,0 +1,33 @@
+from ebook_tts_pipeline.annotation.prompts import render_annotation_prompt
+from ebook_tts_pipeline.domain import Sentence
+
+
+def test_annotation_prompt_requires_profile_object_for_new_characters():
+    prompt = render_annotation_prompt(
+        "chapter_001",
+        [Sentence(idx=0, text="Hello.")],
+        {"characters": {}},
+    )
+
+    assert "profile must be a JSON object, never null, never a string" in prompt
+
+
+def test_annotation_prompt_requires_one_script_row_per_sentence():
+    prompt = render_annotation_prompt(
+        "chapter_001",
+        [Sentence(idx=0, text='"Hello." "Hi." She waved.')],
+        {"characters": {}},
+    )
+
+    assert "Never emit multiple script rows for the same sentence_idx" in prompt
+    assert "choose the first or primary speaker" in prompt
+
+
+def test_annotation_prompt_rejects_numbered_person_ids():
+    prompt = render_annotation_prompt(
+        "chapter_001",
+        [Sentence(idx=0, text="Callie waited.")],
+        {"characters": {}},
+    )
+
+    assert "Do not append chapter, window, or sentence numbers to person_id or profile_id" in prompt

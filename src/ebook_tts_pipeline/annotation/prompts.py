@@ -23,6 +23,9 @@ def render_annotation_prompt(chapter: str, sentences: List[Sentence], registry: 
         "Return JSON with these keys:\n"
         "- new_characters: list of {name, profile}\n"
         "- Do not include Narrator in new_characters.\n"
+        "- Every new_characters item must include profile.\n"
+        "- profile must be a JSON object, never null, never a string.\n"
+        '- Example profile object: {"age_stage":"adult","gender":"female","personality":["guarded"]}.\n'
         "- For each new character, profile must be compact and only contain identity fields needed for future voice/profile decisions.\n"
         "- profile required fields: age_stage, gender, personality.\n"
         "- profile optional fields: profile_id, person_id, age, race_or_ethnicity, accent, timeline, aliases, same_person_as, narrative_notes.\n"
@@ -33,6 +36,7 @@ def render_annotation_prompt(chapter: str, sentences: List[Sentence], registry: 
         "- Put relationship or abuse context only in narrative_notes when needed for disambiguation or safety.\n"
         "- Never frame grooming, exploitation, coercion, or child abuse as romance or consensual adult intimacy.\n"
         "- If the same underlying person appears at a different life stage, create a distinct profile_id such as callie_teen, callie_adult, trevor_child, or andrew_adult, and reuse the same person_id.\n"
+        "- Do not append chapter, window, or sentence numbers to person_id or profile_id; use stable identity names like callie, callie_teen, or trevor_child.\n"
         "- Use the age-stage profile name in roles when needed to avoid ambiguity, such as Callie teen rather than Callie.\n"
         "- roles: list of role names appearing in this window\n"
         '- Use exactly "Narrator" for narration, not "narrator" or another variant.\n'
@@ -40,6 +44,8 @@ def render_annotation_prompt(chapter: str, sentences: List[Sentence], registry: 
         "- script: list of [role_idx, type_idx, sentence_idx]\n"
         f"- Allowed sentence_idx values: {json.dumps(allowed_indexes)}\n"
         f"- script must contain exactly {len(sentences)} rows, one for each allowed sentence_idx.\n"
+        "- Never emit multiple script rows for the same sentence_idx, even if one sentence contains multiple quoted speakers.\n"
+        "- For mixed-speaker sentence records, choose the first or primary speaker for the whole sentence.\n"
         "Every sentence index in the input must appear exactly once.\n"
         "Do not wrap the JSON in Markdown code fences."
     )

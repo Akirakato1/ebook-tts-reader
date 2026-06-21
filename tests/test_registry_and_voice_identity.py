@@ -1,6 +1,6 @@
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
-from ebook_tts_pipeline.registry import RegistryManager
+from ebook_tts_pipeline.registry import RegistryManager, resolve_effective_voice
 
 
 def test_registry_adds_new_character_with_stable_voice_identity(tmp_path):
@@ -141,3 +141,29 @@ def test_registry_rejects_alias_collision(tmp_path):
         assert "collides with existing character or alias" in str(exc)
     else:
         raise AssertionError("Expected alias collision")
+
+
+def test_resolve_effective_voice_matches_unique_short_display_name():
+    registry = {
+        "book": {"slug": "demo"},
+        "narrator": {"role_id": "narrator", "display_name": "Narrator"},
+        "characters": {
+            "buddy_waleski_adult": {
+                "role_id": "buddy_waleski_adult",
+                "display_name": "Buddy Waleski",
+                "aliases": [],
+                "voice_variants": {
+                    "default": {
+                        "role_id": "buddy_waleski_adult_default",
+                        "display_name": "Buddy Waleski_default",
+                        "voice_profile": {"description": "adult male", "qwen_instruct": "adult male"},
+                        "voice_config_path": None,
+                    }
+                },
+            }
+        },
+    }
+
+    effective = resolve_effective_voice(registry, "Buddy", "dialogue")
+
+    assert effective["role_id"] == "buddy_waleski_adult_default"

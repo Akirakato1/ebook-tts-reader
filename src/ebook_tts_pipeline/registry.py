@@ -116,22 +116,17 @@ def resolve_effective_voice(
         variant_match = _matching_variant(character, normalized)
         if normalized in direct_names or variant_match:
             variant_key = variant_match or voice_variant_for_type(speech_type)
-            variant = character.get("voice_variants", {}).get(variant_key)
-            if variant:
-                return {
-                    "character": str(character.get("display_name", role_name)),
-                    "role": str(variant.get("display_name", role_name)),
-                    "role_id": str(variant.get("role_id", character.get("role_id", role_name))),
-                    "voice_variant": variant_key,
-                    "voice_record": variant,
-                }
-            return {
-                "character": str(character.get("display_name", role_name)),
-                "role": str(character.get("display_name", role_name)),
-                "role_id": str(character.get("role_id", role_name)),
-                "voice_variant": None,
-                "voice_record": character,
-            }
+            return _effective_voice_for_character(character, variant_key, role_name)
+
+    short_matches = [
+        character
+        for character in registry.get("characters", {}).values()
+        if normalize_name(_first_display_token(str(character.get("display_name", "")))) == normalized
+    ]
+    if len(short_matches) == 1:
+        character = short_matches[0]
+        ensure_character_voice_variants(book_slug, character)
+        return _effective_voice_for_character(character, voice_variant_for_type(speech_type), role_name)
 
     raise ValueError(f"No registry record exists for annotated role: {role_name}")
 
@@ -150,6 +145,37 @@ def _internal_voice_profile(display_name: str, base_voice: Dict[str, Any]) -> Di
             "and less projected. Do not whisper unless the text itself implies whispering."
         ).strip(),
     }
+
+
+def _effective_voice_for_character(
+    character: Dict[str, Any],
+    variant_key: str,
+    fallback_role: str,
+) -> Dict[str, Any]:
+    variant = character.get("voice_variants", {}).get(variant_key)
+    if variant:
+        return {
+            "character": str(character.get("display_name", fallback_role)),
+            "role": str(variant.get("display_name", fallback_role)),
+            "role_id": str(variant.get("role_id", character.get("role_id", fallback_role))),
+            "voice_variant": variant_key,
+            "voice_record": variant,
+        }
+    return {
+        "character": str(character.get("display_name", fallback_role)),
+        "role": str(character.get("display_name", fallback_role)),
+        "role_id": str(character.get("role_id", fallback_role)),
+        "voice_variant": None,
+        "voice_record": character,
+    }
+
+
+def _first_display_token(display_name: str) -> str:
+    parts = display_name.split()
+    if not parts:
+        return ""
+    token = parts[0].strip(".,;:!?")
+    return token if len(normalize_name(token)) > 2 else ""
 
 
 def _character_lookup_names(character: Dict[str, Any], include_display_name: bool = True) -> Set[str]:
