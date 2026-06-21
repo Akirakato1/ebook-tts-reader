@@ -78,13 +78,12 @@ def render_global_registry_prompt(
     known_characters = compact_registry_for_global_prompt(registry)
     return (
         f"Book title: {book_title}\n\n"
-        "Existing registry (compact identity only): "
+        "Existing character summaries: "
         f"{json.dumps(known_characters, ensure_ascii=False, separators=(',', ':'))}\n\n"
         "Build a canonical character registry for audiobook voice casting.\n"
-        "Existing registry is authoritative. Do not recreate characters already represented by role_id, "
-        "display_name, aliases, profile_id, or person_id.\n"
-        "Return only new characters or genuinely updated existing characters found in this chapter window; "
-        "do not echo unchanged registry records.\n"
+        "Existing registry is authoritative. Do not recreate characters already represented in the summaries.\n"
+        "Return only new characters found in this chapter window; do not return updates to existing characters "
+        "or echo unchanged registry records.\n"
         "Do not produce sentence-level annotation or script rows.\n"
         "Merge aliases that clearly refer to the same person, such as first name, full name, title, or nickname.\n"
         "Create separate profiles only when the same person appears at a different life stage: child, teen, adult, or elder.\n"
@@ -99,8 +98,8 @@ def render_global_registry_prompt(
     )
 
 
-def compact_registry_for_global_prompt(registry: Dict[str, Any]) -> Dict[str, Any]:
-    compact: Dict[str, Any] = {}
+def compact_registry_for_global_prompt(registry: Dict[str, Any]) -> List[Dict[str, str]]:
+    compact: List[Dict[str, str]] = []
     characters = registry.get("characters", {})
     if not isinstance(characters, dict):
         return compact
@@ -110,41 +109,73 @@ def compact_registry_for_global_prompt(registry: Dict[str, Any]) -> Dict[str, An
             continue
         compact_record = _compact_character_record(str(role_id), record)
         if compact_record:
-            compact[str(role_id)] = compact_record
+            compact.append(compact_record)
     return compact
 
 
-def _compact_character_record(role_id: str, record: Dict[str, Any]) -> Dict[str, Any]:
+def _compact_character_record(role_id: str, record: Dict[str, Any]) -> Dict[str, str]:
     identity = _dict_value(record.get("identity_profile"))
     character_profile = _dict_value(record.get("character_profile"))
-    compact: Dict[str, Any] = {}
+    name = str(_first_present(record.get("display_name"), role_id)).strip()
+    age_stage = str(
+        _first_present(record.get("age_stage"), identity.get("age_stage"), character_profile.get("age_stage"), "unknown")
+    ).strip()
+    return {
+        "name": name,
+        "age_stage": age_stage,
+        "description": _character_description(record, identity, character_profile),
+    }
 
-    for key in ("role_id", "profile_id", "person_id", "display_name"):
-        _set_if_present(compact, key, _first_present(record.get(key), role_id if key == "role_id" else None))
 
-    for key in ("age", "age_stage", "gender", "race_or_ethnicity", "accent", "timeline"):
-        _set_if_present(
-            compact,
-            key,
-            _first_present(record.get(key), identity.get(key), character_profile.get(key)),
-        )
-
-    aliases = _compact_string_list(record.get("aliases"), max_items=12)
-    if aliases:
-        compact["aliases"] = aliases
-
-    same_person_as = _compact_string_list(record.get("same_person_as"), max_items=8)
-    if same_person_as:
-        compact["same_person_as"] = same_person_as
-
+def _character_description(
+    record: Dict[str, Any],
+    identity: Dict[str, Any],
+    character_profile: Dict[str, Any],
+) -> str:
+    age = _first_present(record.get("age"), identity.get("age"), character_profile.get("age"))
+    age_stage = str(
+        _first_present(record.get("age_stage"), identity.get("age_stage"), character_profile.get("age_stage"), "")
+    ).replace("_", " ")
+    gender = str(_first_present(identity.get("gender"), character_profile.get("gender"), "")).replace("_", " ")
     personality = _compact_string_list(
         _first_present(identity.get("personality"), character_profile.get("personality")),
         max_items=5,
     )
-    if personality:
-        compact["personality"] = personality
+    race_or_ethnicity = _first_present(identity.get("race_or_ethnicity"), character_profile.get("race_or_ethnicity"))
+    accent = _first_present(identity.get("accent"), character_profile.get("accent"))
 
-    return compact
+    identity_parts: List[str] = []
+    if age not in (None, ""):
+        identity_parts.append(f"{age}-year-old")
+    if age_stage:
+        identity_parts.append(age_stage)
+    if gender:
+        identity_parts.append(gender)
+
+    description_parts = [" ".join(identity_parts).strip()]
+    if personality:
+        description_parts.append(", ".join(personality))
+    if race_or_ethnicity:
+        description_parts.append(str(race_or_ethnicity))
+    if accent:
+        description_parts.append(f"{accent} accent")
+
+    description = "; ".join(part for part in description_parts if part).strip()
+    if description:
+        return description
+    return _fallback_voice_description(record)
+
+
+def _fallback_voice_description(record: Dict[str, Any]) -> str:
+    voice_profile = _dict_value(record.get("voice_profile"))
+    if voice_profile.get("description"):
+        return str(voice_profile["description"]).strip()
+    variants = _dict_value(record.get("voice_variants"))
+    default_variant = _dict_value(variants.get("default"))
+    default_profile = _dict_value(default_variant.get("voice_profile"))
+    if default_profile.get("description"):
+        return str(default_profile["description"]).strip()
+    return "unknown"
 
 
 def _dict_value(value: Any) -> Dict[str, Any]:
@@ -156,11 +187,6 @@ def _first_present(*values: Any) -> Any:
         if value not in (None, "", [], {}):
             return value
     return None
-
-
-def _set_if_present(target: Dict[str, Any], key: str, value: Any) -> None:
-    if value not in (None, "", [], {}):
-        target[key] = value
 
 
 def _compact_string_list(value: Any, max_items: int) -> List[str]:

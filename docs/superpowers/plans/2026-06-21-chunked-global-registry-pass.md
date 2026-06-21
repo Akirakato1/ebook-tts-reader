@@ -100,7 +100,7 @@ Expected: all tests pass.
 
 - [ ] **Step 1: Write the failing test**
 
-Assert that the prompt receives a compact identity-only registry with ids, names, aliases, age, gender, and personality, while omitting `voice_variants`, `qwen_instruct`, hashes, old evidence, and narrative notes.
+Assert that the prompt receives existing characters as minimal summaries with only `name`, `age_stage`, and `description`, while omitting ids, aliases, `voice_variants`, `qwen_instruct`, hashes, old evidence, and narrative notes.
 
 - [ ] **Step 2: Run the test and see it fail**
 
@@ -109,7 +109,7 @@ Expected: fail because the prompt currently serializes full saved character reco
 
 - [ ] **Step 3: Implement compact projection**
 
-Add `compact_registry_for_global_prompt` and use it in `render_global_registry_prompt`. Also instruct the model to return only new or genuinely updated characters for the current chapter window.
+Add `compact_registry_for_global_prompt` and use it in `render_global_registry_prompt`. Also instruct the model to return only new characters for the current chapter window, never updates to existing characters.
 
 - [ ] **Step 4: Verify full suite**
 

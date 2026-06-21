@@ -35,11 +35,12 @@ def test_render_global_registry_prompt_requests_canonical_characters_only():
     assert "Do not produce sentence-level annotation" in prompt
     assert "Existing registry is authoritative" in prompt
     assert "Do not recreate" in prompt
-    assert "Return only new characters or genuinely updated existing characters" in prompt
+    assert "Return only new characters" in prompt
+    assert "do not return updates to existing characters" in prompt
     assert "Akari Nakayama waved" in prompt
 
 
-def test_global_registry_prompt_uses_compact_identity_registry():
+def test_global_registry_prompt_uses_minimal_character_summaries():
     registry = {
         "characters": {
             "akari_adult": {
@@ -83,24 +84,22 @@ def test_global_registry_prompt_uses_compact_identity_registry():
         chapters=[GlobalRegistryChapter(chapter="chapter_002", title="Next", text="Akari returned.")],
     )
 
-    assert compact == {
-        "akari_adult": {
-            "role_id": "akari_adult",
-            "profile_id": "akari_adult",
-            "person_id": "akari",
-            "display_name": "Akari Nakayama",
-            "age": 31,
+    assert compact == [
+        {
+            "name": "Akari Nakayama",
             "age_stage": "adult",
-            "gender": "female",
-            "aliases": ["Akari", "Ms. Nakayama"],
-            "same_person_as": ["Akari child"],
-            "personality": ["careful", "warm", "tired", "guarded", "precise"],
-            "accent": "Tokyo",
+            "description": "31-year-old adult female; careful, warm, tired, guarded, precise; Tokyo accent",
         }
-    }
-    assert "Existing registry (compact identity only)" in prompt
+    ]
+    assert "Existing character summaries" in prompt
     assert "Akari Nakayama" in prompt
     assert "qwen_instruct" not in prompt
+    assert '"role_id":' not in prompt
+    assert '"profile_id":' not in prompt
+    assert '"person_id":' not in prompt
+    assert '"aliases":' not in prompt
+    assert '"same_person_as":' not in prompt
+    assert '"gender":' not in prompt
     assert "voice_variants" not in prompt
     assert "voice_config_hash" not in prompt
     assert "global_evidence" not in prompt
