@@ -36,21 +36,13 @@ def validate_annotation(
 ) -> None:
     errors: List[str] = []
     expected = set(expected_sentence_indices)
-    actual = [row[2] for row in result.script]
+    valid_rows = [row for row in result.script if len(row) == 3]
+    actual = [row[2] for row in valid_rows]
     actual_set = set(actual)
 
     missing = sorted(expected - actual_set)
     extra = sorted(actual_set - expected)
     duplicates = sorted(index for index, count in Counter(actual).items() if count > 1)
-
-    if result.types != ALLOWED_TYPES:
-        errors.append(f"types must be exactly {ALLOWED_TYPES}")
-    if missing:
-        errors.append(f"missing sentence indexes: {missing}")
-    if extra:
-        errors.append(f"unknown sentence indexes: {extra}")
-    if duplicates:
-        errors.append(f"duplicate sentence indexes: {duplicates}")
 
     for row in result.script:
         if len(row) != 3:
@@ -62,9 +54,18 @@ def validate_annotation(
         if type_idx < 0 or type_idx >= len(result.types):
             errors.append(f"type index out of range: {type_idx}")
 
+    if result.types != ALLOWED_TYPES:
+        errors.append(f"types must be exactly {ALLOWED_TYPES}")
+    if missing:
+        errors.append(f"missing sentence indexes: {missing}")
+    if extra:
+        errors.append(f"unknown sentence indexes: {extra}")
+    if duplicates:
+        errors.append(f"duplicate sentence indexes: {duplicates}")
+
     if "narration" in result.types:
         narration_idx = result.types.index("narration")
-        if any(row[1] == narration_idx for row in result.script) and "Narrator" not in result.roles:
+        if any(row[1] == narration_idx for row in valid_rows) and "Narrator" not in result.roles:
             errors.append("roles must include Narrator when narration appears")
 
     normalized_known = {_normalize_name(name) for name in known_names}

@@ -55,6 +55,21 @@ def test_annotation_validator_rejects_duplicate_sentence_ids():
     assert "duplicate sentence indexes: [0]" in str(exc.value)
 
 
+def test_annotation_validator_rejects_short_script_row_without_index_error():
+    result = AnnotationResult(
+        new_characters=[],
+        roles=["Narrator"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 0)],
+    )
+
+    with pytest.raises(AnnotationValidationError) as exc:
+        validate_annotation(result, expected_sentence_indices=[0], known_names=set())
+
+    assert "script row must have 3 items" in str(exc.value)
+    assert "missing sentence indexes: [0]" in str(exc.value)
+
+
 def test_annotation_validator_rejects_new_character_alias_collision():
     result = AnnotationResult(
         new_characters=[
