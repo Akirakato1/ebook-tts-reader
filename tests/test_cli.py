@@ -53,7 +53,15 @@ def test_cli_has_discrete_pipeline_step_commands():
         ["prepare-voices", "--book-root", "books/demo", "--chapter", "chapter_001", "--fake-tts"]
     )
     synthesize = parser.parse_args(
-        ["synthesize-chapter", "--book-root", "books/demo", "--chapter", "chapter_001", "--fake-tts"]
+        [
+            "synthesize-chapter",
+            "--book-root",
+            "books/demo",
+            "--chapter",
+            "chapter_001",
+            "--fake-tts",
+            "--regenerate-voices",
+        ]
     )
 
     assert segment.command == "segment-chapter"
@@ -63,6 +71,7 @@ def test_cli_has_discrete_pipeline_step_commands():
     assert synthesize.command == "synthesize-chapter"
     assert synthesize.fake_tts is True
     assert synthesize.rebuild_tts_script is False
+    assert synthesize.regenerate_voices is True
 
 
 def test_cli_build_tts_script_uses_saved_annotation_without_audio(tmp_path):

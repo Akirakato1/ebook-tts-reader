@@ -57,7 +57,12 @@ def test_annotation_validator_rejects_duplicate_sentence_ids():
 
 def test_annotation_validator_rejects_new_character_alias_collision():
     result = AnnotationResult(
-        new_characters=[{"name": "Elena", "profile": {}, "voice": {}}],
+        new_characters=[
+            {
+                "name": "Elena",
+                "profile": {"age_stage": "adult", "gender": "female", "personality": ["soft"]},
+            }
+        ],
         roles=["Narrator", "Elena"],
         types=["narration", "dialogue", "thought"],
         script=[(0, 0, 0), (1, 1, 1)],
@@ -71,7 +76,12 @@ def test_annotation_validator_rejects_new_character_alias_collision():
 
 def test_annotation_validator_rejects_narrator_as_new_character():
     result = AnnotationResult(
-        new_characters=[{"name": "Narrator", "profile": {}, "voice": {}}],
+        new_characters=[
+            {
+                "name": "Narrator",
+                "profile": {"age_stage": "adult", "gender": "unknown", "personality": ["neutral"]},
+            }
+        ],
         roles=["Narrator"],
         types=["narration", "dialogue", "thought"],
         script=[(0, 0, 0)],
@@ -83,9 +93,9 @@ def test_annotation_validator_rejects_narrator_as_new_character():
     assert "collides with existing character or alias: Narrator" in str(exc.value)
 
 
-def test_annotation_validator_rejects_malformed_new_character_voice_profile():
+def test_annotation_validator_rejects_malformed_new_character_profile():
     result = AnnotationResult(
-        new_characters=[{"name": "Leigh", "profile": {}, "voice": "warm adult woman"}],
+        new_characters=[{"name": "Leigh", "profile": {"gender": "female"}}],
         roles=["Narrator", "Leigh"],
         types=["narration", "dialogue", "thought"],
         script=[(0, 0, 0), (1, 1, 1)],
@@ -94,4 +104,27 @@ def test_annotation_validator_rejects_malformed_new_character_voice_profile():
     with pytest.raises(AnnotationValidationError) as exc:
         validate_annotation(result, expected_sentence_indices=[0, 1], known_names={"Narrator"})
 
-    assert "new character voice must be an object: Leigh" in str(exc.value)
+    assert "new character profile.age_stage must be a non-empty string: Leigh" in str(exc.value)
+
+
+def test_annotation_validator_allows_same_display_name_with_distinct_age_stage_profile():
+    result = AnnotationResult(
+        new_characters=[
+            {
+                "name": "Callie",
+                "profile": {
+                    "profile_id": "callie_teen",
+                    "person_id": "callie",
+                    "age": 14,
+                    "age_stage": "teen",
+                    "gender": "female",
+                    "personality": ["guarded", "timid"],
+                },
+            }
+        ],
+        roles=["Narrator", "Callie teen"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 0, 0), (1, 1, 1)],
+    )
+
+    validate_annotation(result, expected_sentence_indices=[0, 1], known_names={"callie_adult"})

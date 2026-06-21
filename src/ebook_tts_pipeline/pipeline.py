@@ -63,7 +63,11 @@ class AudiobookPipeline:
         write_json_atomic(self.paths.annotation(chapter), merged.to_dict())
         return merged
 
-    def prepare_voices_for_annotation(self, annotation: AnnotationResult) -> None:
+    def prepare_voices_for_annotation(
+        self,
+        annotation: AnnotationResult,
+        force_regenerate: bool = False,
+    ) -> None:
         registry = self.registry.load()
         prepared_role_ids = set()
 
@@ -81,10 +85,12 @@ class AudiobookPipeline:
             voice_path = self.paths.voice_qvp(role_id)
             current_hash = voice_profile_hash(record)
             cached_hash = record.get("voice_config_hash")
-            should_generate = not voice_path.exists() or cached_hash != current_hash
+            should_generate = force_regenerate or not voice_path.exists() or cached_hash != current_hash
             if should_generate:
                 adapter_record = dict(record)
-                adapter_record["_force_regenerate"] = voice_path.exists() and cached_hash != current_hash
+                adapter_record["_force_regenerate"] = force_regenerate or (
+                    voice_path.exists() and cached_hash != current_hash
+                )
                 self.tts_adapter.ensure_voice(role_id, adapter_record, voice_path)
                 record["voice_config_hash"] = current_hash
 
@@ -126,14 +132,13 @@ class AudiobookPipeline:
             max_chars=self.config.max_tts_window_chars,
             max_roles=self.config.max_tts_roles,
         )
-        ordered_jobs = [job for window in windows for job in window.jobs]
         builder = ChapterAudioBuilder(
             tts_adapter=self.tts_adapter,
             pause_between_sentences_ms=self.config.pause_between_sentences_ms,
         )
-        return builder.build_chapter_audio(
+        return builder.build_chapter_audio_from_windows(
             chapter=chapter,
-            jobs=ordered_jobs,
+            job_windows=[window.jobs for window in windows],
             audio_path=self.paths.chapter_audio(chapter),
             timeline_path=self.paths.chapter_timeline(chapter),
         )

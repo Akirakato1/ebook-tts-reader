@@ -21,6 +21,7 @@ class PipelineConfig:
     qwen_device: str = "auto"
     qwen_precision: str = "bf16"
     qwen_attention: str = "auto"
+    qwen_batch_size: int = 8
     max_llm_window_chars: int = 48000
     max_tts_window_chars: int = 6000
     max_tts_roles: int = 8
@@ -40,6 +41,7 @@ class PipelineConfig:
             qwen_device=os.environ.get("EBOOK_TTS_QWEN_DEVICE", "auto"),
             qwen_precision=os.environ.get("EBOOK_TTS_QWEN_PRECISION", "bf16"),
             qwen_attention=os.environ.get("EBOOK_TTS_QWEN_ATTENTION", "auto"),
+            qwen_batch_size=int(os.environ.get("EBOOK_TTS_QWEN_BATCH_SIZE", "8")),
         )
 
     def require_anthropic_key(self) -> str:

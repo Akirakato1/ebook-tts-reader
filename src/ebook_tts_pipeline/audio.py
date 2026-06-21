@@ -22,7 +22,23 @@ class ChapterAudioBuilder:
         audio_path: Union[str, Path],
         timeline_path: Union[str, Path],
     ) -> Dict:
-        generated = self.tts_adapter.generate_sentences(jobs)
+        return self.build_chapter_audio_from_windows(
+            chapter=chapter,
+            job_windows=[jobs],
+            audio_path=audio_path,
+            timeline_path=timeline_path,
+        )
+
+    def build_chapter_audio_from_windows(
+        self,
+        chapter: str,
+        job_windows: List[List[Dict]],
+        audio_path: Union[str, Path],
+        timeline_path: Union[str, Path],
+    ) -> Dict:
+        generated = []
+        for jobs in job_windows:
+            generated.extend(self.tts_adapter.generate_sentences(jobs))
         if not generated:
             raise ValueError("Cannot build audio without sentence jobs.")
 

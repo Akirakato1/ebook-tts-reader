@@ -148,6 +148,7 @@ class QwenTtsAdapter:
         device: str = "auto",
         precision: str = "bf16",
         attention: str = "auto",
+        max_batch_size: int = 8,
     ) -> None:
         self.torch = torch_module if torch_module is not None else self._load_torch()
         self.model = model if model is not None else self._load_default_model(
@@ -159,6 +160,7 @@ class QwenTtsAdapter:
         )
         self.role_voice_paths = role_voice_paths or {}
         self.language = language
+        self.max_batch_size = max(1, int(max_batch_size))
 
     def ensure_voice(self, role_id: str, voice_record: Dict, voice_path: Path) -> Path:
         self.role_voice_paths.setdefault(role_id, voice_path)
@@ -208,6 +210,13 @@ class QwenTtsAdapter:
         return generated
 
     def _generate_role_batch(self, role: str, jobs: List[Dict]) -> List[GeneratedSentenceAudio]:
+        generated: List[GeneratedSentenceAudio] = []
+        for start in range(0, len(jobs), self.max_batch_size):
+            generated.extend(self._generate_role_chunk(role, jobs[start:start + self.max_batch_size]))
+            self._clear_device_cache()
+        return generated
+
+    def _generate_role_chunk(self, role: str, jobs: List[Dict]) -> List[GeneratedSentenceAudio]:
         voice_path = self.role_voice_paths[role]
         prompt = self.torch.load(voice_path, map_location="cpu", weights_only=False)
         wavs, sample_rate = self.model.generate_voice_clone(
@@ -234,6 +243,12 @@ class QwenTtsAdapter:
         import torch
 
         return torch
+
+    def _clear_device_cache(self) -> None:
+        if hasattr(self.torch, "cuda") and hasattr(self.torch.cuda, "empty_cache"):
+            self.torch.cuda.empty_cache()
+        if hasattr(self.torch, "xpu") and hasattr(self.torch.xpu, "empty_cache"):
+            self.torch.xpu.empty_cache()
 
     def _load_default_model(
         self,

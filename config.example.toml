@@ -5,6 +5,7 @@ qwen_model_root = "models/qwen-tts"
 qwen_device = "auto"
 qwen_precision = "bf16"
 qwen_attention = "auto"
+qwen_batch_size = 8
 max_llm_window_chars = 48000
 max_tts_window_chars = 6000
 max_tts_roles = 8

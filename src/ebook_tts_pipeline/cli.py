@@ -40,11 +40,13 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_voices = subparsers.add_parser("prepare-voices")
     _add_book_chapter_args(prepare_voices)
     prepare_voices.add_argument("--fake-tts", action="store_true")
+    prepare_voices.add_argument("--regenerate-voices", action="store_true")
 
     synthesize_chapter = subparsers.add_parser("synthesize-chapter")
     _add_book_chapter_args(synthesize_chapter)
     synthesize_chapter.add_argument("--fake-tts", action="store_true")
     synthesize_chapter.add_argument("--rebuild-tts-script", action="store_true")
+    synthesize_chapter.add_argument("--regenerate-voices", action="store_true")
     return parser
 
 
@@ -75,13 +77,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.command == "prepare-voices":
         config = PipelineConfig.from_env(book_root=args.book_root)
         pipeline = _build_pipeline(config, needs_llm=False, fake_tts=args.fake_tts)
-        pipeline.prepare_voices_for_annotation(_load_annotation(pipeline, args.chapter))
+        pipeline.prepare_voices_for_annotation(
+            _load_annotation(pipeline, args.chapter),
+            force_regenerate=args.regenerate_voices,
+        )
         return 0
     if args.command == "synthesize-chapter":
         config = PipelineConfig.from_env(book_root=args.book_root)
         pipeline = _build_pipeline(config, needs_llm=False, fake_tts=args.fake_tts)
         annotation = _load_annotation(pipeline, args.chapter)
-        pipeline.prepare_voices_for_annotation(annotation)
+        pipeline.prepare_voices_for_annotation(
+            annotation,
+            force_regenerate=args.regenerate_voices,
+        )
         if args.rebuild_tts_script or not pipeline.paths.tts_script(args.chapter).exists():
             pipeline.synthesize_chapter(args.chapter, annotation)
         else:
@@ -123,6 +131,7 @@ def _build_qwen_adapter(config: PipelineConfig) -> QwenTtsAdapter:
         device=config.qwen_device,
         precision=config.qwen_precision,
         attention=config.qwen_attention,
+        max_batch_size=config.qwen_batch_size,
     )
 
 

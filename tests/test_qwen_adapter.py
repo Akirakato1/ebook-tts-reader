@@ -19,7 +19,7 @@ class FakeQwenModel:
 
     def generate_voice_clone(self, text, language, voice_clone_prompt, **kwargs):
         self.voice_clone_calls.append({"text": text, "language": language, "prompt": voice_clone_prompt})
-        return [np.ones(50, dtype=np.float32), np.ones(25, dtype=np.float32)], 24000
+        return [np.ones(50 if index == 0 else 25, dtype=np.float32) for index, _ in enumerate(text)], 24000
 
 
 class FakeTorchStore:
@@ -89,6 +89,30 @@ def test_qwen_adapter_generates_sentence_audio_in_order(tmp_path):
 
     assert [item.sentence_idx for item in generated] == [0, 1]
     assert [len(item.samples) for item in generated] == [50, 25]
+
+
+def test_qwen_adapter_splits_large_same_role_batches(tmp_path):
+    model = FakeQwenModel()
+    torch_store = FakeTorchStore()
+    voice_path = tmp_path / "voices" / "narrator.qvp"
+    torch_store.save({"prompt": "saved"}, voice_path)
+    adapter = QwenTtsAdapter(
+        model=model,
+        torch_module=torch_store,
+        role_voice_paths={"Narrator": voice_path},
+        max_batch_size=2,
+    )
+
+    generated = adapter.generate_sentences(
+        [
+            {"sentence_idx": 0, "role": "Narrator", "type": "narration", "text": "One."},
+            {"sentence_idx": 1, "role": "Narrator", "type": "narration", "text": "Two."},
+            {"sentence_idx": 2, "role": "Narrator", "type": "narration", "text": "Three."},
+        ]
+    )
+
+    assert [call["text"] for call in model.voice_clone_calls] == [["One.", "Two."], ["Three."]]
+    assert [item.sentence_idx for item in generated] == [0, 1, 2]
 
 
 class RuntimeFakeModel:

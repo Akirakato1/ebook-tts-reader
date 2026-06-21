@@ -88,6 +88,25 @@ Consistency Rule
 ----------------
 For consistent character voices across chapters, reuse saved .qvp files. Do not regenerate a voice from only the text voice description unless the user intentionally wants a new voice.
 
+Character Profile Rule
+----------------------
+The registry treats age-stage versions of the same underlying person as separate character profiles. If the text reveals the same person as a child, teen, adult, or elder, create separate profile IDs such as:
+
+  callie_teen
+  callie_adult
+  trevor_child
+  andrew_adult
+
+Use the same person_id to link those profiles when the text supports that they are the same underlying person. Do not force one voice profile across life stages; age, experience, and personality changes should produce separate default/internal voice files.
+
+New-character LLM output should be compact. It should provide identity fields only:
+
+  age, age_stage, gender, personality, race_or_ethnicity, accent, timeline, person_id, profile_id, aliases, same_person_as, narrative_notes
+
+The registry generates the Qwen voice prompt from age, gender, personality, and text-grounded race/accent. Relationship facts and plot facts belong in narrative_notes, not in qwen_instruct.
+
+If abuse, grooming, exploitation, coercion, or child sexual abuse appears in the source text, never describe it as romance or consensual adult intimacy. Keep that context in narrative_notes only when it is needed for disambiguation or safety.
+
 Troubleshooting
 ---------------
 - Missing ANTHROPIC_API_KEY:
@@ -138,6 +157,7 @@ Optional environment overrides:
   $env:EBOOK_TTS_QWEN_DEVICE="cuda"
   $env:EBOOK_TTS_QWEN_PRECISION="bf16"
   $env:EBOOK_TTS_QWEN_ATTENTION="sdpa"
+  $env:EBOOK_TTS_QWEN_BATCH_SIZE="8"
 
 Download local Qwen model folders:
 
@@ -183,3 +203,7 @@ If the user edits annotation, sentence-role assignments, or sentence text, rebui
 To force synthesis to rebuild the TTS script from the current annotation in one command:
 
   ebook-tts synthesize-chapter --book-root books/demo --chapter chapter_001 --rebuild-tts-script
+
+To force voice `.qvp` regeneration from the current saved voice profiles:
+
+  ebook-tts synthesize-chapter --book-root books/demo --chapter chapter_001 --regenerate-voices

@@ -13,26 +13,32 @@ def test_registry_adds_new_character_with_stable_voice_identity(tmp_path):
         new_characters=[
             {
                 "name": "Elena",
-                "profile": {"age_range": "young adult", "gender": "female"},
-                "voice": {
-                    "description": "young woman, soft",
-                    "qwen_instruct": "A soft young adult female voice.",
+                "profile": {
+                    "age_stage": "adult",
+                    "gender": "female",
+                    "personality": ["soft", "hesitant"],
                 },
             }
         ],
     )
 
     registry = read_json(paths.registry)
-    elena = registry["characters"]["elena"]
+    elena = registry["characters"]["elena_adult"]
     assert elena["display_name"] == "Elena"
+    assert elena["profile_id"] == "elena_adult"
+    assert elena["person_id"] == "elena"
+    assert elena["age_stage"] == "adult"
     assert elena["first_seen"] == "chapter_001"
     assert set(elena["voice_variants"]) == {"default", "internal"}
-    assert elena["voice_variants"]["default"]["role_id"] == "elena_default"
-    assert elena["voice_variants"]["internal"]["role_id"] == "elena_internal"
+    assert elena["voice_variants"]["default"]["role_id"] == "elena_adult_default"
+    assert elena["voice_variants"]["internal"]["role_id"] == "elena_adult_internal"
     assert elena["voice_variants"]["default"]["voice_config_path"] is None
     assert elena["voice_variants"]["internal"]["voice_config_path"] is None
     assert isinstance(elena["voice_identity"]["seed"], int)
     assert elena["voice_identity"]["differentiators"]
+    voice_prompt = elena["voice_variants"]["default"]["voice_profile"]["qwen_instruct"]
+    assert "adult female" in voice_prompt
+    assert "soft, hesitant" in voice_prompt
     assert (
         elena["voice_variants"]["default"]["voice_profile"]["qwen_instruct"]
         != elena["voice_variants"]["internal"]["voice_profile"]["qwen_instruct"]
@@ -44,20 +50,63 @@ def test_similar_character_receives_different_voice_differentiator(tmp_path):
     manager = RegistryManager(paths)
     manager.initialize_if_missing(book_title="Demo Book", book_slug="demo")
     repeated = {
-        "profile": {"age_range": "young adult", "gender": "female"},
-        "voice": {
-            "description": "young woman, soft",
-            "qwen_instruct": "A soft young adult female voice.",
-        },
+        "profile": {"age_stage": "adult", "gender": "female", "personality": ["soft"]},
     }
 
     manager.add_new_characters(chapter="chapter_001", new_characters=[{"name": "Elena", **repeated}])
     manager.add_new_characters(chapter="chapter_002", new_characters=[{"name": "Mira", **repeated}])
 
     registry = read_json(paths.registry)
-    elena_voice = registry["characters"]["elena"]["voice_variants"]["default"]["voice_profile"]["qwen_instruct"]
-    mira_voice = registry["characters"]["mira"]["voice_variants"]["default"]["voice_profile"]["qwen_instruct"]
+    elena_voice = registry["characters"]["elena_adult"]["voice_variants"]["default"]["voice_profile"]["qwen_instruct"]
+    mira_voice = registry["characters"]["mira_adult"]["voice_variants"]["default"]["voice_profile"]["qwen_instruct"]
     assert elena_voice != mira_voice
+
+
+def test_registry_creates_distinct_age_stage_profiles_for_same_person(tmp_path):
+    paths = BookPaths(tmp_path / "demo")
+    manager = RegistryManager(paths)
+    manager.initialize_if_missing(book_title="Demo Book", book_slug="demo")
+
+    manager.add_new_characters(
+        chapter="interlude_001",
+        new_characters=[
+            {
+                "name": "Callie",
+                "profile": {
+                    "person_id": "callie",
+                    "age": 14,
+                    "age_stage": "teen",
+                    "gender": "female",
+                    "personality": ["guarded", "timid"],
+                    "timeline": "interlude_past",
+                    "narrative_notes": "Victim of grooming and exploitation; not a romance.",
+                },
+            },
+            {
+                "name": "Callie",
+                "profile": {
+                    "person_id": "callie",
+                    "age_stage": "adult",
+                    "gender": "female",
+                    "personality": ["hardened", "protective"],
+                    "timeline": "present",
+                    "same_person_as": ["callie_teen"],
+                },
+            },
+        ],
+    )
+
+    registry = read_json(paths.registry)
+    assert set(registry["characters"]) == {"callie_teen", "callie_adult"}
+    teen = registry["characters"]["callie_teen"]
+    adult = registry["characters"]["callie_adult"]
+    assert teen["person_id"] == adult["person_id"] == "callie"
+    assert teen["age"] == 14
+    assert teen["narrative_notes"] == "Victim of grooming and exploitation; not a romance."
+    assert adult["same_person_as"] == ["callie_teen"]
+    assert "grooming" not in teen["voice_variants"]["default"]["voice_profile"]["qwen_instruct"].lower()
+    assert "callie_teen_default" == teen["voice_variants"]["default"]["role_id"]
+    assert "callie_adult_default" == adult["voice_variants"]["default"]["role_id"]
 
 
 def test_registry_rejects_alias_collision(tmp_path):
@@ -84,8 +133,7 @@ def test_registry_rejects_alias_collision(tmp_path):
             new_characters=[
                 {
                     "name": "Lena",
-                    "profile": {},
-                    "voice": {"description": "x", "qwen_instruct": "x"},
+                    "profile": {"age_stage": "adult", "gender": "female", "personality": ["quiet"]},
                 }
             ],
         )

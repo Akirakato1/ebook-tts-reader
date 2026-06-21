@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import Counter
 from typing import Any, Dict, List, Set
 
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
@@ -37,6 +38,17 @@ def voice_profile_hash(voice_record: Dict[str, Any]) -> str:
 
 def voice_variant_for_type(speech_type: str) -> str:
     return "internal" if speech_type == "thought" else "default"
+
+
+def profile_id_for_character(name: str, profile: Dict[str, Any]) -> str:
+    explicit = str(profile.get("profile_id", "")).strip()
+    if explicit:
+        return slugify_name(explicit)
+    person_id = slugify_name(str(profile.get("person_id", "")).strip() or name)
+    age_stage = slugify_name(str(profile.get("age_stage", "")).strip() or "unknown")
+    if age_stage and age_stage != "unknown":
+        return f"{person_id}_{age_stage}"
+    return person_id
 
 
 def ensure_character_voice_variants(book_slug: str, character: Dict[str, Any]) -> None:
@@ -92,9 +104,15 @@ def resolve_effective_voice(
 
     book_slug = str(registry.get("book", {}).get("slug", "book"))
     normalized = normalize_name(role_name)
+    display_counts = Counter(
+        normalize_name(str(character.get("display_name", "")))
+        for character in registry.get("characters", {}).values()
+        if character.get("display_name")
+    )
     for character in registry.get("characters", {}).values():
         ensure_character_voice_variants(book_slug, character)
-        direct_names = _character_lookup_names(character)
+        include_display_name = display_counts[normalize_name(str(character.get("display_name", "")))] == 1
+        direct_names = _character_lookup_names(character, include_display_name=include_display_name)
         variant_match = _matching_variant(character, normalized)
         if normalized in direct_names or variant_match:
             variant_key = variant_match or voice_variant_for_type(speech_type)
@@ -134,11 +152,25 @@ def _internal_voice_profile(display_name: str, base_voice: Dict[str, Any]) -> Di
     }
 
 
-def _character_lookup_names(character: Dict[str, Any]) -> Set[str]:
+def _character_lookup_names(character: Dict[str, Any], include_display_name: bool = True) -> Set[str]:
     names = [
-        str(character.get("display_name", "")),
         str(character.get("role_id", "")),
         str(character.get("role_id", "")).replace("_", " "),
+        str(character.get("profile_id", "")),
+        str(character.get("profile_id", "")).replace("_", " "),
+    ]
+    if include_display_name:
+        names.append(str(character.get("display_name", "")))
+    names.extend(str(alias) for alias in character.get("aliases", []))
+    return {normalize_name(name) for name in names if name}
+
+
+def _lookup_names_for_collision(character: Dict[str, Any]) -> Set[str]:
+    names = [
+        str(character.get("role_id", "")),
+        str(character.get("role_id", "")).replace("_", " "),
+        str(character.get("profile_id", "")),
+        str(character.get("profile_id", "")).replace("_", " "),
     ]
     names.extend(str(alias) for alias in character.get("aliases", []))
     return {normalize_name(name) for name in names if name}
@@ -193,9 +225,7 @@ class RegistryManager:
         registry = self.load()
         names = {"Narrator"}
         for character in registry.get("characters", {}).values():
-            display_name = str(character.get("display_name", ""))
-            if display_name:
-                names.add(display_name)
+            names.update(str(name) for name in _lookup_names_for_collision(character))
             names.update(str(alias) for alias in character.get("aliases", []))
         return names
 
@@ -206,12 +236,15 @@ class RegistryManager:
 
         for character in new_characters:
             name = str(character["name"]).strip()
-            normalized = normalize_name(name)
-            if normalized in normalized_known:
-                raise ValueError(f"collides with existing character or alias: {name}")
-            role_id = slugify_name(name)
+            profile = normalize_character_profile(name, character.get("profile", {}))
+            role_id = str(profile["profile_id"])
+            collision_names = {normalize_name(name), normalize_name(role_id), normalize_name(role_id.replace("_", " "))}
+            collision_names.update(normalize_name(alias) for alias in profile["aliases"])
+            collision = sorted(collision_names & normalized_known)
+            if collision:
+                raise ValueError(f"collides with existing character or alias: {role_id}")
             differentiators = choose_differentiators(book_slug, role_id)
-            voice = dict(character["voice"])
+            voice = build_compact_voice_profile(name, profile)
             voice["qwen_instruct"] = append_differentiators(
                 str(voice["qwen_instruct"]),
                 differentiators,
@@ -219,9 +252,17 @@ class RegistryManager:
             seed = role_seed(book_slug, role_id)
             registry["characters"][role_id] = {
                 "role_id": role_id,
+                "profile_id": role_id,
+                "person_id": profile["person_id"],
                 "display_name": name,
-                "aliases": [],
-                "character_profile": character.get("profile", {}),
+                "age": profile.get("age"),
+                "age_stage": profile["age_stage"],
+                "timeline": profile.get("timeline"),
+                "same_person_as": profile["same_person_as"],
+                "aliases": profile["aliases"],
+                "identity_profile": profile["identity_profile"],
+                "character_profile": profile["identity_profile"],
+                "narrative_notes": profile.get("narrative_notes"),
                 "voice_identity": {
                     "seed": seed,
                     "differentiators": differentiators,
@@ -244,6 +285,103 @@ class RegistryManager:
                 },
                 "first_seen": chapter,
             }
-            normalized_known.add(normalized)
+            normalized_known.add(normalize_name(role_id))
+            normalized_known.add(normalize_name(role_id.replace("_", " ")))
+            normalized_known.update(normalize_name(alias) for alias in profile["aliases"])
 
         self.save(registry)
+
+
+def normalize_character_profile(name: str, raw_profile: Any) -> Dict[str, Any]:
+    profile = dict(raw_profile) if isinstance(raw_profile, dict) else {}
+    age_stage = str(profile.get("age_stage", "unknown")).strip().lower().replace(" ", "_") or "unknown"
+    gender = str(profile.get("gender", "unknown")).strip().lower() or "unknown"
+    person_id = slugify_name(str(profile.get("person_id", "")).strip() or name)
+    profile_id = profile_id_for_character(name, {**profile, "person_id": person_id, "age_stage": age_stage})
+    personality = _string_list(profile.get("personality"))
+    identity_profile = {
+        "age": profile.get("age"),
+        "age_stage": age_stage,
+        "gender": gender,
+        "personality": personality,
+        "race_or_ethnicity": _nullable_string(
+            profile.get("race_or_ethnicity", profile.get("race", profile.get("ethnicity")))
+        ),
+        "accent": _nullable_string(profile.get("accent")),
+    }
+    aliases = _string_list(profile.get("aliases"))
+    if age_stage != "unknown":
+        aliases.append(f"{name} {age_stage.replace('_', ' ')}")
+    return {
+        "profile_id": profile_id,
+        "person_id": person_id,
+        "age": profile.get("age"),
+        "age_stage": age_stage,
+        "timeline": _nullable_string(profile.get("timeline")),
+        "same_person_as": _string_list(profile.get("same_person_as")),
+        "aliases": _dedupe_preserving_order(aliases),
+        "identity_profile": identity_profile,
+        "narrative_notes": _nullable_string(profile.get("narrative_notes", profile.get("notes"))),
+    }
+
+
+def build_compact_voice_profile(display_name: str, profile: Dict[str, Any]) -> Dict[str, str]:
+    identity = dict(profile.get("identity_profile", profile))
+    age = identity.get("age")
+    age_stage = str(identity.get("age_stage", "unknown")).replace("_", " ")
+    gender = str(identity.get("gender", "unknown"))
+    personality = _string_list(identity.get("personality"))
+    accent = _nullable_string(identity.get("accent"))
+    race_or_ethnicity = _nullable_string(identity.get("race_or_ethnicity"))
+
+    age_gender_parts: List[str] = []
+    if age not in (None, ""):
+        age_gender_parts.append(f"{age}-year-old")
+    if age_stage != "unknown":
+        age_gender_parts.append(age_stage)
+    if gender != "unknown":
+        age_gender_parts.append(gender)
+    identity_phrase = " ".join(age_gender_parts).strip() or f"{display_name} voice"
+    personality_phrase = ", ".join(personality) if personality else "natural"
+
+    description_parts = [identity_phrase, personality_phrase]
+    if race_or_ethnicity:
+        description_parts.append(str(race_or_ethnicity))
+    if accent:
+        description_parts.append(f"{accent} accent")
+
+    qwen_parts = [f"A {identity_phrase} voice", f"{personality_phrase} personality"]
+    if accent:
+        qwen_parts.append(f"{accent} accent")
+    qwen_parts.append("clear natural audiobook delivery")
+    return {
+        "description": "; ".join(description_parts),
+        "qwen_instruct": "; ".join(qwen_parts) + ".",
+    }
+
+
+def _string_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _nullable_string(value: Any) -> Any:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _dedupe_preserving_order(values: List[str]) -> List[str]:
+    seen = set()
+    deduped = []
+    for value in values:
+        normalized = normalize_name(value)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            deduped.append(value)
+    return deduped
