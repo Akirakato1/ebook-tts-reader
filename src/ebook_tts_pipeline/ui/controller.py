@@ -18,6 +18,7 @@ from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.pipeline import AudiobookPipeline
 from ebook_tts_pipeline.registry import build_compact_voice_profile, prune_deprecated_registry_fields
+from ebook_tts_pipeline.registry import normalize_name
 from ebook_tts_pipeline.tts.fake import FakeTtsAdapter
 from ebook_tts_pipeline.tts.qwen_adapter import QwenTtsAdapter
 from ebook_tts_pipeline.voice_identity import append_differentiators
@@ -26,6 +27,7 @@ from ebook_tts_pipeline.voice_identity import append_differentiators
 class ChapterStage(str, Enum):
     RAW = "raw"
     SEGMENTED = "segmented"
+    ANNOTATION_REVIEW = "annotation_review"
     ANNOTATED = "annotated"
     SCRIPTED = "scripted"
     AUDIO = "audio"
@@ -62,6 +64,22 @@ class RegistryCharacterForm:
     title: str
     readonly_fields: List[RegistryField]
     editable_fields: List[RegistryField]
+
+
+@dataclass(frozen=True)
+class AgeStageOption:
+    age_stage: str
+    role_name: str
+    role_id: str
+
+
+@dataclass(frozen=True)
+class AnnotationAppearanceForm:
+    key: str
+    name: str
+    current_age_stage: str
+    current_role_name: str
+    age_stage_options: List[AgeStageOption]
 
 
 @dataclass(frozen=True)
@@ -157,6 +175,8 @@ class PrototypeUiController:
         if self.paths.tts_script(chapter).exists() and self.paths.qwen_script(chapter).exists():
             return ChapterStage.SCRIPTED
         if self.paths.annotation(chapter).exists():
+            if not self._annotation_is_approved(chapter):
+                return ChapterStage.ANNOTATION_REVIEW
             return ChapterStage.ANNOTATED
         if self.paths.sentence_artifact(chapter).exists():
             return ChapterStage.SEGMENTED
@@ -245,6 +265,108 @@ class PrototypeUiController:
         prune_deprecated_registry_fields(registry)
         write_json_atomic(self.paths.registry, registry)
 
+    def annotation_appearance_forms(self, chapter: str) -> List[AnnotationAppearanceForm]:
+        if not self.paths.annotation(chapter).exists() or not self.paths.registry.exists():
+            return []
+        annotation = self._load_annotation(chapter)
+        registry = read_json(self.paths.registry)
+        forms: List[AnnotationAppearanceForm] = []
+        seen_person_ids = set()
+
+        for role_name in annotation.roles:
+            if normalize_name(role_name) == normalize_name("Narrator"):
+                continue
+            match = _find_character_record_by_role_name(registry, role_name)
+            if match is None:
+                continue
+            _, record = match
+            person_id = str(record.get("person_id", "")).strip() or str(record.get("role_id", role_name))
+            if person_id in seen_person_ids:
+                continue
+            options = _age_stage_options_for_person(registry, person_id)
+            if not options:
+                continue
+            seen_person_ids.add(person_id)
+            forms.append(
+                AnnotationAppearanceForm(
+                    key=person_id,
+                    name=str(record.get("display_name", role_name)),
+                    current_age_stage=_character_age_stage(record),
+                    current_role_name=_annotation_role_name_for_record(record),
+                    age_stage_options=options,
+                )
+            )
+
+        return forms
+
+    def confirm_annotation_appearances(self, chapter: str, selections: Dict[str, str]) -> None:
+        if not self.paths.annotation(chapter).exists():
+            raise ValueError(f"Annotation does not exist for {chapter}.")
+        registry = read_json(self.paths.registry) if self.paths.registry.exists() else {}
+        annotation = self._load_annotation(chapter)
+        forms = self.annotation_appearance_forms(chapter)
+        option_by_person: Dict[str, Dict[str, AgeStageOption]] = {
+            form.key: {option.age_stage: option for option in form.age_stage_options}
+            for form in forms
+        }
+        selected_options: Dict[str, AgeStageOption] = {}
+
+        for form in forms:
+            selected_age_stage = selections.get(form.key, form.current_age_stage)
+            options = option_by_person[form.key]
+            if selected_age_stage not in options:
+                raise ValueError(
+                    f"Invalid age stage for {form.name}: {selected_age_stage}. "
+                    f"Choose one of {', '.join(options)}."
+                )
+            selected_options[form.key] = options[selected_age_stage]
+
+        old_roles = list(annotation.roles)
+        new_roles: List[str] = []
+        old_to_new_role_idx: Dict[int, int] = {}
+        for role_idx, role_name in enumerate(old_roles):
+            replacement = role_name
+            if normalize_name(role_name) != normalize_name("Narrator"):
+                match = _find_character_record_by_role_name(registry, role_name)
+                if match is not None:
+                    _, record = match
+                    person_id = str(record.get("person_id", "")).strip()
+                    if person_id in selected_options:
+                        replacement = selected_options[person_id].role_name
+            if replacement not in new_roles:
+                new_roles.append(replacement)
+            old_to_new_role_idx[role_idx] = new_roles.index(replacement)
+
+        rewritten = AnnotationResult(
+            new_characters=annotation.new_characters,
+            roles=new_roles,
+            types=annotation.types,
+            script=[
+                (old_to_new_role_idx[role_idx], type_idx, sentence_idx)
+                for role_idx, type_idx, sentence_idx in annotation.script
+            ],
+            proposed_new_characters=annotation.proposed_new_characters,
+        )
+        write_json_atomic(self.paths.annotation(chapter), rewritten.to_dict())
+        write_json_atomic(
+            self.paths.annotation_approval(chapter),
+            {
+                "chapter": chapter,
+                "approved": True,
+                "appearances": [
+                    {
+                        "person_id": form.key,
+                        "name": form.name,
+                        "age_stage": selected_options[form.key].age_stage,
+                        "role_name": selected_options[form.key].role_name,
+                    }
+                    for form in forms
+                ],
+            },
+        )
+        if new_roles != old_roles:
+            self._invalidate_downstream_artifacts(chapter)
+
     def load_epub(self, epub_path: Union[str, Path], title: str, slug: str) -> EpubExtractResult:
         self.paths.root.mkdir(parents=True, exist_ok=True)
         result = self.extractor.extract(epub_path, self.paths)
@@ -287,6 +409,13 @@ class PrototypeUiController:
             pipeline.synthesize_chapter_from_tts_script(chapter)
             return ChapterActionResult(chapter=chapter, stage=ChapterStage.AUDIO, message="Generated audio.")
 
+        if stage == ChapterStage.ANNOTATION_REVIEW:
+            return ChapterActionResult(
+                chapter=chapter,
+                stage=stage,
+                message="Review and confirm character appearances before generating scripts.",
+            )
+
         if stage == ChapterStage.ANNOTATED:
             pipeline = self._pipeline(needs_llm=False)
             pipeline.build_sentence_jobs(chapter, self._load_annotation(chapter))
@@ -296,7 +425,11 @@ class PrototypeUiController:
         if stage == ChapterStage.RAW:
             pipeline.segment_chapter(chapter)
         pipeline.annotate_chapter(chapter, lock_registry=True)
-        return ChapterActionResult(chapter=chapter, stage=ChapterStage.ANNOTATED, message="Annotated chapter.")
+        return ChapterActionResult(
+            chapter=chapter,
+            stage=ChapterStage.ANNOTATION_REVIEW,
+            message="Annotated chapter. Review character appearances before scripts.",
+        )
 
     def build_global_registry(self) -> int:
         pipeline = self._pipeline(needs_llm=True)
@@ -310,6 +443,25 @@ class PrototypeUiController:
 
     def _load_annotation(self, chapter: str) -> AnnotationResult:
         return AnnotationResult.from_dict(read_json(self.paths.annotation(chapter)))
+
+    def _annotation_is_approved(self, chapter: str) -> bool:
+        approval_path = self.paths.annotation_approval(chapter)
+        if not approval_path.exists():
+            return False
+        try:
+            return bool(read_json(approval_path).get("approved"))
+        except Exception:
+            return False
+
+    def _invalidate_downstream_artifacts(self, chapter: str) -> None:
+        for path in [
+            self.paths.tts_script(chapter),
+            self.paths.qwen_script(chapter),
+            self.paths.chapter_audio(chapter),
+            self.paths.chapter_timeline(chapter),
+        ]:
+            if path.exists():
+                path.unlink()
 
     def _load_toc(self) -> Dict[str, str]:
         toc_path = self.book_root / "toc.json"
@@ -401,6 +553,80 @@ class PrototypeUiController:
             internal["display_name"] = f"{display_name}_internal"
             internal["voice_profile"] = _internal_voice_profile(display_name, voice)
             internal["voice_config_hash"] = None
+
+
+def _find_character_record_by_role_name(registry: Dict[str, Any], role_name: str) -> Optional[Tuple[str, Dict[str, Any]]]:
+    characters = {
+        str(role_id): record
+        for role_id, record in registry.get("characters", {}).items()
+        if isinstance(record, dict)
+    }
+    normalized = normalize_name(role_name)
+    display_counts: Dict[str, int] = {}
+    for record in characters.values():
+        display_name = str(record.get("display_name", ""))
+        if not display_name:
+            continue
+        normalized_display = normalize_name(display_name)
+        display_counts[normalized_display] = display_counts.get(normalized_display, 0) + 1
+
+    for role_id, record in characters.items():
+        names = _character_exact_role_names(record)
+        if normalized in {normalize_name(name) for name in names if name}:
+            return role_id, record
+
+    for role_id, record in characters.items():
+        display_name = str(record.get("display_name", ""))
+        if display_name and display_counts[normalize_name(display_name)] == 1 and normalized == normalize_name(display_name):
+            return role_id, record
+
+    return None
+
+
+def _character_exact_role_names(record: Dict[str, Any]) -> List[str]:
+    names = [
+        str(record.get("role_id", "")),
+        str(record.get("role_id", "")).replace("_", " "),
+        str(record.get("profile_id", "")),
+        str(record.get("profile_id", "")).replace("_", " "),
+    ]
+    names.extend(str(alias) for alias in record.get("aliases", []))
+    return names
+
+
+def _age_stage_options_for_person(registry: Dict[str, Any], person_id: str) -> List[AgeStageOption]:
+    options: List[AgeStageOption] = []
+    for role_id, record in registry.get("characters", {}).items():
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("person_id", "")).strip() != person_id:
+            continue
+        options.append(
+            AgeStageOption(
+                age_stage=_character_age_stage(record),
+                role_name=_annotation_role_name_for_record(record),
+                role_id=str(record.get("role_id", role_id)),
+            )
+        )
+    return options
+
+
+def _annotation_role_name_for_record(record: Dict[str, Any]) -> str:
+    display_name = str(record.get("display_name", "")).strip()
+    age_stage = _character_age_stage(record)
+    preferred = f"{display_name} {age_stage.replace('_', ' ')}".strip()
+    for alias in record.get("aliases", []):
+        if normalize_name(str(alias)) == normalize_name(preferred):
+            return str(alias)
+    if display_name and age_stage and age_stage != "unknown":
+        return preferred
+    role_id = str(record.get("role_id", "")).strip()
+    return role_id.replace("_", " ") if role_id else display_name
+
+
+def _character_age_stage(record: Dict[str, Any]) -> str:
+    identity = dict(record.get("identity_profile", {})) if isinstance(record.get("identity_profile"), dict) else {}
+    return str(record.get("age_stage") or identity.get("age_stage") or "unknown").strip().lower().replace(" ", "_")
 
 
 def _default_pipeline_factory(config: PipelineConfig, needs_llm: bool, fake_tts: bool) -> AudiobookPipeline:

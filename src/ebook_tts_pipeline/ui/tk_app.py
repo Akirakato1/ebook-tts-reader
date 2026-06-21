@@ -16,6 +16,7 @@ from ebook_tts_pipeline.ui.controller import ChapterStage, PrototypeUiController
 STAGE_COLORS = {
     ChapterStage.RAW: "#d9d9d9",
     ChapterStage.SEGMENTED: "#d9d9d9",
+    ChapterStage.ANNOTATION_REVIEW: "#f0c36d",
     ChapterStage.ANNOTATED: "#a8d5a2",
     ChapterStage.SCRIPTED: "#8fbbe8",
     ChapterStage.AUDIO: "#f2d36b",
@@ -191,15 +192,36 @@ class PrototypeTkApp:
         if not rows:
             ttk.Label(self.chapter_list, text="No chapters loaded.").grid(row=0, column=0, sticky="w")
         for row_index, row in enumerate(rows):
+            row_frame = ttk.Frame(self.chapter_list)
+            row_frame.grid(row=row_index, column=0, sticky="ew", pady=2)
+            row_frame.columnconfigure(0, weight=1)
             button = tk.Button(
-                self.chapter_list,
+                row_frame,
                 text=f"{row.index:03d} - {row.title}",
                 anchor="w",
                 bg=STAGE_COLORS[row.stage],
                 relief="raised",
                 command=lambda chapter=row.chapter: self.run_chapter_action(chapter),
+                state="disabled" if row.stage == ChapterStage.ANNOTATION_REVIEW else "normal",
             )
-            button.grid(row=row_index, column=0, sticky="ew", pady=2)
+            button.grid(row=0, column=0, sticky="ew")
+            annotation_state = (
+                "normal"
+                if row.stage
+                in {
+                    ChapterStage.ANNOTATION_REVIEW,
+                    ChapterStage.ANNOTATED,
+                    ChapterStage.SCRIPTED,
+                    ChapterStage.AUDIO,
+                }
+                else "disabled"
+            )
+            ttk.Button(
+                row_frame,
+                text="Open Annotation",
+                command=lambda chapter=row.chapter: self.open_annotation_review(chapter),
+                state=annotation_state,
+            ).grid(row=0, column=1, padx=(6, 0))
             self.chapter_list.columnconfigure(0, weight=1)
         self.load_registry_panel()
 
@@ -293,6 +315,66 @@ class PrototypeTkApp:
             return
         self.status.set("Registry saved.")
         self.refresh()
+
+    def open_annotation_review(self, chapter: str) -> None:
+        self._sync_controller()
+        if not self.controller.paths.annotation(chapter).exists():
+            messagebox.showerror("Annotation Missing", "Generate annotation for this chapter first.")
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Annotation Review - {chapter}")
+        dialog.columnconfigure(0, weight=1)
+        body = ttk.Frame(dialog, padding=10)
+        body.grid(row=0, column=0, sticky="nsew")
+        body.columnconfigure(1, weight=1)
+
+        forms = self.controller.annotation_appearance_forms(chapter)
+        selections = {}
+        ttk.Label(body, text="Character").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(body, text="Age Stage").grid(row=0, column=1, sticky="w")
+        if not forms:
+            ttk.Label(body, text="No character roles in this annotation.").grid(
+                row=1,
+                column=0,
+                columnspan=2,
+                sticky="w",
+                pady=(8, 0),
+            )
+
+        for row_index, form in enumerate(forms, start=1):
+            ttk.Label(body, text=form.name).grid(row=row_index, column=0, sticky="w", padx=(0, 8), pady=2)
+            values = [option.age_stage for option in form.age_stage_options]
+            initial = form.current_age_stage if form.current_age_stage in values else values[0]
+            selection = tk.StringVar(value=initial)
+            combo = ttk.Combobox(
+                body,
+                textvariable=selection,
+                values=values,
+                state="readonly",
+                width=18,
+            )
+            combo.grid(row=row_index, column=1, sticky="ew", pady=2)
+            selections[form.key] = selection
+
+        actions = ttk.Frame(dialog, padding=(10, 0, 10, 10))
+        actions.grid(row=1, column=0, sticky="e")
+
+        def confirm() -> None:
+            try:
+                self.controller.confirm_annotation_appearances(
+                    chapter,
+                    {key: variable.get() for key, variable in selections.items()},
+                )
+            except ValueError as exc:
+                messagebox.showerror("Annotation Review Error", str(exc), parent=dialog)
+                return
+            self.status.set(f"Annotation approved for {chapter}.")
+            dialog.destroy()
+            self.refresh()
+
+        ttk.Button(actions, text="Confirm Character Appearance", command=confirm).pack(side="right")
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right", padx=(0, 6))
 
     def run_chapter_action(self, chapter: str) -> None:
         def work() -> str:

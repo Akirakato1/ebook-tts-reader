@@ -119,6 +119,10 @@ def test_controller_detects_chapter_stage_from_artifacts(tmp_path):
 
     paths.annotation("chapter_001").parent.mkdir(parents=True)
     paths.annotation("chapter_001").write_text("{}", encoding="utf-8")
+    assert controller.chapter_rows()[0].stage == ChapterStage.ANNOTATION_REVIEW
+
+    paths.annotation_approval("chapter_001").parent.mkdir(parents=True, exist_ok=True)
+    paths.annotation_approval("chapter_001").write_text('{"approved": true}', encoding="utf-8")
     assert controller.chapter_rows()[0].stage == ChapterStage.ANNOTATED
 
     paths.tts_script("chapter_001").parent.mkdir(parents=True)
@@ -304,6 +308,105 @@ def test_controller_saves_registry_form_values_and_refreshes_voice_profile(tmp_p
     assert character["voice_variants"]["default"].get("voice_config_hash") is None
 
 
+def test_controller_annotation_review_uses_registry_age_stage_options(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    _write_callie_registry(paths)
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {
+            "new_characters": [],
+            "roles": ["Narrator", "Callie adult"],
+            "types": ["narration", "dialogue", "thought"],
+            "script": [[0, 0, 0], [1, 1, 1]],
+        },
+    )
+    controller = PrototypeUiController(book_root=paths.root)
+
+    forms = controller.annotation_appearance_forms("chapter_001")
+
+    assert len(forms) == 1
+    assert forms[0].key == "callie"
+    assert forms[0].name == "Callie"
+    assert forms[0].current_age_stage == "adult"
+    assert [(option.age_stage, option.role_name) for option in forms[0].age_stage_options] == [
+        ("adult", "Callie adult"),
+        ("child", "Callie child"),
+    ]
+
+
+def test_controller_confirming_annotation_appearance_rewrites_roles_and_approves(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    _write_callie_registry(paths)
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {
+            "new_characters": [],
+            "roles": ["Narrator", "Callie adult"],
+            "types": ["narration", "dialogue", "thought"],
+            "script": [[0, 0, 0], [1, 1, 1], [1, 2, 2]],
+        },
+    )
+    controller = PrototypeUiController(book_root=paths.root)
+
+    controller.confirm_annotation_appearances("chapter_001", {"callie": "child"})
+
+    annotation = read_json(paths.annotation("chapter_001"))
+    approval = read_json(paths.annotation_approval("chapter_001"))
+    assert annotation["roles"] == ["Narrator", "Callie child"]
+    assert annotation["script"] == [[0, 0, 0], [1, 1, 1], [1, 2, 2]]
+    assert approval["approved"] is True
+    assert approval["appearances"] == [
+        {
+            "person_id": "callie",
+            "name": "Callie",
+            "age_stage": "child",
+            "role_name": "Callie child",
+        }
+    ]
+    assert controller.chapter_stage("chapter_001") == ChapterStage.ANNOTATED
+
+
+def test_controller_blocks_script_generation_until_annotation_is_approved(tmp_path):
+    calls = []
+    paths = BookPaths(tmp_path / "book")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text("Chapter One\nText.", encoding="utf-8")
+    paths.sentence_artifact("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.sentence_artifact("chapter_001"),
+        {"chapter": "chapter_001", "source_path": "chapters/chapter_001.txt", "sentences": []},
+    )
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {
+            "new_characters": [],
+            "roles": ["Narrator"],
+            "types": ["narration", "dialogue", "thought"],
+            "script": [],
+        },
+    )
+    controller = PrototypeUiController(
+        book_root=paths.root,
+        pipeline_factory=fake_pipeline_factory(calls),
+        fake_tts=True,
+    )
+
+    blocked = controller.run_next_chapter_action("chapter_001")
+    assert blocked.stage == ChapterStage.ANNOTATION_REVIEW
+    assert "Review" in blocked.message
+    assert ("build_scripts", "chapter_001") not in calls
+
+    paths.annotation_approval("chapter_001").parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(paths.annotation_approval("chapter_001"), {"approved": True, "appearances": []})
+    scripted = controller.run_next_chapter_action("chapter_001")
+
+    assert scripted.stage == ChapterStage.SCRIPTED
+    assert ("build_scripts", "chapter_001") in calls
+
+
 def test_controller_loads_epub_initializes_registry_segments_and_toc(tmp_path):
     calls = []
     paths = BookPaths(tmp_path / "book")
@@ -390,11 +493,12 @@ def test_controller_chapter_action_advances_through_pipeline_stages(tmp_path):
     )
 
     first = controller.run_next_chapter_action("chapter_001")
+    controller.confirm_annotation_appearances("chapter_001", {})
     second = controller.run_next_chapter_action("chapter_001")
     third = controller.run_next_chapter_action("chapter_001")
     fourth = controller.run_next_chapter_action("chapter_001")
 
-    assert first.stage == ChapterStage.ANNOTATED
+    assert first.stage == ChapterStage.ANNOTATION_REVIEW
     assert second.stage == ChapterStage.SCRIPTED
     assert third.stage == ChapterStage.AUDIO
     assert fourth.stage == ChapterStage.AUDIO
@@ -425,6 +529,48 @@ def test_controller_builds_global_registry(tmp_path):
     assert count == 1
     assert ("build_global_registry", "Demo") in calls
     assert read_json(paths.registry)["characters"]["akari_adult"]["display_name"] == "Akari"
+
+
+def _write_callie_registry(paths):
+    write_json_atomic(
+        paths.registry,
+        {
+            "book": {"title": "Demo", "slug": "demo"},
+            "narrator": {"role_id": "narrator", "display_name": "Narrator"},
+            "characters": {
+                "callie_adult": {
+                    "role_id": "callie_adult",
+                    "profile_id": "callie_adult",
+                    "person_id": "callie",
+                    "display_name": "Callie",
+                    "age_stage": "adult",
+                    "aliases": ["Callie adult"],
+                    "identity_profile": {
+                        "age_stage": "adult",
+                        "gender": "female",
+                        "personality": ["guarded"],
+                    },
+                    "voice_identity": {"seed": 1, "differentiators": []},
+                    "voice_variants": {},
+                },
+                "callie_child": {
+                    "role_id": "callie_child",
+                    "profile_id": "callie_child",
+                    "person_id": "callie",
+                    "display_name": "Callie",
+                    "age_stage": "child",
+                    "aliases": ["Callie child"],
+                    "identity_profile": {
+                        "age_stage": "child",
+                        "gender": "female",
+                        "personality": ["trusting"],
+                    },
+                    "voice_identity": {"seed": 2, "differentiators": []},
+                    "voice_variants": {},
+                },
+            },
+        },
+    )
 
 
 def test_controller_builds_global_registry_initializes_missing_registry(tmp_path):
