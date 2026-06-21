@@ -1,11 +1,139 @@
 from __future__ import annotations
 
+import gc
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 
 from ebook_tts_pipeline.tts.base import GeneratedSentenceAudio
+
+
+HF_MODEL_MAP = {
+    ("Base", "0.6B"): "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+    ("Base", "1.7B"): "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+    ("VoiceDesign", "1.7B"): "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+}
+
+
+class QwenTtsRuntime:
+    def __init__(
+        self,
+        qwen_model_cls: Optional[Any] = None,
+        torch_module: Optional[Any] = None,
+        model_root: Optional[Path] = None,
+        model_choice: str = "1.7B",
+        device: str = "auto",
+        precision: str = "bf16",
+        attention: str = "auto",
+    ) -> None:
+        self.qwen_model_cls = qwen_model_cls
+        self.torch = torch_module
+        self.model_root = Path(model_root) if model_root else Path("models") / "qwen-tts"
+        self.model_choice = model_choice
+        self.device = device
+        self.precision = precision
+        self.attention = attention
+        self._models: Dict[str, Any] = {}
+
+    def generate_voice_design(self, *args, **kwargs):
+        return self._model("VoiceDesign").generate_voice_design(*args, **kwargs)
+
+    def create_voice_clone_prompt(self, *args, **kwargs):
+        return self._model("Base").create_voice_clone_prompt(*args, **kwargs)
+
+    def generate_voice_clone(self, *args, **kwargs):
+        return self._model("Base").generate_voice_clone(*args, **kwargs)
+
+    def unload_model(self, model_type: str) -> None:
+        if model_type in self._models:
+            del self._models[model_type]
+            gc.collect()
+            self._clear_device_cache()
+
+    def _model(self, model_type: str) -> Any:
+        if model_type not in self._models:
+            self._models[model_type] = self._load_model(model_type)
+        return self._models[model_type]
+
+    def _load_model(self, model_type: str) -> Any:
+        qwen_model_cls = self.qwen_model_cls or self._load_qwen_model_cls()
+        torch_module = self.torch or self._load_torch()
+        source = self._resolve_model_source(model_type)
+        kwargs = {
+            "device_map": self._device_map(torch_module),
+            "dtype": self._dtype(torch_module),
+        }
+        attention = self._attention_param()
+        if attention:
+            kwargs["attn_implementation"] = attention
+        return qwen_model_cls.from_pretrained(str(source), **kwargs)
+
+    def _resolve_model_source(self, model_type: str) -> str:
+        repo_id = HF_MODEL_MAP.get((model_type, self.model_choice))
+        if repo_id is None:
+            raise RuntimeError(f"Unsupported Qwen3-TTS model selection: {model_type} {self.model_choice}")
+        folder_name = repo_id.split("/")[-1]
+        candidates = [
+            self.model_root / folder_name,
+            self.model_root / "Qwen" / folder_name,
+        ]
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_dir():
+                return str(candidate)
+        return repo_id
+
+    def _device_map(self, torch_module: Any) -> Any:
+        device = self._resolved_device(torch_module)
+        if device == "cuda":
+            return "cuda"
+        if device == "xpu":
+            return {"": "xpu:0"}
+        if device == "mps":
+            return "mps"
+        return "cpu"
+
+    def _dtype(self, torch_module: Any) -> Any:
+        if self.precision == "bf16":
+            return torch_module.bfloat16
+        return torch_module.float32
+
+    def _attention_param(self) -> Optional[str]:
+        if self.attention == "flash_attn":
+            return "flash_attention_2"
+        if self.attention in {"sdpa", "eager"}:
+            return self.attention
+        if self.attention == "auto":
+            return "sdpa"
+        return None
+
+    def _resolved_device(self, torch_module: Any) -> str:
+        if self.device != "auto":
+            return self.device
+        if hasattr(torch_module, "xpu") and torch_module.xpu.is_available():
+            return "xpu"
+        if torch_module.cuda.is_available():
+            return "cuda"
+        if torch_module.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+
+    def _load_qwen_model_cls(self) -> Any:
+        from qwen_tts import Qwen3TTSModel
+
+        return Qwen3TTSModel
+
+    def _load_torch(self) -> Any:
+        import torch
+
+        return torch
+
+    def _clear_device_cache(self) -> None:
+        torch_module = self.torch or self._load_torch()
+        if hasattr(torch_module, "cuda") and hasattr(torch_module.cuda, "empty_cache"):
+            torch_module.cuda.empty_cache()
+        if hasattr(torch_module, "xpu") and hasattr(torch_module.xpu, "empty_cache"):
+            torch_module.xpu.empty_cache()
 
 
 class QwenTtsAdapter:
@@ -15,9 +143,20 @@ class QwenTtsAdapter:
         torch_module: Optional[Any] = None,
         role_voice_paths: Optional[Dict[str, Path]] = None,
         language: str = "auto",
+        model_root: Optional[str] = None,
+        model_choice: str = "1.7B",
+        device: str = "auto",
+        precision: str = "bf16",
+        attention: str = "auto",
     ) -> None:
-        self.model = model if model is not None else self._load_default_model()
         self.torch = torch_module if torch_module is not None else self._load_torch()
+        self.model = model if model is not None else self._load_default_model(
+            model_root=model_root,
+            model_choice=model_choice,
+            device=device,
+            precision=precision,
+            attention=attention,
+        )
         self.role_voice_paths = role_voice_paths or {}
         self.language = language
 
@@ -29,12 +168,18 @@ class QwenTtsAdapter:
         instruct = str(voice_record["voice_profile"]["qwen_instruct"])
         text = "This is the reference voice for this character."
 
+        if hasattr(self.model, "unload_model"):
+            self.model.unload_model("Base")
         self._set_seed(seed)
-        wavs, sample_rate = self.model.generate_voice_design(
-            text=text,
-            instruct=instruct,
-            language=self.language,
-        )
+        try:
+            wavs, sample_rate = self.model.generate_voice_design(
+                text=text,
+                instruct=instruct,
+                language=self.language,
+            )
+        finally:
+            if hasattr(self.model, "unload_model"):
+                self.model.unload_model("VoiceDesign")
         prompt = self.model.create_voice_clone_prompt(
             ref_audio=(wavs[0], sample_rate),
             ref_text=text,
@@ -90,7 +235,19 @@ class QwenTtsAdapter:
 
         return torch
 
-    def _load_default_model(self) -> Any:
-        raise RuntimeError(
-            "Qwen model loading must be wired with local qwen_tts runtime paths before real TTS use."
+    def _load_default_model(
+        self,
+        model_root: Optional[str],
+        model_choice: str,
+        device: str,
+        precision: str,
+        attention: str,
+    ) -> Any:
+        return QwenTtsRuntime(
+            torch_module=self.torch,
+            model_root=Path(model_root) if model_root else None,
+            model_choice=model_choice,
+            device=device,
+            precision=precision,
+            attention=attention,
         )

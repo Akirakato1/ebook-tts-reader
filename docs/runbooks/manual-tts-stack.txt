@@ -15,16 +15,17 @@ Required Services And Credentials
    - Default model is Haiku. The exact pinned model ID should live in pipeline config and can be changed without editing code.
 
 2. Qwen3-TTS local runtime
-   - Install the Python dependencies required by the Qwen TTS wrapper.
+   - Install the Python dependencies required by the Qwen TTS wrapper from flybirdxx/ComfyUI-Qwen-TTS.
    - Make sure the Qwen3-TTS model files are available locally.
-   - Use the model path layout expected by the wrapper, based on the ComfyUI-Qwen-TTS conventions:
+   - Recommended local model path layout:
 
      models/
        qwen-tts/
-         Qwen/
-           Qwen3-TTS-12Hz-1.7B-Base/
-           Qwen3-TTS-12Hz-1.7B-VoiceDesign/
-           Qwen3-TTS-Tokenizer-12Hz/
+         Qwen3-TTS-12Hz-1.7B-Base/
+         Qwen3-TTS-12Hz-1.7B-VoiceDesign/
+         Qwen3-TTS-Tokenizer-12Hz/
+
+     The adapter also accepts the ComfyUI layout with an extra Qwen/ directory under qwen-tts.
 
    - Use bf16 precision and auto attention by default when the hardware supports it.
 
@@ -112,6 +113,43 @@ V1 CLI Commands
 Install local package for development:
 
   python -m pip install -e ".[dev]"
+
+Install Qwen runtime dependencies:
+
+  python -m pip install -e ".[qwen]"
+
+For NVIDIA CUDA on Windows, install the matching PyTorch CUDA wheels after the qwen extra. On the tested RTX 5080 Laptop GPU setup:
+
+  python -m pip install --force-reinstall torch==2.8.0+cu129 torchaudio==2.8.0+cu129 --index-url https://download.pytorch.org/whl/cu129
+
+The tested Qwen runtime versions are:
+
+  qwen3-tts-comfyui 1.0.7
+  torch 2.8.0+cu129
+  torchaudio 2.8.0+cu129
+  transformers 4.57.3
+  numpy 1.26.4
+  hf_xet installed for Hugging Face Xet-backed model files
+
+Optional environment overrides:
+
+  $env:EBOOK_TTS_QWEN_MODEL_ROOT="models/qwen-tts"
+  $env:EBOOK_TTS_QWEN_MODEL="1.7B"
+  $env:EBOOK_TTS_QWEN_DEVICE="cuda"
+  $env:EBOOK_TTS_QWEN_PRECISION="bf16"
+  $env:EBOOK_TTS_QWEN_ATTENTION="sdpa"
+
+Download local Qwen model folders:
+
+  python scripts/download_qwen_models.py --model-root models/qwen-tts --base-model 1.7B
+
+If Hugging Face Xet requests repeatedly reset, retry with regular HTTP:
+
+  python scripts/download_qwen_models.py --model-root models/qwen-tts --base-model 1.7B --disable-xet
+
+Run a minimal real Qwen smoke test without Anthropic:
+
+  python scripts/smoke_qwen_tts.py --book-root books/qwen_smoke --regenerate-voice
 
 Run all tests:
 

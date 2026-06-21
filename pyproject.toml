@@ -15,7 +15,19 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
-qwen = ["torch", "torchaudio", "transformers", "librosa", "accelerate"]
+qwen = [
+  "accelerate",
+  "hf_xet",
+  "librosa",
+  "numpy>=1.26,<2",
+  "onnxruntime-openvino",
+  "qwen3-tts-comfyui @ git+https://github.com/flybirdxx/ComfyUI-Qwen-TTS.git",
+  "sox",
+  "soundfile",
+  "torch",
+  "torchaudio",
+  "transformers==4.57.3",
+]
 
 [project.scripts]
 ebook-tts = "ebook_tts_pipeline.cli:main"

@@ -38,7 +38,17 @@ def main(argv: Optional[List[str]] = None) -> int:
             client=llm_client,
             repair_retries=config.annotation_repair_retries,
         )
-        tts_adapter = FakeTtsAdapter() if args.fake_tts else QwenTtsAdapter()
+        tts_adapter = (
+            FakeTtsAdapter()
+            if args.fake_tts
+            else QwenTtsAdapter(
+                model_root=config.qwen_model_root,
+                model_choice=config.qwen_model_choice,
+                device=config.qwen_device,
+                precision=config.qwen_precision,
+                attention=config.qwen_attention,
+            )
+        )
         pipeline = AudiobookPipeline(
             config=config,
             annotation_service=annotation_service,

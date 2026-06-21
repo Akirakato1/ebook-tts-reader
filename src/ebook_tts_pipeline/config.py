@@ -17,6 +17,7 @@ class PipelineConfig:
     anthropic_max_tokens: int = 8192
     annotation_repair_retries: int = 1
     qwen_model_choice: str = "1.7B"
+    qwen_model_root: str = "models/qwen-tts"
     qwen_device: str = "auto"
     qwen_precision: str = "bf16"
     qwen_attention: str = "auto"
@@ -35,6 +36,7 @@ class PipelineConfig:
                 DEFAULT_ANTHROPIC_MODEL,
             ),
             qwen_model_choice=os.environ.get("EBOOK_TTS_QWEN_MODEL", "1.7B"),
+            qwen_model_root=os.environ.get("EBOOK_TTS_QWEN_MODEL_ROOT", "models/qwen-tts"),
             qwen_device=os.environ.get("EBOOK_TTS_QWEN_DEVICE", "auto"),
             qwen_precision=os.environ.get("EBOOK_TTS_QWEN_PRECISION", "bf16"),
             qwen_attention=os.environ.get("EBOOK_TTS_QWEN_ATTENTION", "auto"),

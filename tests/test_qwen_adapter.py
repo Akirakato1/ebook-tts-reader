@@ -1,6 +1,8 @@
+from pathlib import Path
+
 import numpy as np
 
-from ebook_tts_pipeline.tts.qwen_adapter import QwenTtsAdapter
+from ebook_tts_pipeline.tts.qwen_adapter import QwenTtsAdapter, QwenTtsRuntime
 
 
 class FakeQwenModel:
@@ -87,3 +89,71 @@ def test_qwen_adapter_generates_sentence_audio_in_order(tmp_path):
 
     assert [item.sentence_idx for item in generated] == [0, 1]
     assert [len(item.samples) for item in generated] == [50, 25]
+
+
+class RuntimeFakeModel:
+    calls = []
+
+    def __init__(self, source):
+        self.source = source
+
+    @classmethod
+    def from_pretrained(cls, source, **kwargs):
+        cls.calls.append({"source": source, "kwargs": kwargs})
+        return cls(source)
+
+    def generate_voice_design(self, text, instruct, language, **kwargs):
+        return [np.ones(10, dtype=np.float32)], 24000
+
+    def create_voice_clone_prompt(self, ref_audio, ref_text, x_vector_only_mode):
+        return [{"prompt": self.source}]
+
+    def generate_voice_clone(self, text, language, voice_clone_prompt, **kwargs):
+        return [np.ones(8, dtype=np.float32) for _ in text], 24000
+
+
+class RuntimeFakeTorch:
+    bfloat16 = "bf16"
+    float32 = "fp32"
+
+    class cuda:
+        @staticmethod
+        def is_available():
+            return False
+
+    class backends:
+        class mps:
+            @staticmethod
+            def is_available():
+                return False
+
+
+def test_qwen_runtime_loads_voice_design_and_base_models_from_local_root(tmp_path):
+    RuntimeFakeModel.calls = []
+    model_root = tmp_path / "models" / "qwen-tts"
+    (model_root / "Qwen3-TTS-12Hz-1.7B-Base").mkdir(parents=True)
+    (model_root / "Qwen3-TTS-12Hz-1.7B-VoiceDesign").mkdir()
+    runtime = QwenTtsRuntime(
+        qwen_model_cls=RuntimeFakeModel,
+        torch_module=RuntimeFakeTorch,
+        model_root=model_root,
+        model_choice="1.7B",
+        device="cpu",
+        precision="bf16",
+        attention="eager",
+    )
+
+    runtime.generate_voice_design(text="sample", instruct="voice", language="auto")
+    runtime.generate_voice_clone(
+        text=["hello"],
+        language=["auto"],
+        voice_clone_prompt=[{"prompt": "x"}],
+    )
+
+    assert [Path(call["source"]).name for call in RuntimeFakeModel.calls] == [
+        "Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+        "Qwen3-TTS-12Hz-1.7B-Base",
+    ]
+    assert RuntimeFakeModel.calls[0]["kwargs"]["device_map"] == "cpu"
+    assert RuntimeFakeModel.calls[0]["kwargs"]["dtype"] == "bf16"
+    assert RuntimeFakeModel.calls[0]["kwargs"]["attn_implementation"] == "eager"
