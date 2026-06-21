@@ -127,6 +127,109 @@ def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
     )
 
 
+def test_tts_script_resolves_age_stage_aliases_to_unique_voice_roles():
+    artifact = SentenceArtifact(
+        chapter="chapter_001",
+        source_path="chapters/chapter_001.txt",
+        segmenter={"name": "test"},
+        sentences=[
+            Sentence(0, '"Stay here," Callie said.'),
+            Sentence(1, '"I remember," Callie thought.'),
+        ],
+    )
+    annotation = AnnotationResult(
+        new_characters=[],
+        roles=["Callie child", "Callie adult"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 1, 0), (1, 2, 1)],
+    )
+    registry = {
+        "book": {"slug": "demo"},
+        "narrator": {
+            "role_id": "narrator",
+            "display_name": "Narrator",
+            "voice_config_path": "voices/narrator.qvp",
+        },
+        "characters": {
+            "callie_child": {
+                "role_id": "callie_child",
+                "display_name": "Callie",
+                "aliases": ["Callie child"],
+                "voice_variants": {
+                    "default": {
+                        "role_id": "callie_child_default",
+                        "display_name": "Callie_default",
+                        "voice_config_path": "voices/callie_child_default.qvp",
+                        "voice_profile": {"qwen_instruct": "Callie child aloud."},
+                    },
+                    "internal": {
+                        "role_id": "callie_child_internal",
+                        "display_name": "Callie_internal",
+                        "voice_config_path": "voices/callie_child_internal.qvp",
+                        "voice_profile": {"qwen_instruct": "Callie child inward."},
+                    },
+                },
+            },
+            "callie_adult": {
+                "role_id": "callie_adult",
+                "display_name": "Callie",
+                "aliases": ["Callie adult"],
+                "voice_variants": {
+                    "default": {
+                        "role_id": "callie_adult_default",
+                        "display_name": "Callie_default",
+                        "voice_config_path": "voices/callie_adult_default.qvp",
+                        "voice_profile": {"qwen_instruct": "Callie adult aloud."},
+                    },
+                    "internal": {
+                        "role_id": "callie_adult_internal",
+                        "display_name": "Callie_internal",
+                        "voice_config_path": "voices/callie_adult_internal.qvp",
+                        "voice_profile": {"qwen_instruct": "Callie adult inward."},
+                    },
+                },
+            },
+        },
+    }
+
+    script = build_tts_script(
+        chapter="chapter_001",
+        annotation=annotation,
+        artifact=artifact,
+        registry=registry,
+        max_chars=1000,
+        max_roles=8,
+        language="auto",
+    )
+
+    assert [job.to_dict() for job in script.jobs] == [
+        {
+            "sentence_idx": 0,
+            "role": "callie_child_default",
+            "role_id": "callie_child_default",
+            "character": "Callie",
+            "voice_variant": "default",
+            "type": "dialogue",
+            "text": '"Stay here," Callie said.',
+            "voice_config_path": "voices/callie_child_default.qvp",
+        },
+        {
+            "sentence_idx": 1,
+            "role": "callie_adult_internal",
+            "role_id": "callie_adult_internal",
+            "character": "Callie",
+            "voice_variant": "internal",
+            "type": "thought",
+            "text": '"I remember," Callie thought.',
+            "voice_config_path": "voices/callie_adult_internal.qvp",
+        },
+    ]
+    assert script.qwen_dialogue_text == (
+        'callie_child_default: "Stay here," Callie said.\n'
+        'callie_adult_internal: "I remember," Callie thought.'
+    )
+
+
 def test_tts_script_respects_role_limit_when_creating_windows():
     sentences = [Sentence(idx, f"Sentence {idx}.") for idx in range(9)]
     artifact = SentenceArtifact(

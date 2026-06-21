@@ -126,7 +126,12 @@ def resolve_effective_voice(
         variant_match = _matching_variant(character, normalized)
         if normalized in direct_names or variant_match:
             variant_key = variant_match or voice_variant_for_type(speech_type)
-            return _effective_voice_for_character(character, variant_key, role_name)
+            return _effective_voice_for_character(
+                character,
+                variant_key,
+                role_name,
+                use_role_id_as_role=not include_display_name,
+            )
 
     short_matches = [
         character
@@ -136,7 +141,12 @@ def resolve_effective_voice(
     if len(short_matches) == 1:
         character = short_matches[0]
         ensure_character_voice_variants(book_slug, character)
-        return _effective_voice_for_character(character, voice_variant_for_type(speech_type), role_name)
+        return _effective_voice_for_character(
+            character,
+            voice_variant_for_type(speech_type),
+            role_name,
+            use_role_id_as_role=False,
+        )
 
     raise ValueError(f"No registry record exists for annotated role: {role_name}")
 
@@ -161,20 +171,25 @@ def _effective_voice_for_character(
     character: Dict[str, Any],
     variant_key: str,
     fallback_role: str,
+    use_role_id_as_role: bool = False,
 ) -> Dict[str, Any]:
     variant = character.get("voice_variants", {}).get(variant_key)
     if variant:
+        role_id = str(variant.get("role_id", character.get("role_id", fallback_role)))
+        role_display = str(variant.get("display_name", fallback_role))
         return {
             "character": str(character.get("display_name", fallback_role)),
-            "role": str(variant.get("display_name", fallback_role)),
-            "role_id": str(variant.get("role_id", character.get("role_id", fallback_role))),
+            "role": role_id if use_role_id_as_role else role_display,
+            "role_id": role_id,
             "voice_variant": variant_key,
             "voice_record": variant,
         }
+    role_id = str(character.get("role_id", fallback_role))
+    role_display = str(character.get("display_name", fallback_role))
     return {
         "character": str(character.get("display_name", fallback_role)),
-        "role": str(character.get("display_name", fallback_role)),
-        "role_id": str(character.get("role_id", fallback_role)),
+        "role": role_id if use_role_id_as_role else role_display,
+        "role_id": role_id,
         "voice_variant": None,
         "voice_record": character,
     }
