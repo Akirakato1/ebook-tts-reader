@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from typing import Dict, List
+from typing import Any, Dict, List
 
+from ebook_tts_pipeline.annotation.registry_summary import compact_registry_for_prompt
 from ebook_tts_pipeline.domain import Sentence
 
 
@@ -20,7 +21,7 @@ def render_annotation_prompt(
 ) -> str:
     rendered_sentences = "\n".join(f"[{sentence.idx}] {sentence.text}" for sentence in sentences)
     allowed_indexes = [sentence.idx for sentence in sentences]
-    known_characters = registry.get("characters", {})
+    known_characters = compact_registry_for_annotation_prompt(registry)
     character_schema = (
         "- new_characters: []\n"
         "- proposed_new_characters: list of {name, profile} for any speaker not in the locked registry.\n"
@@ -29,7 +30,7 @@ def render_annotation_prompt(
         else "- new_characters: list of {name, profile}\n"
     )
     return (
-        f"Known characters: {json.dumps(known_characters, ensure_ascii=False)}\n\n"
+        f"Known characters: {json.dumps(known_characters, ensure_ascii=False, separators=(',', ':'))}\n\n"
         f"Chapter: {chapter}\n\n"
         f"Chapter text:\n{rendered_sentences}\n\n"
         "Return JSON with these keys:\n"
@@ -49,6 +50,7 @@ def render_annotation_prompt(
         "- If the same underlying person appears at a different life stage, create a distinct profile_id such as callie_teen, callie_adult, trevor_child, or andrew_adult, and reuse the same person_id.\n"
         "- Do not append chapter, window, or sentence numbers to person_id or profile_id; use stable identity names like callie, callie_teen, or trevor_child.\n"
         "- Use the age-stage profile name in roles when needed to avoid ambiguity, such as Callie teen rather than Callie.\n"
+        "- Known character summaries contain name and aliases; use one of those exact strings for roles.\n"
         "- roles: list of role names appearing in this window\n"
         '- Use exactly "Narrator" for narration, not "narrator" or another variant.\n'
         '- types: exactly ["narration", "dialogue", "thought"]\n'
@@ -60,6 +62,10 @@ def render_annotation_prompt(
         "Every sentence index in the input must appear exactly once.\n"
         "Do not wrap the JSON in Markdown code fences."
     )
+
+
+def compact_registry_for_annotation_prompt(registry: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return compact_registry_for_prompt(registry, include_aliases=True)
 
 
 def render_repair_prompt(original_prompt: str, invalid_output: Dict, errors: str) -> str:

@@ -12,7 +12,7 @@ Each global-registry window receives a minimal summary of the current saved regi
 
 When a compact delta has the same `name` and the same known `age_stage` as an existing record, it updates missing facts on that record. When it has the same `name` but a different known `age_stage`, the app creates a separate voice profile such as `callie_teen` next to `callie_adult`.
 
-The registry remains user-editable in the prototype UI. Chapter annotation then runs against this locked registry and should not automatically create new registry records. If the model sees an unknown speaker during chapter annotation, it returns `proposed_new_characters`; the app records them in the annotation JSON for review but does not add them to `registry.json`.
+The registry remains user-editable in the prototype UI. Chapter annotation then runs against this locked registry and should not automatically create new registry records. The annotation prompt receives compact character summaries with names, aliases, age stage, gender, race/accent, occupation, and personality traits, while omitting voice variants, Qwen instructions, seeds, hashes, and `.qvp` cache paths. If the model sees an unknown speaker during chapter annotation, it returns `proposed_new_characters`; the app records them in the annotation JSON for review but does not add them to `registry.json`.
 
 ## UI Flow
 

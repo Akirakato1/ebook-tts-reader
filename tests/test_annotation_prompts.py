@@ -47,6 +47,62 @@ def test_annotation_prompt_uses_lean_character_profile_schema():
     assert "narrative_notes" not in prompt
 
 
+def test_annotation_prompt_uses_compact_character_summaries_not_voice_registry():
+    registry = {
+        "characters": {
+            "callie_teen": {
+                "role_id": "callie_teen",
+                "profile_id": "callie_teen",
+                "person_id": "callie",
+                "display_name": "Callie",
+                "age_stage": "teen",
+                "aliases": ["Callie teen"],
+                "identity_profile": {
+                    "age_stage": "teen",
+                    "gender": "female",
+                    "personality": ["guarded", "timid", "wary", "quiet", "fragile", "extra"],
+                    "race_or_ethnicity": None,
+                    "accent": None,
+                    "occupation": "student",
+                },
+                "voice_identity": {"seed": 123, "differentiators": ["darker timbre"]},
+                "voice_variants": {
+                    "default": {
+                        "role_id": "callie_teen_default",
+                        "display_name": "Callie_default",
+                        "voice_profile": {
+                            "description": "teen female; guarded",
+                            "qwen_instruct": "A teen female voice.",
+                        },
+                        "voice_config_path": "voices/callie_teen_default.qvp",
+                        "voice_config_hash": "abc",
+                    }
+                },
+            }
+        }
+    }
+
+    prompt = render_annotation_prompt(
+        "chapter_001",
+        [Sentence(idx=0, text="Callie waited.")],
+        registry,
+        lock_registry=True,
+    )
+
+    assert '"name":"Callie"' in prompt
+    assert '"aliases":["Callie teen"]' in prompt
+    assert '"age_stage":"teen"' in prompt
+    assert '"occupation":"student"' in prompt
+    assert '"personality_type":"guarded, timid, wary, quiet, fragile"' in prompt
+    assert "voice_variants" not in prompt
+    assert "qwen_instruct" not in prompt
+    assert "voice_config_path" not in prompt
+    assert "voice_config_hash" not in prompt
+    assert '"seed":' not in prompt
+    assert '"role_id":' not in prompt
+    assert '"person_id":' not in prompt
+
+
 def test_locked_annotation_prompt_uses_proposed_new_characters():
     prompt = render_annotation_prompt(
         "chapter_001",
