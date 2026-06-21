@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Callable, Dict, List, Optional
 
+from ebook_tts_pipeline.annotation.anthropic_client import AnnotationModelOutputError
 from ebook_tts_pipeline.annotation.merge import merge_annotation_windows
 from ebook_tts_pipeline.annotation.service import AnnotationService
-from ebook_tts_pipeline.annotation.validator import validate_annotation
+from ebook_tts_pipeline.annotation.validator import AnnotationValidationError, validate_annotation
 from ebook_tts_pipeline.audio import ChapterAudioBuilder
 from ebook_tts_pipeline.config import PipelineConfig
 from ebook_tts_pipeline.domain import AnnotationResult, SentenceArtifact
@@ -45,14 +46,7 @@ class AudiobookPipeline:
         window_results: List[AnnotationResult] = []
 
         for window in build_llm_windows(artifact.sentences, self.config.max_llm_window_chars):
-            result = self.annotation_service.annotate_window(
-                chapter=chapter,
-                sentences=window.sentences,
-                registry=self.registry.load(),
-            )
-            window_results.append(result)
-            if result.new_characters:
-                self.registry.add_new_characters(chapter, result.new_characters)
+            window_results.extend(self._annotate_sentences_with_fallback(chapter, window.sentences))
 
         merged = merge_annotation_windows(window_results, self.registry.load())
         validate_annotation(
@@ -62,6 +56,30 @@ class AudiobookPipeline:
         )
         write_json_atomic(self.paths.annotation(chapter), merged.to_dict())
         return merged
+
+    def _annotate_sentences_with_fallback(
+        self,
+        chapter: str,
+        sentences: List[Sentence],
+    ) -> List[AnnotationResult]:
+        try:
+            result = self.annotation_service.annotate_window(
+                chapter=chapter,
+                sentences=sentences,
+                registry=self.registry.load(),
+            )
+        except (AnnotationModelOutputError, AnnotationValidationError):
+            if len(sentences) <= 1:
+                raise
+            midpoint = len(sentences) // 2
+            return (
+                self._annotate_sentences_with_fallback(chapter, sentences[:midpoint])
+                + self._annotate_sentences_with_fallback(chapter, sentences[midpoint:])
+            )
+
+        if result.new_characters:
+            self.registry.add_new_characters(chapter, result.new_characters)
+        return [result]
 
     def prepare_voices_for_annotation(
         self,

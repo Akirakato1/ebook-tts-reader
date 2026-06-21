@@ -1,4 +1,9 @@
-from ebook_tts_pipeline.annotation.anthropic_client import parse_json_response_text
+import pytest
+
+from ebook_tts_pipeline.annotation.anthropic_client import (
+    AnnotationModelOutputError,
+    parse_json_response_text,
+)
 from ebook_tts_pipeline.annotation.prompts import render_annotation_prompt
 from ebook_tts_pipeline.domain import Sentence
 
@@ -9,6 +14,16 @@ def test_parse_json_response_text_accepts_markdown_json_fence():
     )
 
     assert payload["roles"] == ["Narrator"]
+
+
+def test_parse_json_response_text_rejects_empty_response_with_clear_error():
+    with pytest.raises(AnnotationModelOutputError, match="empty"):
+        parse_json_response_text("   ")
+
+
+def test_parse_json_response_text_includes_preview_for_non_json_response():
+    with pytest.raises(AnnotationModelOutputError, match="I cannot"):
+        parse_json_response_text("I cannot return that as JSON.")
 
 
 def test_annotation_prompt_explicitly_forbids_markdown_fences_and_names_narrator():

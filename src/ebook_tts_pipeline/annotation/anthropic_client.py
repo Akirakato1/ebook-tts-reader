@@ -10,12 +10,26 @@ class JsonCompletionClient(Protocol):
         ...
 
 
-def parse_json_response_text(text: str) -> Dict:
+class AnnotationModelOutputError(ValueError):
+    pass
+
+
+def parse_json_response_text(text: str, source: str = "model response") -> Dict:
     stripped = text.strip()
+    if not stripped:
+        raise AnnotationModelOutputError(f"{source} was empty; expected a JSON object.")
     fence_match = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL)
     if fence_match:
         stripped = fence_match.group(1).strip()
-    return json.loads(stripped)
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        raise AnnotationModelOutputError(
+            f"{source} was not valid JSON: {exc}. Preview: {_preview(stripped)}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise AnnotationModelOutputError(f"{source} must be a JSON object.")
+    return payload
 
 
 class AnthropicJsonClient:
@@ -46,4 +60,12 @@ class AnthropicJsonClient:
             for block in message.content
             if getattr(block, "type", None) == "text"
         )
-        return parse_json_response_text(text)
+        stop_reason = getattr(message, "stop_reason", "unknown")
+        return parse_json_response_text(text, source=f"Anthropic response (stop_reason={stop_reason})")
+
+
+def _preview(text: str, limit: int = 300) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[:limit]}..."

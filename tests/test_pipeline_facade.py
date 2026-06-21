@@ -1,3 +1,6 @@
+import re
+
+from ebook_tts_pipeline.annotation.anthropic_client import AnnotationModelOutputError
 from ebook_tts_pipeline.annotation.service import AnnotationService
 from ebook_tts_pipeline.config import PipelineConfig
 from ebook_tts_pipeline.domain import AnnotationResult
@@ -34,6 +37,24 @@ class QueuedLlmClient:
     def complete_json(self, system_prompt, user_prompt):
         self.calls += 1
         return self.payloads.pop(0)
+
+
+class SplitSensitiveLlmClient:
+    def __init__(self, max_sentences):
+        self.max_sentences = max_sentences
+        self.calls = []
+
+    def complete_json(self, system_prompt, user_prompt):
+        sentence_ids = [int(match) for match in re.findall(r"^\[(\d+)\]", user_prompt, flags=re.MULTILINE)]
+        self.calls.append(sentence_ids)
+        if len(sentence_ids) > self.max_sentences:
+            raise AnnotationModelOutputError("Anthropic returned non-JSON content")
+        return {
+            "new_characters": [],
+            "roles": ["Narrator"],
+            "types": ["narration", "dialogue", "thought"],
+            "script": [[0, 0, sentence_id] for sentence_id in sentence_ids],
+        }
 
 
 class CountingTtsAdapter(FakeTtsAdapter):
@@ -155,6 +176,34 @@ def test_pipeline_annotates_multi_window_chapter_and_preserves_new_characters(tm
     assert [character["name"] for character in annotation.new_characters] == ["Elena"]
     assert annotation.script == [(0, 0, 0), (1, 1, 1), (1, 2, 2)]
     assert registry["characters"]["elena_adult"]["display_name"] == "Elena"
+
+
+def test_pipeline_splits_annotation_window_after_unparseable_model_output(tmp_path):
+    book_root = tmp_path / "demo"
+    chapter_dir = book_root / "chapters"
+    chapter_dir.mkdir(parents=True)
+    (chapter_dir / "chapter_001.txt").write_text(
+        "One. Two. Three. Four.",
+        encoding="utf-8",
+    )
+    client = SplitSensitiveLlmClient(max_sentences=2)
+    pipeline = AudiobookPipeline(
+        config=PipelineConfig(
+            book_root=str(book_root),
+            anthropic_api_key="fake",
+            max_llm_window_chars=1000,
+        ),
+        annotation_service=AnnotationService(client, repair_retries=0),
+        tts_adapter=FakeTtsAdapter(sample_rate=1000, samples_per_character=5),
+        tokenizer=lambda text: ["One.", "Two.", "Three.", "Four."],
+    )
+
+    pipeline.registry.initialize_if_missing(book_title="Demo", book_slug="demo")
+    pipeline.segment_chapter("chapter_001")
+    annotation = pipeline.annotate_chapter("chapter_001")
+
+    assert client.calls == [[0, 1, 2, 3], [0, 1], [2, 3]]
+    assert annotation.script == [(0, 0, 0), (0, 0, 1), (0, 0, 2), (0, 0, 3)]
 
 
 def test_pipeline_prepares_default_and_internal_voice_variants_with_cache_invalidation_and_force(tmp_path):
