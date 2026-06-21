@@ -425,3 +425,38 @@ def test_controller_builds_global_registry(tmp_path):
     assert count == 1
     assert ("build_global_registry", "Demo") in calls
     assert read_json(paths.registry)["characters"]["akari_adult"]["display_name"] == "Akari"
+
+
+def test_controller_builds_global_registry_initializes_missing_registry(tmp_path):
+    calls = []
+    paths = BookPaths(tmp_path / "book")
+    library_path = tmp_path / "library.json"
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text("Chapter One\nText.", encoding="utf-8")
+    write_json_atomic(
+        library_path,
+        {
+            "books": [
+                {
+                    "title": "Demo",
+                    "slug": "demo",
+                    "book_root": str(paths.root),
+                    "epub_path": str(tmp_path / "demo.epub"),
+                }
+            ]
+        },
+    )
+    controller = PrototypeUiController(
+        book_root=paths.root,
+        library_path=library_path,
+        pipeline_factory=fake_pipeline_factory(calls),
+        fake_tts=True,
+    )
+
+    count = controller.build_global_registry()
+
+    assert count == 1
+    assert ("initialize", "Demo", "demo") in calls
+    assert ("build_global_registry", "Demo") in calls
+    assert read_json(paths.registry)["book"] == {"title": "Demo", "slug": "demo"}
+    assert read_json(paths.registry)["characters"]["akari_adult"]["display_name"] == "Akari"

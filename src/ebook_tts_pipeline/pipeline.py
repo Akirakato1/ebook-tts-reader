@@ -46,9 +46,18 @@ class AudiobookPipeline:
     def segment_chapter(self, chapter: str) -> SentenceArtifact:
         return self.segmenter.segment_chapter(self.paths, chapter)
 
-    def build_global_registry(self, book_title: Optional[str] = None) -> int:
+    def build_global_registry(
+        self,
+        book_title: Optional[str] = None,
+        book_slug: Optional[str] = None,
+    ) -> int:
         if self.global_registry_service is None:
             raise RuntimeError("Global registry service is not configured.")
+        if not self.paths.registry.exists():
+            self.registry.initialize_if_missing(
+                book_title=book_title or "Untitled Book",
+                book_slug=book_slug or self.paths.root.name or "book",
+            )
         registry = self.registry.load()
         title = book_title or str(registry.get("book", {}).get("title", "Untitled Book"))
         chapters = [

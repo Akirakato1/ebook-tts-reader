@@ -276,6 +276,28 @@ def test_pipeline_builds_global_registry_from_segmented_chapters(tmp_path):
     assert "global_evidence" not in registry["characters"]["akari_nakayama_adult"]
 
 
+def test_pipeline_builds_global_registry_initializes_missing_registry(tmp_path):
+    book_root = tmp_path / "demo"
+    chapter_dir = book_root / "chapters"
+    chapter_dir.mkdir(parents=True)
+    (chapter_dir / "chapter_001.txt").write_text("Akari waved.", encoding="utf-8")
+    service = FakeGlobalRegistryService([])
+    pipeline = AudiobookPipeline(
+        config=PipelineConfig(book_root=str(book_root), anthropic_api_key="fake"),
+        annotation_service=AnnotationService(QueuedLlmClient([]), repair_retries=0),
+        tts_adapter=FakeTtsAdapter(sample_rate=1000, samples_per_character=5),
+        tokenizer=lambda text: ["Akari waved."],
+        global_registry_service=service,
+    )
+
+    count = pipeline.build_global_registry(book_title="Demo", book_slug="demo")
+
+    registry = pipeline.registry.load()
+    assert count == 0
+    assert registry["book"] == {"title": "Demo", "slug": "demo"}
+    assert service.calls[0]["registry"]["characters"] == {}
+
+
 def test_pipeline_builds_global_registry_in_chapter_chunks_with_updated_registry(tmp_path):
     book_root = tmp_path / "demo"
     chapter_dir = book_root / "chapters"

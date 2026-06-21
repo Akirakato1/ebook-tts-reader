@@ -5,7 +5,7 @@ import webbrowser
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Protocol, Union
+from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, Union
 
 from ebook_tts_pipeline.annotation.anthropic_client import AnthropicJsonClient
 from ebook_tts_pipeline.annotation.global_registry import GlobalRegistryService
@@ -300,10 +300,9 @@ class PrototypeUiController:
 
     def build_global_registry(self) -> int:
         pipeline = self._pipeline(needs_llm=True)
-        registry = pipeline.registry.load()
-        count = pipeline.build_global_registry(
-            book_title=str(registry.get("book", {}).get("title", "Untitled Book")),
-        )
+        title, slug = self._registry_book_metadata()
+        pipeline.registry.initialize_if_missing(book_title=title, book_slug=slug)
+        count = pipeline.build_global_registry(book_title=title)
         return count
 
     def _pipeline(self, needs_llm: bool) -> AudiobookPipeline:
@@ -322,6 +321,26 @@ class PrototypeUiController:
             for item in payload.get("chapters", [])
             if item.get("chapter") and item.get("title")
         }
+
+    def _registry_book_metadata(self) -> Tuple[str, str]:
+        if self.paths.registry.exists():
+            registry = read_json(self.paths.registry)
+            book = dict(registry.get("book", {}))
+            title = str(book.get("title", "")).strip()
+            slug = str(book.get("slug", "")).strip()
+            if title and slug:
+                return title, slug
+
+        resolved_root = self.book_root.resolve()
+        for book in self.library_books():
+            try:
+                root_matches = book.book_root.resolve() == resolved_root
+            except OSError:
+                root_matches = False
+            if root_matches or (self.current_book_slug and book.slug == self.current_book_slug):
+                return book.title or "Untitled Book", book.slug or self.book_root.name or "book"
+
+        return self.book_root.name or "Untitled Book", self.current_book_slug or self.book_root.name or "book"
 
     def _chapter_title(self, chapter_file: Path, fallback: str) -> str:
         if not chapter_file.exists():
