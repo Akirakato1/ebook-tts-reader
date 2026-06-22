@@ -60,6 +60,7 @@ class SentenceSegmenter:
             for index, sentence in enumerate(raw_sentences)
             if sentence.strip()
         ]
+        units = split_sentence_units(sentences)
         artifact = SentenceArtifact(
             chapter=chapter,
             source_path=f"chapters/{chapter}.txt",
@@ -68,8 +69,9 @@ class SentenceSegmenter:
                 "language": "english",
                 "version": self._segmenter_version(),
             },
-            sentences=sentences,
-            units=split_sentence_units(sentences),
+            sentences=[Sentence(idx=unit.idx, text=unit.text) for unit in units],
+            units=units,
+            source_sentences=sentences,
         )
         write_json_atomic(paths.sentence_artifact(chapter), artifact.to_dict())
         return artifact

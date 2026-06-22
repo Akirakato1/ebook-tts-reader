@@ -90,6 +90,39 @@ def test_sentence_segmenter_splits_adjacent_quotes_into_role_allocation_units(tm
     ]
 
 
+def test_sentence_artifact_sentences_are_annotation_ready_segments(tmp_path):
+    paths = BookPaths(tmp_path / "demo")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text(
+        "\u201cI found this for you in the return bin.\u201d "
+        "\u201cWonderful, thank you.\u201d Callie took the thick paperback.",
+        encoding="utf-8",
+    )
+    segmenter = SentenceSegmenter(
+        tokenizer=lambda text: [
+            "\u201cI found this for you in the return bin.\u201d "
+            "\u201cWonderful, thank you.\u201d Callie took the thick paperback."
+        ]
+    )
+
+    segmenter.segment_chapter(paths, "chapter_001")
+
+    data = read_json(paths.sentence_artifact("chapter_001"))
+    assert data["sentences"] == [
+        {"idx": 0, "text": "\u201cI found this for you in the return bin.\u201d"},
+        {"idx": 1, "text": "\u201cWonderful, thank you.\u201d Callie took the thick paperback."},
+    ]
+    assert data["source_sentences"] == [
+        {
+            "idx": 0,
+            "text": (
+                "\u201cI found this for you in the return bin.\u201d "
+                "\u201cWonderful, thank you.\u201d Callie took the thick paperback."
+            ),
+        }
+    ]
+
+
 def test_sentence_segmenter_keeps_trailing_tag_with_quote_context(tmp_path):
     paths = BookPaths(tmp_path / "demo")
     paths.chapter_text("chapter_001").parent.mkdir(parents=True)

@@ -39,31 +39,49 @@ class SentenceArtifact:
     segmenter: Dict[str, str]
     sentences: List[Sentence]
     units: List[SentenceUnit] = field(default_factory=list)
+    source_sentences: List[Sentence] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload = {
             "chapter": self.chapter,
             "source_path": self.source_path,
             "segmenter": self.segmenter,
             "sentences": [asdict(sentence) for sentence in self.sentences],
             "units": [unit.to_dict() for unit in self.annotation_units],
         }
+        if self.source_sentences:
+            payload["source_sentences"] = [asdict(sentence) for sentence in self.source_sentences]
+        return payload
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SentenceArtifact":
-        sentences = [Sentence.from_dict(item) for item in data["sentences"]]
+        serialized_sentences = [Sentence.from_dict(item) for item in data["sentences"]]
         units = [
             SentenceUnit.from_dict(item)
             for item in data.get("units", [])
         ]
         if not units:
-            units = [SentenceUnit(idx=sentence.idx, sentence_idx=sentence.idx, text=sentence.text) for sentence in sentences]
+            units = [
+                SentenceUnit(idx=sentence.idx, sentence_idx=sentence.idx, text=sentence.text)
+                for sentence in serialized_sentences
+            ]
+        source_sentences = [
+            Sentence.from_dict(item)
+            for item in data.get("source_sentences", [])
+        ]
+        if not source_sentences:
+            source_sentences = serialized_sentences
+        sentences = [
+            Sentence(idx=unit.idx, text=unit.text)
+            for unit in units
+        ]
         return cls(
             chapter=str(data["chapter"]),
             source_path=str(data["source_path"]),
             segmenter=dict(data["segmenter"]),
             sentences=sentences,
             units=units,
+            source_sentences=source_sentences,
         )
 
     @property
