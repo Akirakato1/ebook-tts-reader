@@ -9,7 +9,6 @@ from ebook_tts_pipeline.annotation.global_registry import (
     GlobalRegistryService,
 )
 from ebook_tts_pipeline.annotation.merge import merge_annotation_windows
-from ebook_tts_pipeline.annotation.postprocess import normalize_mixed_dialogue_units
 from ebook_tts_pipeline.annotation.service import AnnotationService, known_annotation_role_names
 from ebook_tts_pipeline.annotation.validator import AnnotationValidationError, validate_annotation
 from ebook_tts_pipeline.audio import ChapterAudioBuilder
@@ -108,7 +107,6 @@ class AudiobookPipeline:
             )
 
         merged = merge_annotation_windows(window_results, self.registry.load())
-        merged = normalize_mixed_dialogue_units(merged, artifact, self.registry.load())
         validate_annotation(
             merged,
             expected_sentence_indices=[unit.idx for unit in artifact.annotation_units],
@@ -206,7 +204,6 @@ class AudiobookPipeline:
         artifact = SentenceArtifact.from_dict(read_json(self.paths.sentence_artifact(chapter)))
         registry = self.registry.load()
         annotation = normalize_annotation_local_speakers(annotation)
-        annotation = normalize_mixed_dialogue_units(annotation, artifact, registry)
         if self.paths.annotation(chapter).exists():
             write_json_atomic(self.paths.annotation(chapter), annotation.to_dict())
         temp_registry = ChapterTempRegistryManager(self.paths).write_for_annotation(chapter, registry, annotation)

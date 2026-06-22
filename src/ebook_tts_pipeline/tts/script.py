@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Tuple
 
-from ebook_tts_pipeline.annotation.postprocess import normalize_mixed_dialogue_units
 from ebook_tts_pipeline.domain import AnnotationResult, SentenceArtifact
 from ebook_tts_pipeline.registry import resolve_effective_voice
 from ebook_tts_pipeline.temp_registry import resolve_temp_voice
@@ -154,10 +153,8 @@ def build_tts_script(
     language: str,
     temp_registry: Optional[Dict[str, Any]] = None,
 ) -> TtsScript:
-    annotation = normalize_mixed_dialogue_units(annotation, artifact, registry)
     jobs = _build_sentence_jobs(annotation, artifact, registry, temp_registry or {})
-    if artifact.units:
-        jobs = _split_quote_continuation_jobs(jobs, registry)
+    jobs = _extract_narrator_context(jobs, registry)
     window_dicts = build_tts_windows(
         [_indexed_adapter_job(index, job) for index, job in enumerate(jobs)],
         max_chars=max_chars,
@@ -226,7 +223,7 @@ def _build_sentence_jobs(
     return sorted(jobs, key=lambda job: job.unit_idx)
 
 
-def _split_quote_continuation_jobs(
+def _extract_narrator_context(
     jobs: List[TtsSentenceJob],
     registry: Dict[str, Any],
 ) -> List[TtsSentenceJob]:
@@ -235,49 +232,39 @@ def _split_quote_continuation_jobs(
 
     narrator_effective = resolve_effective_voice(registry, "Narrator", "narration")
     split_jobs: List[TtsSentenceJob] = []
-    open_quote_template: Optional[TtsSentenceJob] = None
-    in_quote = False
-
     for job in jobs:
-        segments, in_quote = _quote_state_segments(job.text, starts_in_quote=in_quote)
-        if len(segments) == 1 and segments[0][0] == (open_quote_template is not None):
-            is_quote, text = segments[0]
-            if is_quote and open_quote_template is not None:
-                split_jobs.append(_quote_job_like(job, open_quote_template, text))
-            else:
-                split_jobs.append(job)
-            if in_quote and segments[0][0]:
-                open_quote_template = open_quote_template or job
-            elif not in_quote:
-                open_quote_template = None
-            continue
-
-        for is_quote, text in segments:
-            if not text:
-                continue
-            if is_quote:
-                quote_template = open_quote_template or job
-                split_jobs.append(_quote_job_like(job, quote_template, text))
-                if in_quote or _has_unclosed_quote(text):
-                    open_quote_template = quote_template
-                else:
-                    open_quote_template = None
-            else:
-                split_jobs.append(_narrator_job_like(job, text, narrator_effective))
-                if not in_quote:
-                    open_quote_template = None
-
-        if not in_quote:
-            open_quote_template = None
-
+        split_jobs.extend(_extract_narrator_context_jobs(job, narrator_effective))
     return split_jobs
 
 
-def _quote_state_segments(text: str, starts_in_quote: bool) -> Tuple[List[Tuple[bool, str]], bool]:
+def _extract_narrator_context_jobs(
+    job: TtsSentenceJob,
+    narrator_effective: Dict[str, Any],
+) -> List[TtsSentenceJob]:
+    if job.type not in {"dialogue", "thought"}:
+        return [job]
+
+    segments = _quote_context_segments(job.text, default_quote=job.type == "dialogue")
+    if len(segments) <= 1:
+        return [job]
+
+    jobs: List[TtsSentenceJob] = []
+    for is_quote, text in segments:
+        if is_quote:
+            jobs.append(replace(job, text=text))
+        else:
+            jobs.append(_narrator_job_like(job, text, narrator_effective))
+    return jobs
+
+
+def _quote_context_segments(text: str, default_quote: bool = False) -> List[Tuple[bool, str]]:
     segments: List[Tuple[bool, str]] = []
     current: List[str] = []
-    current_is_quote = starts_in_quote
-    in_quote = starts_in_quote
+    has_open_quote = any(char in text for char in {'"', "\u201c"})
+    has_close_quote = any(char in text for char in {'"', "\u201d"})
+    starts_as_quote = default_quote and not has_open_quote and has_close_quote
+    current_is_quote = starts_as_quote
+    in_quote = False
 
     for char in text:
         if not in_quote and char in {'"', "\u201c"}:
@@ -288,14 +275,15 @@ def _quote_state_segments(text: str, starts_in_quote: bool) -> Tuple[List[Tuple[
             continue
 
         current.append(char)
-        if in_quote and char in {'"', "\u201d"}:
+        is_default_close = starts_as_quote and not in_quote and char in {'"', "\u201d"}
+        if (in_quote and char in {'"', "\u201d"}) or is_default_close:
             _append_quote_segment(segments, current_is_quote, current)
             current = []
             current_is_quote = False
             in_quote = False
 
     _append_quote_segment(segments, current_is_quote, current)
-    return segments, in_quote
+    return segments
 
 
 def _append_quote_segment(
@@ -306,12 +294,6 @@ def _append_quote_segment(
     text = "".join(current).strip()
     if text:
         segments.append((is_quote, text))
-
-
-def _has_unclosed_quote(text: str) -> bool:
-    opens = text.count('"') + text.count("\u201c")
-    closes = text.count('"') + text.count("\u201d")
-    return opens > closes
 
 
 def _narrator_job_like(
@@ -329,23 +311,6 @@ def _narrator_job_like(
         type="narration",
         text=text,
         voice_config_path=record.get("voice_config_path"),
-    )
-
-
-def _quote_job_like(
-    job: TtsSentenceJob,
-    quote_template: TtsSentenceJob,
-    text: str,
-) -> TtsSentenceJob:
-    return replace(
-        job,
-        role=quote_template.role,
-        role_id=quote_template.role_id,
-        character=quote_template.character,
-        voice_variant=quote_template.voice_variant,
-        type="dialogue",
-        text=text,
-        voice_config_path=quote_template.voice_config_path,
     )
 
 

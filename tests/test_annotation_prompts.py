@@ -27,8 +27,21 @@ def test_annotation_prompt_requires_one_script_row_per_annotation_unit():
     assert "script: list of [role_idx, type_idx, unit_idx]" in prompt
     assert "Allowed unit_idx values: [0, 1]" in prompt
     assert "script must contain exactly 2 rows, one for each allowed unit_idx" in prompt
-    assert "If an input unit is narration around dialogue" in prompt
+    assert "Each annotation unit contains at most one non-narrator speaker section" in prompt
     assert "choose the first or primary speaker" not in prompt
+
+
+def test_annotation_prompt_describes_role_allocation_units():
+    prompt = render_annotation_prompt(
+        "chapter_001",
+        [Sentence(idx=0, text='"Hello." Alice smiled.')],
+        {"characters": {}},
+        lock_registry=True,
+    )
+
+    assert "Each annotation unit contains at most one non-narrator speaker section." in prompt
+    assert "If a unit contains quoted speech plus narrator context" in prompt
+    assert "Do not split or merge unit_idx values in your output." in prompt
 
 
 def test_annotation_prompt_does_not_request_global_character_creation():

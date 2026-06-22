@@ -65,8 +65,116 @@ def test_sentence_segmenter_splits_dialogue_embedded_narration_into_units(tmp_pa
     artifact = segmenter.segment_chapter(paths, "chapter_001")
 
     assert [unit.to_dict() for unit in artifact.units] == [
-        {"idx": 0, "sentence_idx": 0, "text": '"Go,"'},
-        {"idx": 1, "sentence_idx": 0, "text": "Callie said, looking away."},
-        {"idx": 2, "sentence_idx": 0, "text": '"Now."'},
-        {"idx": 3, "sentence_idx": 1, "text": "Plain narration."},
+        {"idx": 0, "sentence_idx": 0, "text": '"Go," Callie said, looking away.'},
+        {"idx": 1, "sentence_idx": 0, "text": '"Now."'},
+        {"idx": 2, "sentence_idx": 1, "text": "Plain narration."},
+    ]
+
+
+def test_sentence_segmenter_splits_adjacent_quotes_into_role_allocation_units(tmp_path):
+    paths = BookPaths(tmp_path / "demo")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text(
+        '"I found this for you." "Wonderful, thank you." Callie took the book.',
+        encoding="utf-8",
+    )
+    segmenter = SentenceSegmenter(
+        tokenizer=lambda text: ['"I found this for you." "Wonderful, thank you." Callie took the book.']
+    )
+
+    artifact = segmenter.segment_chapter(paths, "chapter_001")
+
+    assert [unit.to_dict() for unit in artifact.units] == [
+        {"idx": 0, "sentence_idx": 0, "text": '"I found this for you."'},
+        {"idx": 1, "sentence_idx": 0, "text": '"Wonderful, thank you." Callie took the book.'},
+    ]
+
+
+def test_sentence_segmenter_keeps_trailing_tag_with_quote_context(tmp_path):
+    paths = BookPaths(tmp_path / "demo")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text(
+        '"Go," Callie said, looking away. "Now."',
+        encoding="utf-8",
+    )
+    segmenter = SentenceSegmenter(
+        tokenizer=lambda text: ['"Go," Callie said, looking away. "Now."']
+    )
+
+    artifact = segmenter.segment_chapter(paths, "chapter_001")
+
+    assert [unit.to_dict() for unit in artifact.units] == [
+        {"idx": 0, "sentence_idx": 0, "text": '"Go," Callie said, looking away.'},
+        {"idx": 1, "sentence_idx": 0, "text": '"Now."'},
+    ]
+
+
+def test_sentence_segmenter_keeps_leading_tag_with_following_quote(tmp_path):
+    paths = BookPaths(tmp_path / "demo")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text(
+        'Walter said, "I like your jacket." "It is from high school." Callie turned around.',
+        encoding="utf-8",
+    )
+    segmenter = SentenceSegmenter(
+        tokenizer=lambda text: [
+            'Walter said, "I like your jacket." "It is from high school." Callie turned around.'
+        ]
+    )
+
+    artifact = segmenter.segment_chapter(paths, "chapter_001")
+
+    assert [unit.to_dict() for unit in artifact.units] == [
+        {"idx": 0, "sentence_idx": 0, "text": 'Walter said, "I like your jacket."'},
+        {"idx": 1, "sentence_idx": 0, "text": '"It is from high school." Callie turned around.'},
+    ]
+
+
+def test_sentence_segmenter_handles_smart_quote_role_units(tmp_path):
+    paths = BookPaths(tmp_path / "demo")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text(
+        "\u201cWelcome, friend.\u201d Callie smiled. \u201cThank you.\u201d",
+        encoding="utf-8",
+    )
+    segmenter = SentenceSegmenter(
+        tokenizer=lambda text: [
+            "\u201cWelcome, friend.\u201d Callie smiled. \u201cThank you.\u201d"
+        ]
+    )
+
+    artifact = segmenter.segment_chapter(paths, "chapter_001")
+
+    assert [unit.to_dict() for unit in artifact.units] == [
+        {"idx": 0, "sentence_idx": 0, "text": "\u201cWelcome, friend.\u201d Callie smiled."},
+        {"idx": 1, "sentence_idx": 0, "text": "\u201cThank you.\u201d"},
+    ]
+
+
+def test_sentence_segmenter_preserves_open_quote_continuations_as_role_units(tmp_path):
+    paths = BookPaths(tmp_path / "demo")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text(
+        "\u201cI could not see your face. You never looked up. "
+        "You did what she told you to do.\u201d It was almost a relief.",
+        encoding="utf-8",
+    )
+    segmenter = SentenceSegmenter(
+        tokenizer=lambda text: [
+            "\u201cI could not see your face.",
+            "You never looked up.",
+            "You did what she told you to do.\u201d It was almost a relief.",
+        ]
+    )
+
+    artifact = segmenter.segment_chapter(paths, "chapter_001")
+
+    assert [unit.to_dict() for unit in artifact.units] == [
+        {"idx": 0, "sentence_idx": 0, "text": "\u201cI could not see your face."},
+        {"idx": 1, "sentence_idx": 1, "text": "You never looked up."},
+        {
+            "idx": 2,
+            "sentence_idx": 2,
+            "text": "You did what she told you to do.\u201d It was almost a relief.",
+        },
     ]

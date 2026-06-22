@@ -55,9 +55,11 @@ def render_annotation_prompt(
         "- roles: list of role names appearing in this window\n"
         '- Use exactly "Narrator" for narration, not "narrator" or another variant.\n'
         '- types: exactly ["narration", "dialogue", "thought"]\n'
-        "- The chapter text has already been split into annotation units. A single source sentence can have multiple units.\n"
-        "- If an input unit is narration around dialogue, such as said-tags or action beats outside quotes, label it Narrator/narration.\n"
-        "- If an input unit is quoted external speech, label it as the speaking character/dialogue.\n"
+        "- Each annotation unit contains at most one non-narrator speaker section.\n"
+        "- A unit may include quoted speech plus narrator context, such as said-tags or short action beats.\n"
+        "- If a unit contains quoted speech plus narrator context, label the unit as the quoted speaker/dialogue.\n"
+        "- If a unit contains no quoted speech or thought, label it Narrator/narration.\n"
+        "- Do not split or merge unit_idx values in your output.\n"
         "- script: list of [role_idx, type_idx, unit_idx]\n"
         f"- Allowed unit_idx values: {json.dumps(allowed_indexes)}\n"
         f"- script must contain exactly {len(sentences)} rows, one for each allowed unit_idx.\n"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, Iterable, List, Optional, Tuple
 
 from ebook_tts_pipeline.domain import Sentence, SentenceArtifact, SentenceUnit
 from ebook_tts_pipeline.json_io import write_json_atomic
@@ -108,54 +108,111 @@ def fallback_sentence_tokenize(text: str) -> List[str]:
 
 def split_sentence_units(sentences: List[Sentence]) -> List[SentenceUnit]:
     units: List[SentenceUnit] = []
+    quote_open = False
     for sentence in sentences:
-        for fragment in split_dialogue_embedded_text(sentence.text):
-            units.append(SentenceUnit(idx=len(units), sentence_idx=sentence.idx, text=fragment))
+        fragments, quote_open = _scan_quote_fragments(sentence.text, starts_in_quote=quote_open)
+        for text in _role_units_from_fragments(fragments):
+            units.append(SentenceUnit(idx=len(units), sentence_idx=sentence.idx, text=text))
     return units
 
 
 def split_dialogue_embedded_text(text: str) -> List[str]:
-    fragments = _quote_split_fragments(text)
-    if len(fragments) <= 1:
-        return [text.strip()] if text.strip() else []
-    return fragments
+    fragments, _ = _scan_quote_fragments(text)
+    return _role_units_from_fragments(fragments)
 
 
-def _quote_split_fragments(text: str) -> List[str]:
-    fragments: List[str] = []
+@dataclass(frozen=True)
+class QuoteFragment:
+    text: str
+    kind: str
+
+
+QUOTE_PAIRS = {
+    '"': '"',
+    "\u201c": "\u201d",
+}
+CLOSE_QUOTES = {'"', "\u201d"}
+
+
+def _scan_quote_fragments(text: str, starts_in_quote: bool = False) -> Tuple[List[QuoteFragment], bool]:
+    fragments: List[QuoteFragment] = []
     current: List[str] = []
-    in_quote = False
+    in_quote = starts_in_quote
     quote_close = ""
-    opened_quote = False
-    closed_quote = False
-
+    current_kind = "quote" if starts_in_quote else "narration"
     for char in text:
-        is_open_quote = char in {'"', "“"}
-        is_close_quote = in_quote and char == quote_close
-        if is_open_quote and not in_quote:
-            _append_fragment(fragments, current)
+        if not in_quote and char in QUOTE_PAIRS:
+            _append_quote_fragment(fragments, current, current_kind)
             current = [char]
             in_quote = True
-            quote_close = "”" if char == "“" else char
-            opened_quote = True
+            quote_close = QUOTE_PAIRS[char]
+            current_kind = "quote"
             continue
 
         current.append(char)
-        if is_close_quote:
-            _append_fragment(fragments, current)
+        is_close = char == quote_close or (starts_in_quote and char in CLOSE_QUOTES)
+        if in_quote and is_close:
+            _append_quote_fragment(fragments, current, current_kind)
             current = []
             in_quote = False
             quote_close = ""
-            closed_quote = True
+            current_kind = "narration"
 
-    if in_quote or (opened_quote and not closed_quote):
-        return [text.strip()] if text.strip() else []
-
-    _append_fragment(fragments, current)
-    return fragments
+    _append_quote_fragment(fragments, current, current_kind)
+    return fragments, in_quote
 
 
-def _append_fragment(fragments: List[str], current: List[str]) -> None:
-    fragment = "".join(current).strip()
-    if fragment:
-        fragments.append(fragment)
+def _append_quote_fragment(
+    fragments: List[QuoteFragment],
+    current: List[str],
+    kind: str,
+) -> None:
+    text = "".join(current).strip()
+    if text:
+        fragments.append(QuoteFragment(text=text, kind=kind))
+
+
+def _role_units_from_fragments(fragments: List[QuoteFragment]) -> List[str]:
+    if not fragments:
+        return []
+    if not any(fragment.kind == "quote" for fragment in fragments):
+        joined = _join_nonempty(fragment.text for fragment in fragments)
+        return [joined] if joined else []
+
+    units: List[str] = []
+    pending_narration = ""
+    for fragment in fragments:
+        if fragment.kind == "narration":
+            pending_narration = _join_unit_text(pending_narration, fragment.text)
+            continue
+
+        quote_text = fragment.text
+        if pending_narration:
+            if units:
+                units[-1] = _join_unit_text(units[-1], pending_narration)
+            else:
+                quote_text = _join_unit_text(pending_narration, quote_text)
+            pending_narration = ""
+        units.append(quote_text)
+
+    if pending_narration:
+        if units:
+            units[-1] = _join_unit_text(units[-1], pending_narration)
+        else:
+            units.append(pending_narration)
+
+    return [unit for unit in units if unit.strip()]
+
+
+def _join_nonempty(parts: Iterable[str]) -> str:
+    return " ".join(part.strip() for part in parts if part.strip())
+
+
+def _join_unit_text(left: str, right: str) -> str:
+    left = left.strip()
+    right = right.strip()
+    if not left:
+        return right
+    if not right:
+        return left
+    return f"{left} {right}"

@@ -27,7 +27,7 @@ class FakeLlmClient:
             ],
             "roles": ["Narrator", "Elena"],
             "types": ["narration", "dialogue", "thought"],
-            "script": [[0, 0, 0], [1, 1, 1], [0, 0, 2]],
+            "script": [[0, 0, 0], [1, 1, 1]],
         }
 
 
@@ -177,7 +177,7 @@ def test_pipeline_annotates_multi_window_chapter_converts_legacy_new_characters_
                 ],
                 "roles": ["Narrator", "Elena"],
                 "types": ["narration", "dialogue", "thought"],
-                "script": [[0, 0, 0], [1, 1, 1], [0, 0, 2]],
+                "script": [[0, 0, 0], [1, 1, 1]],
             },
             {
                 "local_speakers": [
@@ -189,7 +189,7 @@ def test_pipeline_annotates_multi_window_chapter_converts_legacy_new_characters_
                 ],
                 "roles": ["Narrator", "Elena"],
                 "types": ["narration", "dialogue", "thought"],
-                "script": [[1, 2, 3]],
+                "script": [[0, 0, 2]],
             },
         ]
     )
@@ -216,7 +216,7 @@ def test_pipeline_annotates_multi_window_chapter_converts_legacy_new_characters_
     assert client.calls == 2
     assert annotation.new_characters == []
     assert [speaker["label"] for speaker in annotation.local_speakers] == ["Elena"]
-    assert annotation.script == [(0, 0, 0), (1, 1, 1), (0, 0, 2), (1, 2, 3)]
+    assert annotation.script == [(0, 0, 0), (1, 1, 1), (0, 0, 2)]
     assert registry["characters"] == {}
 
 
@@ -424,7 +424,7 @@ def test_pipeline_locked_annotation_does_not_mutate_registry_with_new_characters
                 ],
                 "roles": ["Narrator", "Mystery"],
                 "types": ["narration", "dialogue", "thought"],
-                "script": [[1, 1, 0], [0, 0, 1]],
+                "script": [[1, 1, 0]],
             }
         ]
     )
@@ -509,7 +509,7 @@ def test_pipeline_locked_annotation_accepts_unique_registry_display_names(tmp_pa
                 "new_characters": [],
                 "roles": ["Narrator", "Buddy Waleski"],
                 "types": ["narration", "dialogue", "thought"],
-                "script": [[1, 1, 0], [0, 0, 1]],
+                "script": [[1, 1, 0]],
             }
         ]
     )
@@ -538,7 +538,7 @@ def test_pipeline_locked_annotation_accepts_unique_registry_display_names(tmp_pa
 
     annotation = pipeline.annotate_chapter("chapter_001", lock_registry=True)
 
-    assert annotation.roles == ["Buddy Waleski", "Narrator"]
+    assert annotation.roles == ["Buddy Waleski"]
 
 
 def test_pipeline_prepares_default_and_internal_voice_variants_with_cache_invalidation_and_force(tmp_path):
