@@ -21,7 +21,8 @@ class PipelineConfig:
     qwen_device: str = "auto"
     qwen_precision: str = "bf16"
     qwen_attention: str = "auto"
-    qwen_batch_size: int = 24
+    qwen_batch_size: int = 8
+    qwen_max_block_chars: int = 600
     global_registry_window_chars: int = 2000000
     max_llm_window_chars: int = 48000
     max_llm_window_sentences: int = 300
@@ -51,7 +52,8 @@ class PipelineConfig:
             qwen_device=os.environ.get("EBOOK_TTS_QWEN_DEVICE", "auto"),
             qwen_precision=os.environ.get("EBOOK_TTS_QWEN_PRECISION", "bf16"),
             qwen_attention=os.environ.get("EBOOK_TTS_QWEN_ATTENTION", "auto"),
-            qwen_batch_size=int(os.environ.get("EBOOK_TTS_QWEN_BATCH_SIZE", "24")),
+            qwen_batch_size=int(os.environ.get("EBOOK_TTS_QWEN_BATCH_SIZE", "8")),
+            qwen_max_block_chars=int(os.environ.get("EBOOK_TTS_QWEN_MAX_BLOCK_CHARS", "600")),
             global_registry_window_chars=int(
                 os.environ.get("EBOOK_TTS_GLOBAL_REGISTRY_WINDOW_CHARS", "2000000")
             ),

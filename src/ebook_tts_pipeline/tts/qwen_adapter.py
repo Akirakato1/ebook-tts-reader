@@ -160,7 +160,8 @@ class QwenTtsAdapter:
         device: str = "auto",
         precision: str = "bf16",
         attention: str = "auto",
-        max_batch_size: int = 24,
+        max_batch_size: int = 8,
+        max_block_chars: int = 600,
     ) -> None:
         self.torch = torch_module if torch_module is not None else self._load_torch()
         self.model = model if model is not None else self._load_default_model(
@@ -173,6 +174,7 @@ class QwenTtsAdapter:
         self.role_voice_paths = role_voice_paths or {}
         self.language = language
         self.max_batch_size = max(1, int(max_batch_size))
+        self.max_block_chars = max(1, int(max_block_chars))
         self._voice_prompt_cache: Dict[str, Any] = {}
 
     def ensure_voice(self, role_id: str, voice_record: Dict, voice_path: Path) -> Path:
@@ -227,11 +229,21 @@ class QwenTtsAdapter:
         current_jobs: List[Dict] = []
         current_role: Optional[str] = None
         current_voice_path: Optional[Path] = None
+        current_chars = 0
 
         for job in jobs:
             role = str(job["role"])
             voice_path = self.role_voice_paths[role]
-            if current_jobs and (role != current_role or voice_path != current_voice_path):
+            job_chars = _audio_timeline_weight(str(job["text"]))
+            separator_chars = 1 if current_jobs else 0
+            would_exceed_block = current_jobs and (
+                current_chars + separator_chars + job_chars > self.max_block_chars
+            )
+            if current_jobs and (
+                role != current_role
+                or voice_path != current_voice_path
+                or would_exceed_block
+            ):
                 blocks.append(
                     _GenerationBlock(
                         role=current_role or "",
@@ -240,8 +252,11 @@ class QwenTtsAdapter:
                     )
                 )
                 current_jobs = []
+                current_chars = 0
             current_role = role
             current_voice_path = voice_path
+            separator_chars = 1 if current_jobs else 0
+            current_chars += separator_chars + job_chars
             current_jobs.append(job)
 
         if current_jobs:

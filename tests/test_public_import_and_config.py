@@ -17,6 +17,7 @@ def test_default_config_is_ui_friendly_and_overridable(monkeypatch):
     assert config.qwen_model_root == "models/qwen-tts"
     assert config.qwen_model_choice == "1.7B"
     assert config.qwen_batch_size == 4
+    assert config.qwen_max_block_chars == 600
     assert config.max_tts_roles == 8
     assert config.debug_log_root == "logs/debug"
     assert config.global_registry_window_chars == 135000
@@ -41,4 +42,5 @@ def test_config_falls_back_to_user_env_lookup_for_anthropic_key(monkeypatch):
 
     assert config.anthropic_api_key == "user-key"
     assert config.global_registry_window_chars == 2000000
-    assert config.qwen_batch_size == 24
+    assert config.qwen_batch_size == 8
+    assert config.qwen_max_block_chars == 600

@@ -228,7 +228,7 @@ class PrototypeUiController:
 
     def save_tts_settings(self, values: Dict[str, Any]) -> None:
         settings = {
-            "qwen_batch_size": _positive_int(values.get("qwen_batch_size"), 24),
+            "qwen_batch_size": _positive_int(values.get("qwen_batch_size"), 8),
             "tts_speed": _positive_float(values.get("tts_speed"), 1.0),
             "pause_between_sentences_ms": _nonnegative_int(values.get("pause_between_sentences_ms"), 250),
             "intra_sentence_pause_ms": _nonnegative_int(values.get("intra_sentence_pause_ms"), 50),
@@ -751,6 +751,7 @@ def _build_qwen_adapter(config: PipelineConfig) -> QwenTtsAdapter:
         precision=config.qwen_precision,
         attention=config.qwen_attention,
         max_batch_size=config.qwen_batch_size,
+        max_block_chars=config.qwen_max_block_chars,
     )
 
 

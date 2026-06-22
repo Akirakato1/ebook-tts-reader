@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ebook_tts_pipeline.annotation.quote_attribution import QuoteAttributionResult
 from ebook_tts_pipeline.annotation.quotes import QuoteExtraction
 from ebook_tts_pipeline.domain import AnnotationResult, SentenceArtifact
+from ebook_tts_pipeline.ingestion import fallback_sentence_tokenize
 from ebook_tts_pipeline.registry import resolve_effective_voice
 from ebook_tts_pipeline.temp_registry import resolve_temp_voice
 from ebook_tts_pipeline.windowing import build_tts_windows
@@ -179,7 +180,8 @@ def build_tts_script_from_quotes(
     segments: List[Tuple[int, int, str, str, Dict[str, Any]]] = []
 
     for span in extraction.narrator_spans:
-        segments.append((span.start, span.end, span.text, "narration", narrator_effective))
+        for part_idx, text in enumerate(_split_narrator_span_text(span.text)):
+            segments.append((span.start, part_idx, text, "narration", narrator_effective))
 
     for quote in extraction.quotes:
         role_name, quote_type = quote_attribution[quote.idx]
@@ -194,7 +196,7 @@ def build_tts_script_from_quotes(
                 effective = resolve_temp_voice(temp_registry or {}, role_name, speech_type)
                 if effective is None:
                     raise
-        segments.append((quote.start, quote.end, quote.text, speech_type, effective))
+        segments.append((quote.start, 0, quote.text, speech_type, effective))
 
     jobs: List[TtsSentenceJob] = []
     for order, (_, __, text, speech_type, effective) in enumerate(sorted(segments, key=lambda item: item[0])):
@@ -214,6 +216,14 @@ def build_tts_script_from_quotes(
         )
 
     return _build_script_from_jobs(chapter, jobs, max_chars, max_roles, language)
+
+
+def _split_narrator_span_text(text: str) -> List[str]:
+    normalized = text.strip()
+    if not normalized:
+        return []
+    parts = fallback_sentence_tokenize(normalized)
+    return parts or [normalized]
 
 
 def _build_script_from_jobs(

@@ -161,6 +161,7 @@ def _build_qwen_adapter(config: PipelineConfig) -> QwenTtsAdapter:
         precision=config.qwen_precision,
         attention=config.qwen_attention,
         max_batch_size=config.qwen_batch_size,
+        max_block_chars=config.qwen_max_block_chars,
     )
 
 

@@ -35,7 +35,7 @@ class PrototypeTkApp:
         self.book_title = tk.StringVar(value="Untitled Book")
         self.book_slug = tk.StringVar(value=Path(book_root).name or "book")
         self.fake_tts = tk.BooleanVar(value=fake_tts)
-        self.tts_batch_size = tk.StringVar(value="24")
+        self.tts_batch_size = tk.StringVar(value="8")
         self.tts_speed = tk.StringVar(value="1.0")
         self.tts_pause_ms = tk.StringVar(value="250")
         self.tts_intra_pause_ms = tk.StringVar(value="50")

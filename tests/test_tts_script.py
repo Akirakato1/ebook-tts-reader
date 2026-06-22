@@ -79,6 +79,53 @@ def test_builds_quote_attributed_tts_script_with_single_voice_roles():
     )
 
 
+def test_quote_tts_script_splits_narrator_spans_into_sentence_jobs():
+    chapter_text = '"Ready?" Callie stood up. She checked the exit. "Ready."'
+    extraction = extract_quoted_dialogue(chapter_text)
+    attribution = QuoteAttributionResult.from_dict(
+        {
+            "roles": ["callie_child"],
+            "quotes": [[1, 0], [2, 0]],
+        }
+    )
+    registry = {
+        "book": {"slug": "demo"},
+        "narrator": {
+            "role_id": "narrator",
+            "display_name": "Narrator",
+            "voice_config_path": "voices/narrator.qvp",
+        },
+        "characters": {
+            "callie_child": {
+                "role_id": "callie_child",
+                "display_name": "Callie",
+                "aliases": ["Callie child"],
+                "voice_profile": {"qwen_instruct": "Callie child voice."},
+                "voice_config_path": "voices/callie_child.qvp",
+            }
+        },
+    }
+
+    script = build_tts_script_from_quotes(
+        chapter="chapter_001",
+        chapter_text=chapter_text,
+        extraction=extraction,
+        attribution=attribution,
+        registry=registry,
+        max_chars=1000,
+        max_roles=8,
+        language="auto",
+    )
+
+    assert [(job.role, job.text) for job in script.jobs] == [
+        ("callie_child", '"Ready?"'),
+        ("Narrator", "Callie stood up."),
+        ("Narrator", "She checked the exit."),
+        ("callie_child", '"Ready."'),
+    ]
+    assert [job.sentence_idx for job in script.jobs] == [0, 1, 2, 3]
+
+
 def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
     artifact = SentenceArtifact(
         chapter="chapter_001",
