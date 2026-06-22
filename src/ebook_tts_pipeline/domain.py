@@ -79,6 +79,7 @@ class AnnotationResult:
     roles: List[str]
     types: List[str]
     script: List[Tuple[int, int, int]]
+    local_speakers: List[Dict[str, Any]] = field(default_factory=list)
     proposed_new_characters: List[Dict[str, Any]] = field(default_factory=list)
 
     @classmethod
@@ -88,6 +89,7 @@ class AnnotationResult:
             roles=[str(role) for role in data["roles"]],
             types=[str(item) for item in data["types"]],
             script=[tuple(int(value) for value in row) for row in data["script"]],
+            local_speakers=list(data.get("local_speakers", [])),
             proposed_new_characters=list(data.get("proposed_new_characters", [])),
         )
 
@@ -98,6 +100,8 @@ class AnnotationResult:
             "types": self.types,
             "script": [list(row) for row in self.script],
         }
+        if self.local_speakers:
+            payload["local_speakers"] = self.local_speakers
         if self.proposed_new_characters:
             payload["proposed_new_characters"] = self.proposed_new_characters
         return payload

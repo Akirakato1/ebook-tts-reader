@@ -92,6 +92,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         pipeline = _build_pipeline(config, needs_llm=False, fake_tts=args.fake_tts)
         pipeline.prepare_voices_for_annotation(
             _load_annotation(pipeline, args.chapter),
+            chapter=args.chapter,
             force_regenerate=args.regenerate_voices,
         )
         return 0
@@ -101,6 +102,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         annotation = _load_annotation(pipeline, args.chapter)
         pipeline.prepare_voices_for_annotation(
             annotation,
+            chapter=args.chapter,
             force_regenerate=args.regenerate_voices,
         )
         if args.rebuild_tts_script or not pipeline.paths.tts_script(args.chapter).exists():

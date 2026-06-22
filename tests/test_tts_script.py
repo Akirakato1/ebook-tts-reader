@@ -314,6 +314,81 @@ def test_tts_script_uses_annotation_units_for_embedded_dialogue_tags():
     assert script.qwen_dialogue_text == 'Callie_default: "Stay here,"\nNarrator: Callie said.'
 
 
+def test_tts_script_resolves_chapter_local_speakers_from_temp_registry():
+    artifact = SentenceArtifact(
+        chapter="chapter_013",
+        source_path="chapters/chapter_013.txt",
+        segmenter={"name": "test"},
+        sentences=[Sentence(0, '"Move along," the guard said.')],
+    )
+    annotation = AnnotationResult(
+        new_characters=[],
+        local_speakers=[
+            {
+                "local_id": "tmp_001",
+                "label": "Security Guard",
+                "profile": {
+                    "age_stage": "adult",
+                    "gender": "male",
+                    "personality": ["authoritative"],
+                    "occupation": "security guard",
+                },
+            }
+        ],
+        roles=["tmp_001"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 1, 0)],
+    )
+    registry = {
+        "book": {"slug": "demo"},
+        "narrator": {"role_id": "narrator", "display_name": "Narrator"},
+        "characters": {},
+    }
+    temp_registry = {
+        "chapter": "chapter_013",
+        "speakers": {
+            "tmp_001": {
+                "local_id": "tmp_001",
+                "label": "Security Guard",
+                "voice_variants": {
+                    "default": {
+                        "role_id": "chapter_013_tmp_001_default",
+                        "display_name": "Security Guard_default",
+                        "voice_config_path": "voices/_temp/chapter_013/tmp_001_default.qvp",
+                        "voice_profile": {"qwen_instruct": "An adult male security guard voice."},
+                    }
+                },
+            }
+        },
+    }
+
+    script = build_tts_script(
+        chapter="chapter_013",
+        annotation=annotation,
+        artifact=artifact,
+        registry=registry,
+        temp_registry=temp_registry,
+        max_chars=1000,
+        max_roles=8,
+        language="auto",
+    )
+
+    assert [job.to_dict() for job in script.jobs] == [
+        {
+            "sentence_idx": 0,
+            "unit_idx": 0,
+            "role": "Security Guard_default",
+            "role_id": "chapter_013_tmp_001_default",
+            "character": "Security Guard",
+            "voice_variant": "default",
+            "type": "dialogue",
+            "text": '"Move along," the guard said.',
+            "voice_config_path": "voices/_temp/chapter_013/tmp_001_default.qvp",
+        }
+    ]
+    assert script.qwen_dialogue_text == 'Security Guard_default: "Move along," the guard said.'
+
+
 def test_tts_script_respects_role_limit_when_creating_windows():
     sentences = [Sentence(idx, f"Sentence {idx}.") for idx in range(9)]
     artifact = SentenceArtifact(

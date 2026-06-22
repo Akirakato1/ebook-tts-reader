@@ -22,6 +22,12 @@ def test_book_paths_match_spec_layout(tmp_path):
         "audio/chapter_001.timeline.json"
     )
     assert paths.voice_qvp("elena").as_posix().endswith("voices/elena.qvp")
+    assert paths.chapter_temp_registry("chapter_001").as_posix().endswith(
+        "temp_registries/chapter_001.temp_registry.json"
+    )
+    assert paths.temp_voice_qvp("chapter_001", "tmp_001", "default").as_posix().endswith(
+        "voices/_temp/chapter_001/tmp_001_default.qvp"
+    )
 
 
 def test_sentence_artifact_serializes_with_stable_sentence_indexes():

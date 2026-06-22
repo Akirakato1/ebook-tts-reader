@@ -24,10 +24,15 @@ def render_annotation_prompt(
     known_characters = compact_registry_for_annotation_prompt(registry)
     character_schema = (
         "- new_characters: []\n"
-        "- proposed_new_characters: list of {name, profile} for any speaker not in the locked registry.\n"
+        "- local_speakers: list of {local_id, label, profile} for chapter-scoped temporary speakers "
+        "not in the locked registry.\n"
+        "- local_speakers are for unnamed one-off, background, or disposable speakers whose exact voice "
+        "does not need consistency across chapters.\n"
+        "- No approval is required for local_speakers; estimate a compact profile good enough for a fitting voice.\n"
         "- Do not add to new_characters when the registry is locked.\n"
         if lock_registry
-        else "- new_characters: list of {name, profile}\n"
+        else "- new_characters: list of {name, profile} for named, story-relevant speakers missing from the registry.\n"
+        "- local_speakers: list of {local_id, label, profile} for unnamed one-off, background, or disposable speakers.\n"
     )
     return (
         f"Known characters: {json.dumps(known_characters, ensure_ascii=False, separators=(',', ':'))}\n\n"
@@ -36,7 +41,10 @@ def render_annotation_prompt(
         "Return JSON with these keys:\n"
         f"{character_schema}"
         "- Do not include Narrator in new_characters.\n"
+        "- Do not include local_speakers in new_characters.\n"
+        '- local_id must be stable within this chapter window, such as "tmp_001"; roles may use the local_id or label.\n'
         "- Every new_characters item must include profile.\n"
+        "- Every local_speakers item must include profile.\n"
         "- profile must be a JSON object, never null, never a string.\n"
         '- Example profile object: {"age_stage":"adult","gender":"female","personality":["guarded"]}.\n'
         "- For each new character, profile must be compact and only contain identity fields needed for future voice/profile decisions.\n"

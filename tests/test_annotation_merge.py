@@ -75,3 +75,95 @@ def test_merge_annotation_windows_preserves_disambiguating_alias_for_duplicate_d
 
     assert merged.roles == ["Callie child", "Callie adult"]
     assert merged.script == [(0, 1, 0), (1, 2, 1)]
+
+
+def test_merge_annotation_windows_preserves_local_speakers_without_global_promotion():
+    registry = {"characters": {}}
+    first = AnnotationResult(
+        new_characters=[],
+        local_speakers=[
+            {
+                "local_id": "tmp_001",
+                "label": "Security Guard",
+                "profile": {
+                    "age_stage": "adult",
+                    "gender": "male",
+                    "personality": ["authoritative"],
+                },
+            }
+        ],
+        roles=["Narrator", "tmp_001"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 0, 0), (1, 1, 1)],
+    )
+    second = AnnotationResult(
+        new_characters=[],
+        local_speakers=[
+            {
+                "local_id": "tmp_002",
+                "label": "Houseless man",
+                "profile": {
+                    "age_stage": "adult",
+                    "gender": "male",
+                    "personality": ["anxious"],
+                },
+            }
+        ],
+        roles=["Houseless man"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 1, 2)],
+    )
+
+    merged = merge_annotation_windows([first, second], registry)
+
+    assert merged.new_characters == []
+    assert [speaker["label"] for speaker in merged.local_speakers] == ["Security Guard", "Houseless man"]
+    assert merged.roles == ["Narrator", "tmp_001", "tmp_002"]
+    assert merged.script == [(0, 0, 0), (1, 1, 1), (2, 1, 2)]
+
+
+def test_merge_annotation_windows_renumbers_reused_local_ids_from_different_windows():
+    registry = {"characters": {}}
+    first = AnnotationResult(
+        new_characters=[],
+        local_speakers=[
+            {
+                "local_id": "tmp_001",
+                "label": "Security Guard",
+                "profile": {
+                    "age_stage": "adult",
+                    "gender": "male",
+                    "personality": ["authoritative"],
+                },
+            }
+        ],
+        roles=["tmp_001"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 1, 0)],
+    )
+    second = AnnotationResult(
+        new_characters=[],
+        local_speakers=[
+            {
+                "local_id": "tmp_001",
+                "label": "Houseless man",
+                "profile": {
+                    "age_stage": "adult",
+                    "gender": "male",
+                    "personality": ["anxious"],
+                },
+            }
+        ],
+        roles=["tmp_001"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 1, 1)],
+    )
+
+    merged = merge_annotation_windows([first, second], registry)
+
+    assert [(speaker["local_id"], speaker["label"]) for speaker in merged.local_speakers] == [
+        ("tmp_001", "Security Guard"),
+        ("tmp_002", "Houseless man"),
+    ]
+    assert merged.roles == ["tmp_001", "tmp_002"]
+    assert merged.script == [(0, 1, 0), (1, 1, 1)]

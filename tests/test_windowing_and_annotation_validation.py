@@ -40,6 +40,50 @@ def test_annotation_validator_accepts_complete_compact_script():
     validate_annotation(result, expected_sentence_indices=[0, 1], known_names={"Elena"})
 
 
+def test_annotation_validator_accepts_chapter_local_speaker_roles():
+    result = AnnotationResult(
+        new_characters=[],
+        local_speakers=[
+            {
+                "local_id": "tmp_001",
+                "label": "Security Guard",
+                "profile": {
+                    "age_stage": "adult",
+                    "gender": "male",
+                    "personality": ["authoritative"],
+                    "occupation": "security guard",
+                },
+            }
+        ],
+        roles=["Narrator", "tmp_001", "Security Guard"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 0, 0), (1, 1, 1), (2, 1, 2)],
+    )
+
+    validate_annotation(result, expected_sentence_indices=[0, 1, 2], known_names={"Narrator"})
+
+
+def test_annotation_validator_rejects_malformed_local_speaker_profile():
+    result = AnnotationResult(
+        new_characters=[],
+        local_speakers=[
+            {
+                "local_id": "tmp_001",
+                "label": "Security Guard",
+                "profile": {"gender": "male"},
+            }
+        ],
+        roles=["tmp_001"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 1, 0)],
+    )
+
+    with pytest.raises(AnnotationValidationError) as exc:
+        validate_annotation(result, expected_sentence_indices=[0], known_names={"Narrator"})
+
+    assert "local speaker profile.age_stage must be a non-empty string: Security Guard" in str(exc.value)
+
+
 def test_annotation_validator_rejects_duplicate_sentence_ids():
     result = AnnotationResult(
         new_characters=[],

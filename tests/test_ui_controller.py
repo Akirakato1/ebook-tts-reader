@@ -5,7 +5,6 @@ import pytest
 from ebook_tts_pipeline.epub_ingestion import EpubExtractResult
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
-from ebook_tts_pipeline.registry import resolve_effective_voice
 from ebook_tts_pipeline.ui.controller import ChapterStage, PrototypeUiController
 
 
@@ -92,8 +91,8 @@ class FakePipeline:
         write_json_atomic(self.paths.tts_script(chapter), {"chapter": chapter, "jobs": []})
         self.paths.qwen_script(chapter).write_text("Narrator: Text.\n", encoding="utf-8")
 
-    def prepare_voices_for_annotation(self, annotation):
-        self.calls.append(("prepare_voices",))
+    def prepare_voices_for_annotation(self, annotation, chapter=None):
+        self.calls.append(("prepare_voices", chapter))
 
     def synthesize_chapter_from_tts_script(self, chapter):
         self.calls.append(("synthesize", chapter))
@@ -450,7 +449,7 @@ def test_controller_blocks_script_generation_until_annotation_is_approved(tmp_pa
     assert ("build_scripts", "chapter_001") in calls
 
 
-def test_controller_promotes_proposed_characters_when_appearances_are_confirmed(tmp_path):
+def test_controller_converts_proposed_characters_to_local_speakers_when_appearances_are_confirmed(tmp_path):
     paths = BookPaths(tmp_path / "book")
     write_json_atomic(
         paths.registry,
@@ -486,14 +485,23 @@ def test_controller_promotes_proposed_characters_when_appearances_are_confirmed(
 
     registry = read_json(paths.registry)
     annotation = read_json(paths.annotation("chapter_001"))
-    assert "houseless_man_adult" in registry["characters"]
-    voice = resolve_effective_voice(registry, "Houseless man", "dialogue")
-    assert voice["character"] == "Houseless man"
+    assert registry["characters"] == {}
     assert annotation.get("proposed_new_characters", []) == []
+    assert annotation["local_speakers"] == [
+        {
+            "local_id": "tmp_001",
+            "label": "Houseless man",
+            "profile": {
+                "age_stage": "adult",
+                "gender": "male",
+                "personality": ["anxious", "paranoid"],
+            },
+        }
+    ]
     assert read_json(paths.annotation_approval("chapter_001"))["approved"] is True
 
 
-def test_controller_promotes_proposed_characters_before_script_generation(tmp_path):
+def test_controller_converts_proposed_characters_to_local_speakers_before_script_generation(tmp_path):
     calls = []
     paths = BookPaths(tmp_path / "book")
     paths.chapter_text("chapter_001").parent.mkdir(parents=True)
@@ -545,8 +553,20 @@ def test_controller_promotes_proposed_characters_before_script_generation(tmp_pa
     registry = read_json(paths.registry)
     annotation = read_json(paths.annotation("chapter_001"))
     assert result.stage == ChapterStage.SCRIPTED
-    assert "security_guard_adult" in registry["characters"]
+    assert registry["characters"] == {}
     assert annotation.get("proposed_new_characters", []) == []
+    assert annotation["local_speakers"] == [
+        {
+            "local_id": "tmp_001",
+            "label": "Security Guard",
+            "profile": {
+                "age_stage": "adult",
+                "gender": "male",
+                "personality": ["authoritative"],
+                "occupation": "security guard",
+            },
+        }
+    ]
     assert ("build_scripts", "chapter_001") in calls
 
 
@@ -648,7 +668,7 @@ def test_controller_chapter_action_advances_through_pipeline_stages(tmp_path):
     assert opened == [paths.chapter_audio("chapter_001")]
     assert ("annotate", "chapter_001", True) in calls
     assert ("build_scripts", "chapter_001") in calls
-    assert ("prepare_voices",) in calls
+    assert ("prepare_voices", "chapter_001") in calls
     assert ("synthesize", "chapter_001") in calls
 
 

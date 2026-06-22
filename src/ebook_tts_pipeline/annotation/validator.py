@@ -71,7 +71,7 @@ def validate_annotation(
     normalized_known = {_normalize_name(name) for name in known_names}
     declared_role_names = _declared_character_names(result.new_characters) | _declared_character_names(
         result.proposed_new_characters
-    )
+    ) | _declared_local_speaker_names(result.local_speakers)
     unknown_roles = [
         role
         for role in result.roles
@@ -117,6 +117,28 @@ def validate_annotation(
             if len(qwen_instruct) > 240:
                 errors.append(f"new character voice.qwen_instruct must be compact, 240 chars or fewer: {name}")
 
+    for speaker in result.local_speakers:
+        label = str(speaker.get("label") or speaker.get("name") or speaker.get("local_id", "")).strip()
+        if not label:
+            errors.append("local speaker is missing label")
+            continue
+        if not str(speaker.get("local_id", "")).strip():
+            errors.append(f"local speaker is missing local_id: {label}")
+        profile = speaker.get("profile")
+        if not isinstance(profile, dict):
+            errors.append(f"local speaker profile must be an object: {label}")
+            continue
+        for field in REQUIRED_PROFILE_STRING_FIELDS:
+            if not isinstance(profile.get(field), str) or not profile.get(field, "").strip():
+                errors.append(f"local speaker profile.{field} must be a non-empty string: {label}")
+        personality = profile.get("personality")
+        if (
+            not isinstance(personality, list)
+            or not personality
+            or any(not isinstance(item, str) or not item.strip() for item in personality)
+        ):
+            errors.append(f"local speaker profile.personality must be a non-empty string list: {label}")
+
     if errors:
         raise AnnotationValidationError("; ".join(errors))
 
@@ -136,5 +158,16 @@ def _declared_character_names(characters: List[dict]) -> Set[str]:
         aliases = profile.get("aliases")
         if isinstance(aliases, list):
             names.update(_normalize_name(str(alias)) for alias in aliases if str(alias).strip())
+    names.discard("")
+    return names
+
+
+def _declared_local_speaker_names(speakers: List[dict]) -> Set[str]:
+    names: Set[str] = set()
+    for speaker in speakers:
+        for key in ("local_id", "label", "name"):
+            value = str(speaker.get(key, "")).strip()
+            if value:
+                names.add(_normalize_name(value))
     names.discard("")
     return names

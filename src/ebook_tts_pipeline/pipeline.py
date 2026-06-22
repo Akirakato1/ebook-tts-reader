@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from ebook_tts_pipeline.annotation.anthropic_client import AnnotationModelOutputError
@@ -20,6 +21,11 @@ from ebook_tts_pipeline.registry import (
     RegistryManager,
     resolve_effective_voice,
     voice_profile_hash,
+)
+from ebook_tts_pipeline.temp_registry import (
+    ChapterTempRegistryManager,
+    normalize_annotation_local_speakers,
+    resolve_temp_voice,
 )
 from ebook_tts_pipeline.tts.base import TtsAdapter
 from ebook_tts_pipeline.tts.script import build_tts_script
@@ -146,15 +152,28 @@ class AudiobookPipeline:
     def prepare_voices_for_annotation(
         self,
         annotation: AnnotationResult,
+        chapter: Optional[str] = None,
         force_regenerate: bool = False,
     ) -> None:
         registry = self.registry.load()
+        annotation = normalize_annotation_local_speakers(annotation)
+        temp_manager = ChapterTempRegistryManager(self.paths)
+        temp_registry = (
+            temp_manager.write_for_annotation(chapter, registry, annotation)
+            if chapter is not None
+            else {"chapter": "", "speakers": {}}
+        )
         prepared_role_ids = set()
 
         for role_idx, type_idx, _ in annotation.script:
             role_name = annotation.roles[role_idx]
             type_name = annotation.types[type_idx]
-            effective = resolve_effective_voice(registry, role_name, type_name)
+            try:
+                effective = resolve_effective_voice(registry, role_name, type_name)
+            except ValueError:
+                effective = resolve_temp_voice(temp_registry, role_name, type_name)
+                if effective is None:
+                    raise
             record = effective["voice_record"]
             role_id = str(effective["role_id"])
             role_display = str(effective["role"])
@@ -162,7 +181,7 @@ class AudiobookPipeline:
                 continue
             prepared_role_ids.add(role_id)
 
-            voice_path = self.paths.voice_qvp(role_id)
+            voice_path = self._voice_path_for_record(role_id, record)
             current_hash = voice_profile_hash(record)
             cached_hash = record.get("voice_config_hash")
             should_generate = force_regenerate or not voice_path.exists() or cached_hash != current_hash
@@ -177,26 +196,40 @@ class AudiobookPipeline:
             if hasattr(self.tts_adapter, "role_voice_paths"):
                 self.tts_adapter.role_voice_paths[role_display] = voice_path
                 self.tts_adapter.role_voice_paths[role_id] = voice_path
-            record["voice_config_path"] = f"voices/{role_id}.qvp"
+            record["voice_config_path"] = voice_path.relative_to(self.paths.root).as_posix()
 
         self.registry.save(registry)
+        if chapter is not None:
+            temp_manager.save(chapter, temp_registry)
 
     def build_sentence_jobs(self, chapter: str, annotation: AnnotationResult) -> List[Dict]:
         artifact = SentenceArtifact.from_dict(read_json(self.paths.sentence_artifact(chapter)))
+        registry = self.registry.load()
+        annotation = normalize_annotation_local_speakers(annotation)
+        if self.paths.annotation(chapter).exists():
+            write_json_atomic(self.paths.annotation(chapter), annotation.to_dict())
+        temp_registry = ChapterTempRegistryManager(self.paths).write_for_annotation(chapter, registry, annotation)
         script = build_tts_script(
             chapter=chapter,
             annotation=annotation,
             artifact=artifact,
-            registry=self.registry.load(),
+            registry=registry,
             max_chars=self.config.max_tts_window_chars,
             max_roles=self.config.max_tts_roles,
             language="auto",
+            temp_registry=temp_registry,
         )
         write_json_atomic(self.paths.tts_script(chapter), script.to_dict())
         qwen_script_path = self.paths.qwen_script(chapter)
         qwen_script_path.parent.mkdir(parents=True, exist_ok=True)
         qwen_script_path.write_text(script.qwen_dialogue_text + "\n", encoding="utf-8")
         return [job.to_adapter_job() for job in script.jobs]
+
+    def _voice_path_for_record(self, role_id: str, record: Dict[str, object]) -> Path:
+        configured = str(record.get("voice_config_path") or "").strip()
+        if configured.startswith("voices/_temp/"):
+            return self.paths.root / configured
+        return self.paths.voice_qvp(role_id)
 
     def synthesize_chapter(self, chapter: str, annotation: AnnotationResult) -> Dict:
         jobs = self.build_sentence_jobs(chapter, annotation)
@@ -229,7 +262,7 @@ class AudiobookPipeline:
         self.registry.initialize_if_missing(book_title=book_title, book_slug=book_slug)
         self.segment_chapter(chapter)
         annotation = self.annotate_chapter(chapter)
-        self.prepare_voices_for_annotation(annotation)
+        self.prepare_voices_for_annotation(annotation, chapter=chapter)
         return self.synthesize_chapter(chapter, annotation)
 
     def _chapter_title(self, chapter_file) -> str:

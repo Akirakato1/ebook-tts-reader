@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from ebook_tts_pipeline.domain import AnnotationResult, SentenceArtifact
 from ebook_tts_pipeline.registry import resolve_effective_voice
+from ebook_tts_pipeline.temp_registry import resolve_temp_voice
 from ebook_tts_pipeline.windowing import build_tts_windows
 
 
@@ -150,8 +151,9 @@ def build_tts_script(
     max_chars: int,
     max_roles: int,
     language: str,
+    temp_registry: Optional[Dict[str, Any]] = None,
 ) -> TtsScript:
-    jobs = _build_sentence_jobs(annotation, artifact, registry)
+    jobs = _build_sentence_jobs(annotation, artifact, registry, temp_registry or {})
     window_dicts = build_tts_windows(
         [job.to_adapter_job() for job in jobs],
         max_chars=max_chars,
@@ -180,6 +182,7 @@ def _build_sentence_jobs(
     annotation: AnnotationResult,
     artifact: SentenceArtifact,
     registry: Dict[str, Any],
+    temp_registry: Dict[str, Any],
 ) -> List[TtsSentenceJob]:
     unit_by_idx = {unit.idx: unit for unit in artifact.annotation_units}
     jobs: List[TtsSentenceJob] = []
@@ -190,7 +193,12 @@ def _build_sentence_jobs(
         unit = unit_by_idx[unit_idx]
         role_name = annotation.roles[role_idx]
         type_name = annotation.types[type_idx]
-        effective = resolve_effective_voice(registry, role_name, type_name)
+        try:
+            effective = resolve_effective_voice(registry, role_name, type_name)
+        except ValueError:
+            effective = resolve_temp_voice(temp_registry, role_name, type_name)
+            if effective is None:
+                raise
         record = effective["voice_record"]
         jobs.append(
             TtsSentenceJob(

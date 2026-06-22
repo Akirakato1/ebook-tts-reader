@@ -36,6 +36,9 @@ class BookPaths:
     def annotation_approval(self, chapter: str) -> Path:
         return self.root / "annotations" / f"{chapter}.approval.json"
 
+    def chapter_temp_registry(self, chapter: str) -> Path:
+        return self.root / "temp_registries" / f"{chapter}.temp_registry.json"
+
     def tts_script(self, chapter: str) -> Path:
         return self.root / "tts_scripts" / f"{chapter}.tts_script.json"
 
@@ -53,3 +56,9 @@ class BookPaths:
 
     def voice_metadata(self, role_id: str) -> Path:
         return self.root / "voices" / f"{role_id}.json"
+
+    def temp_voice_qvp(self, chapter: str, local_id: str, variant: str) -> Path:
+        return self.root / "voices" / "_temp" / chapter / f"{local_id}_{variant}.qvp"
+
+    def temp_voice_metadata(self, chapter: str, local_id: str, variant: str) -> Path:
+        return self.root / "voices" / "_temp" / chapter / f"{local_id}_{variant}.json"

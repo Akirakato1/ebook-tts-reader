@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 
 from ebook_tts_pipeline.annotation.validator import ALLOWED_TYPES
 from ebook_tts_pipeline.domain import AnnotationResult
-from ebook_tts_pipeline.registry import normalize_name
+from ebook_tts_pipeline.registry import normalize_name, slugify_name
 
 
 def merge_annotation_windows(
@@ -16,10 +16,14 @@ def merge_annotation_windows(
     script = []
     new_characters = []
     proposed_new_characters = []
+    local_speakers = []
     seen_new_character_names = set()
     seen_proposed_character_names = set()
+    local_id_by_label = {}
+    used_local_ids = set()
 
     for result in results:
+        local_role_map = {}
         for character in result.new_characters:
             name = str(character.get("name", "")).strip()
             normalized = normalize_name(name)
@@ -34,8 +38,31 @@ def merge_annotation_windows(
                 proposed_new_characters.append(character)
                 seen_proposed_character_names.add(normalized)
 
+        for speaker in result.local_speakers:
+            label = str(speaker.get("label") or speaker.get("name") or speaker.get("local_id") or "").strip()
+            label_key = normalize_name(label)
+            if not label_key:
+                continue
+            assigned_local_id = local_id_by_label.get(label_key)
+            if not assigned_local_id:
+                assigned_local_id = _next_local_id(speaker, used_local_ids)
+                local_id_by_label[label_key] = assigned_local_id
+                copied = dict(speaker)
+                copied["local_id"] = assigned_local_id
+                copied["label"] = label
+                local_speakers.append(copied)
+            for name in [
+                str(speaker.get("local_id", "")),
+                str(speaker.get("label", "")),
+                str(speaker.get("name", "")),
+                assigned_local_id,
+            ]:
+                if name.strip():
+                    local_role_map[normalize_name(name)] = assigned_local_id
+
         for role_idx, type_idx, sentence_idx in result.script:
-            role_name = _canonical_role_name(result.roles[role_idx], registry)
+            raw_role_name = result.roles[role_idx]
+            role_name = local_role_map.get(normalize_name(raw_role_name)) or _canonical_role_name(raw_role_name, registry)
             type_name = result.types[type_idx]
             if role_name not in roles:
                 roles.append(role_name)
@@ -46,8 +73,25 @@ def merge_annotation_windows(
         roles=roles,
         types=list(ALLOWED_TYPES),
         script=script,
+        local_speakers=local_speakers,
         proposed_new_characters=proposed_new_characters,
     )
+
+
+def _next_local_id(speaker: Dict[str, Any], used_local_ids: set) -> str:
+    raw = str(speaker.get("local_id", "")).strip()
+    try:
+        base = slugify_name(raw) if raw else ""
+    except ValueError:
+        base = ""
+    if not base:
+        base = f"tmp_{len(used_local_ids) + 1:03d}"
+
+    local_id = base
+    while local_id in used_local_ids:
+        local_id = f"tmp_{len(used_local_ids) + 1:03d}"
+    used_local_ids.add(local_id)
+    return local_id
 
 
 def _canonical_role_name(role_name: str, registry: Dict[str, Any]) -> str:

@@ -16,6 +16,7 @@ from ebook_tts_pipeline.annotation.prompts import (
 from ebook_tts_pipeline.annotation.validator import AnnotationValidationError, validate_annotation
 from ebook_tts_pipeline.debug_logging import FailureLogger
 from ebook_tts_pipeline.domain import AnnotationResult, Sentence
+from ebook_tts_pipeline.temp_registry import normalize_annotation_local_speakers
 
 
 class AnnotationService:
@@ -182,10 +183,22 @@ def _normalize_name(name: str) -> str:
 
 
 def _lock_annotation_result(result: AnnotationResult) -> AnnotationResult:
-    if not result.new_characters:
-        return result
+    normalized = normalize_annotation_local_speakers(result)
+    if not normalized.new_characters:
+        return normalized
+    local_speakers = list(normalized.local_speakers)
+    start = len(local_speakers) + 1
+    for offset, character in enumerate(normalized.new_characters):
+        local_speakers.append(
+            {
+                "local_id": f"tmp_{start + offset:03d}",
+                "label": str(character.get("name", "")).strip() or f"Temporary speaker {start + offset}",
+                "profile": dict(character.get("profile", {})) if isinstance(character.get("profile"), dict) else {},
+            }
+        )
     return replace(
-        result,
+        normalized,
         new_characters=[],
-        proposed_new_characters=list(result.proposed_new_characters) + list(result.new_characters),
+        local_speakers=local_speakers,
+        proposed_new_characters=[],
     )

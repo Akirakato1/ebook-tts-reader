@@ -109,7 +109,7 @@ def test_annotation_prompt_uses_compact_character_summaries_not_voice_registry()
     assert '"person_id":' not in prompt
 
 
-def test_locked_annotation_prompt_uses_proposed_new_characters():
+def test_locked_annotation_prompt_uses_local_speakers_for_unregistered_disposable_roles():
     prompt = render_annotation_prompt(
         "chapter_001",
         [Sentence(0, '"Hello," Akari said.')],
@@ -117,6 +117,9 @@ def test_locked_annotation_prompt_uses_proposed_new_characters():
         lock_registry=True,
     )
 
-    assert "proposed_new_characters" in prompt
-    assert "Do not add to new_characters" in prompt
+    assert "local_speakers" in prompt
+    assert "chapter-scoped temporary speakers" in prompt
+    assert "unnamed one-off" in prompt
+    assert "No approval is required for local_speakers" in prompt
+    assert "proposed_new_characters" not in prompt
     assert "new_characters: []" in prompt

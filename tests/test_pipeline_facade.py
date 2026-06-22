@@ -3,7 +3,8 @@ import re
 from ebook_tts_pipeline.annotation.anthropic_client import AnnotationModelOutputError
 from ebook_tts_pipeline.annotation.service import AnnotationService
 from ebook_tts_pipeline.config import PipelineConfig
-from ebook_tts_pipeline.domain import AnnotationResult
+from ebook_tts_pipeline.domain import AnnotationResult, Sentence, SentenceArtifact
+from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.pipeline import AudiobookPipeline
 from ebook_tts_pipeline.tts.base import GeneratedSentenceAudio
 from ebook_tts_pipeline.tts.fake import FakeTtsAdapter
@@ -405,9 +406,10 @@ def test_pipeline_locked_annotation_does_not_mutate_registry_with_new_characters
                         "profile": {"age_stage": "adult", "gender": "unknown", "personality": ["quiet"]},
                     }
                 ],
-                "proposed_new_characters": [
+                "local_speakers": [
                     {
-                        "name": "Mystery",
+                        "local_id": "tmp_001",
+                        "label": "Mystery",
                         "profile": {"age_stage": "adult", "gender": "unknown", "personality": ["quiet"]},
                     }
                 ],
@@ -430,7 +432,61 @@ def test_pipeline_locked_annotation_does_not_mutate_registry_with_new_characters
 
     assert pipeline.registry.load()["characters"] == {}
     assert annotation.new_characters == []
-    assert annotation.proposed_new_characters[0]["name"] == "Mystery"
+    assert annotation.local_speakers[0]["label"] == "Mystery"
+
+
+def test_pipeline_builds_temp_registry_and_prepares_local_speaker_voices(tmp_path):
+    adapter = CountingTtsAdapter()
+    book_root = tmp_path / "demo"
+    pipeline = AudiobookPipeline(
+        config=PipelineConfig(book_root=str(book_root), anthropic_api_key="fake"),
+        annotation_service=AnnotationService(QueuedLlmClient([]), repair_retries=0),
+        tts_adapter=adapter,
+    )
+    pipeline.registry.initialize_if_missing(book_title="Demo", book_slug="demo")
+    artifact = SentenceArtifact(
+        chapter="chapter_013",
+        source_path="chapters/chapter_013.txt",
+        segmenter={"name": "test"},
+        sentences=[Sentence(0, '"Move along," the guard said.')],
+    )
+    write_json_atomic(pipeline.paths.sentence_artifact("chapter_013"), artifact.to_dict())
+    annotation = AnnotationResult(
+        new_characters=[],
+        local_speakers=[
+            {
+                "local_id": "tmp_001",
+                "label": "Security Guard",
+                "profile": {
+                    "age_stage": "adult",
+                    "gender": "male",
+                    "personality": ["authoritative"],
+                    "occupation": "security guard",
+                },
+            }
+        ],
+        roles=["tmp_001"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 1, 0)],
+    )
+
+    jobs = pipeline.build_sentence_jobs("chapter_013", annotation)
+    pipeline.prepare_voices_for_annotation(annotation, chapter="chapter_013")
+
+    registry = pipeline.registry.load()
+    temp_registry = read_json(pipeline.paths.chapter_temp_registry("chapter_013"))
+    assert registry["characters"] == {}
+    assert temp_registry["speakers"]["tmp_001"]["label"] == "Security Guard"
+    assert jobs[0]["role_id"] == "chapter_013_tmp_001_default"
+    assert jobs[0]["voice_config_path"] == "voices/_temp/chapter_013/tmp_001_default.qvp"
+    assert (book_root / "voices" / "_temp" / "chapter_013" / "tmp_001_default.qvp").exists()
+    assert adapter.calls == [
+        {
+            "role_id": "chapter_013_tmp_001_default",
+            "force": False,
+            "path": str(book_root / "voices" / "_temp" / "chapter_013" / "tmp_001_default.qvp"),
+        }
+    ]
 
 
 def test_pipeline_locked_annotation_accepts_unique_registry_display_names(tmp_path):
