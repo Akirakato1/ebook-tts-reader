@@ -314,6 +314,280 @@ def test_tts_script_uses_annotation_units_for_embedded_dialogue_tags():
     assert script.qwen_dialogue_text == 'Callie_default: "Stay here,"\nNarrator: Callie said.'
 
 
+def test_tts_script_normalizes_haiku_mislabeled_mixed_quote_units():
+    artifact = SentenceArtifact(
+        chapter="chapter_013",
+        source_path="chapters/chapter_013.txt",
+        segmenter={"name": "test"},
+        sentences=[
+            Sentence(193, "She left three seats between her and Walter when she sat down."),
+            Sentence(194, "He said, \u201cWelcome, friend.\u201d Callie peeled off her mask."),
+        ],
+        units=[
+            SentenceUnit(202, 193, "She left three seats between her and Walter when she sat down."),
+            SentenceUnit(203, 194, "He said,"),
+            SentenceUnit(204, 194, "\u201cWelcome, friend.\u201d"),
+            SentenceUnit(205, 194, "Callie peeled off her mask."),
+        ],
+    )
+    annotation = AnnotationResult(
+        new_characters=[],
+        roles=["Narrator", "Callie adult", "Walter Collier adult"],
+        types=["narration", "dialogue", "thought"],
+        script=[
+            (0, 0, 202),
+            (2, 1, 203),
+            (1, 0, 204),
+            (1, 0, 205),
+        ],
+    )
+    registry = {
+        "book": {"slug": "demo"},
+        "narrator": {
+            "role_id": "narrator",
+            "display_name": "Narrator",
+            "voice_config_path": "voices/narrator.qvp",
+        },
+        "characters": {
+            "callie_adult": {
+                "role_id": "callie_adult",
+                "display_name": "Callie",
+                "aliases": ["Callie adult"],
+                "identity_profile": {"gender": "female"},
+                "voice_variants": {
+                    "default": {
+                        "role_id": "callie_adult_default",
+                        "display_name": "Callie_default",
+                        "voice_config_path": "voices/callie_adult_default.qvp",
+                        "voice_profile": {"qwen_instruct": "Callie adult aloud."},
+                    }
+                },
+            },
+            "walter_collier_adult": {
+                "role_id": "walter_collier_adult",
+                "display_name": "Walter Collier",
+                "aliases": ["Walter Collier adult"],
+                "identity_profile": {"gender": "male"},
+                "voice_variants": {
+                    "default": {
+                        "role_id": "walter_collier_adult_default",
+                        "display_name": "Walter Collier_default",
+                        "voice_config_path": "voices/walter_collier_adult_default.qvp",
+                        "voice_profile": {"qwen_instruct": "Walter adult aloud."},
+                    }
+                },
+            },
+        },
+    }
+
+    script = build_tts_script(
+        chapter="chapter_013",
+        annotation=annotation,
+        artifact=artifact,
+        registry=registry,
+        max_chars=1000,
+        max_roles=8,
+        language="auto",
+    )
+
+    assert [
+        (job.unit_idx, job.role, job.type, job.text)
+        for job in script.jobs
+        if job.unit_idx in {203, 204, 205}
+    ] == [
+        (203, "Narrator", "narration", "He said,"),
+        (204, "Walter Collier_default", "dialogue", "\u201cWelcome, friend.\u201d"),
+        (205, "Narrator", "narration", "Callie peeled off her mask."),
+    ]
+
+
+def test_tts_script_splits_quote_continuations_inside_annotated_units():
+    artifact = SentenceArtifact(
+        chapter="chapter_013",
+        source_path="chapters/chapter_013.txt",
+        segmenter={"name": "test"},
+        sentences=[
+            Sentence(343, "\u201cI couldn\u2019t see your face in the video."),
+            Sentence(344, "You never looked up."),
+            Sentence(345, "You just did what Harleigh told you to do.\u201d It was almost a relief."),
+            Sentence(401, "He told the guard, \u201cNone of this will look good for the school, will it?"),
+            Sentence(402, "And it won\u2019t look good for you.\u201d This seemed to sway the guard."),
+        ],
+        units=[
+            SentenceUnit(391, 343, "\u201cI couldn\u2019t see your face in the video."),
+            SentenceUnit(392, 344, "You never looked up."),
+            SentenceUnit(393, 345, "You just did what Harleigh told you to do.\u201d It was almost a relief."),
+            SentenceUnit(471, 401, "He told the guard, \u201cNone of this will look good for the school, will it?"),
+            SentenceUnit(472, 402, "And it won\u2019t look good for you.\u201d This seemed to sway the guard."),
+        ],
+    )
+    annotation = AnnotationResult(
+        new_characters=[],
+        roles=["Narrator", "Andrew Tenant adult"],
+        types=["narration", "dialogue", "thought"],
+        script=[
+            (1, 1, 391),
+            (0, 0, 392),
+            (1, 1, 393),
+            (1, 1, 471),
+            (0, 0, 472),
+        ],
+    )
+    registry = {
+        "book": {"slug": "demo"},
+        "narrator": {
+            "role_id": "narrator",
+            "display_name": "Narrator",
+            "voice_config_path": "voices/narrator.qvp",
+        },
+        "characters": {
+            "andrew_tenant_adult": {
+                "role_id": "andrew_tenant_adult",
+                "display_name": "Andrew Tenant",
+                "aliases": ["Andrew Tenant adult"],
+                "identity_profile": {"gender": "male"},
+                "voice_variants": {
+                    "default": {
+                        "role_id": "andrew_tenant_adult_default",
+                        "display_name": "Andrew Tenant_default",
+                        "voice_config_path": "voices/andrew_tenant_adult_default.qvp",
+                        "voice_profile": {"qwen_instruct": "Andrew adult aloud."},
+                    }
+                },
+            },
+        },
+    }
+
+    script = build_tts_script(
+        chapter="chapter_013",
+        annotation=annotation,
+        artifact=artifact,
+        registry=registry,
+        max_chars=1000,
+        max_roles=8,
+        language="auto",
+    )
+
+    assert [(job.unit_idx, job.role, job.type, job.text) for job in script.jobs] == [
+        (
+            391,
+            "Andrew Tenant_default",
+            "dialogue",
+            "\u201cI couldn\u2019t see your face in the video.",
+        ),
+        (392, "Andrew Tenant_default", "dialogue", "You never looked up."),
+        (393, "Andrew Tenant_default", "dialogue", "You just did what Harleigh told you to do.\u201d"),
+        (393, "Narrator", "narration", "It was almost a relief."),
+        (471, "Narrator", "narration", "He told the guard,"),
+        (
+            471,
+            "Andrew Tenant_default",
+            "dialogue",
+            "\u201cNone of this will look good for the school, will it?",
+        ),
+        (472, "Andrew Tenant_default", "dialogue", "And it won\u2019t look good for you.\u201d"),
+        (472, "Narrator", "narration", "This seemed to sway the guard."),
+    ]
+
+
+def test_tts_script_uses_local_speaker_for_pronoun_tag_with_intervening_adverb():
+    artifact = SentenceArtifact(
+        chapter="chapter_013",
+        source_path="chapters/chapter_013.txt",
+        segmenter={"name": "test"},
+        sentences=[
+            Sentence(401, "He told the guard, \u201cNone of this will look good?"),
+            Sentence(
+                402,
+                "And it won\u2019t look good for you.\u201d This seemed to sway the guard, "
+                "but he still asked, \u201cAre you sure?\u201d",
+            ),
+        ],
+        units=[
+            SentenceUnit(471, 401, "He told the guard, \u201cNone of this will look good?"),
+            SentenceUnit(
+                472,
+                402,
+                "And it won\u2019t look good for you.\u201d This seemed to sway the guard, but he still asked,",
+            ),
+            SentenceUnit(473, 402, "\u201cAre you sure?\u201d"),
+        ],
+    )
+    annotation = AnnotationResult(
+        new_characters=[],
+        local_speakers=[
+            {
+                "local_id": "tmp_005",
+                "label": "Security Guard",
+                "profile": {"age_stage": "adult", "gender": "male", "personality": ["watchful"]},
+            }
+        ],
+        roles=["Narrator", "Andrew Tenant adult", "tmp_005"],
+        types=["narration", "dialogue", "thought"],
+        script=[
+            (1, 1, 471),
+            (0, 0, 472),
+            (0, 1, 473),
+        ],
+    )
+    registry = {
+        "book": {"slug": "demo"},
+        "narrator": {
+            "role_id": "narrator",
+            "display_name": "Narrator",
+            "voice_config_path": "voices/narrator.qvp",
+        },
+        "characters": {
+            "andrew_tenant_adult": {
+                "role_id": "andrew_tenant_adult",
+                "display_name": "Andrew Tenant",
+                "aliases": ["Andrew Tenant adult"],
+                "identity_profile": {"gender": "male"},
+                "voice_variants": {
+                    "default": {
+                        "role_id": "andrew_tenant_adult_default",
+                        "display_name": "Andrew Tenant_default",
+                        "voice_config_path": "voices/andrew_tenant_adult_default.qvp",
+                        "voice_profile": {"qwen_instruct": "Andrew adult aloud."},
+                    }
+                },
+            },
+        },
+    }
+    temp_registry = {
+        "chapter": "chapter_013",
+        "speakers": {
+            "tmp_005": {
+                "local_id": "tmp_005",
+                "label": "Security Guard",
+                "voice_variants": {
+                    "default": {
+                        "role_id": "chapter_013_tmp_005_default",
+                        "display_name": "Security Guard_default",
+                        "voice_config_path": "voices/_temp/chapter_013/tmp_005_default.qvp",
+                        "voice_profile": {"qwen_instruct": "Security guard aloud."},
+                    }
+                },
+            }
+        },
+    }
+
+    script = build_tts_script(
+        chapter="chapter_013",
+        annotation=annotation,
+        artifact=artifact,
+        registry=registry,
+        max_chars=1000,
+        max_roles=8,
+        language="auto",
+        temp_registry=temp_registry,
+    )
+
+    assert [(job.unit_idx, job.role, job.type, job.text) for job in script.jobs if job.unit_idx == 473] == [
+        (473, "Security Guard_default", "dialogue", "\u201cAre you sure?\u201d")
+    ]
+
+
 def test_tts_script_resolves_chapter_local_speakers_from_temp_registry():
     artifact = SentenceArtifact(
         chapter="chapter_013",
