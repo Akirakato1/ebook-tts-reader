@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Tuple
 
+from ebook_tts_pipeline.annotation.quote_attribution import QuoteAttributionResult
+from ebook_tts_pipeline.annotation.quotes import QuoteExtraction
 from ebook_tts_pipeline.domain import AnnotationResult, SentenceArtifact
 from ebook_tts_pipeline.registry import resolve_effective_voice
 from ebook_tts_pipeline.temp_registry import resolve_temp_voice
@@ -155,6 +157,72 @@ def build_tts_script(
 ) -> TtsScript:
     jobs = _build_sentence_jobs(annotation, artifact, registry, temp_registry or {})
     jobs = _extract_narrator_context(jobs, registry)
+    return _build_script_from_jobs(chapter, jobs, max_chars, max_roles, language)
+
+
+def build_tts_script_from_quotes(
+    chapter: str,
+    chapter_text: str,
+    extraction: QuoteExtraction,
+    attribution: QuoteAttributionResult,
+    registry: Dict[str, Any],
+    max_chars: int,
+    max_roles: int,
+    language: str,
+    temp_registry: Optional[Dict[str, Any]] = None,
+) -> TtsScript:
+    quote_attribution = {
+        quote_idx: (attribution.roles[role_idx], quote_type)
+        for quote_idx, role_idx, quote_type in attribution.quotes
+    }
+    narrator_effective = resolve_effective_voice(registry, "Narrator", "narration")
+    segments: List[Tuple[int, int, str, str, Dict[str, Any]]] = []
+
+    for span in extraction.narrator_spans:
+        segments.append((span.start, span.end, span.text, "narration", narrator_effective))
+
+    for quote in extraction.quotes:
+        role_name, quote_type = quote_attribution[quote.idx]
+        if quote_type == "narrator_quote":
+            effective = narrator_effective
+            speech_type = "narration"
+        else:
+            speech_type = "dialogue"
+            try:
+                effective = resolve_effective_voice(registry, role_name, speech_type)
+            except ValueError:
+                effective = resolve_temp_voice(temp_registry or {}, role_name, speech_type)
+                if effective is None:
+                    raise
+        segments.append((quote.start, quote.end, quote.text, speech_type, effective))
+
+    jobs: List[TtsSentenceJob] = []
+    for order, (_, __, text, speech_type, effective) in enumerate(sorted(segments, key=lambda item: item[0])):
+        record = effective["voice_record"]
+        jobs.append(
+            TtsSentenceJob(
+                sentence_idx=order,
+                unit_idx=order,
+                role=str(effective["role"]),
+                role_id=str(effective["role_id"]),
+                character=effective["character"],
+                voice_variant=effective["voice_variant"],
+                type=speech_type,
+                text=text,
+                voice_config_path=record.get("voice_config_path"),
+            )
+        )
+
+    return _build_script_from_jobs(chapter, jobs, max_chars, max_roles, language)
+
+
+def _build_script_from_jobs(
+    chapter: str,
+    jobs: List[TtsSentenceJob],
+    max_chars: int,
+    max_roles: int,
+    language: str,
+) -> TtsScript:
     window_dicts = build_tts_windows(
         [_indexed_adapter_job(index, job) for index, job in enumerate(jobs)],
         max_chars=max_chars,

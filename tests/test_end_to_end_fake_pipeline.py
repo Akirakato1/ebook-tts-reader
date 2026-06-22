@@ -43,5 +43,5 @@ def test_fake_pipeline_from_whole_book_to_audio_outputs(tmp_path):
 
     assert timeline["sentences"][0]["sentence_idx"] == 0
     assert (book_root / "registry.json").exists()
-    assert (book_root / "voices" / "_temp" / "chapter_001" / "tmp_001_default.qvp").exists()
+    assert (book_root / "voices" / "_temp" / "chapter_001" / "tmp_001.qvp").exists()
     assert (book_root / "audio" / "chapter_001.wav").exists()

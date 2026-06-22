@@ -1,6 +1,7 @@
 import re
 
 from ebook_tts_pipeline.annotation.anthropic_client import AnnotationModelOutputError
+from ebook_tts_pipeline.annotation.quote_attribution import QuoteAttributionService
 from ebook_tts_pipeline.annotation.service import AnnotationService
 from ebook_tts_pipeline.config import PipelineConfig
 from ebook_tts_pipeline.domain import AnnotationResult, Sentence, SentenceArtifact
@@ -155,7 +156,7 @@ def test_pipeline_runs_tiny_chapter_with_fake_adapters(tmp_path):
     assert (book_root / "audio" / "chapter_001.wav").exists()
     assert (book_root / "audio" / "chapter_001.timeline.json").exists()
     assert pipeline.registry.load()["characters"] == {}
-    assert (book_root / "voices" / "_temp" / "chapter_001" / "tmp_001_default.qvp").exists()
+    assert (book_root / "voices" / "_temp" / "chapter_001" / "tmp_001.qvp").exists()
 
 
 def test_pipeline_annotates_multi_window_chapter_converts_legacy_new_characters_to_local_speakers(tmp_path):
@@ -486,16 +487,70 @@ def test_pipeline_builds_temp_registry_and_prepares_local_speaker_voices(tmp_pat
     temp_registry = read_json(pipeline.paths.chapter_temp_registry("chapter_013"))
     assert registry["characters"] == {}
     assert temp_registry["speakers"]["tmp_001"]["label"] == "Security Guard"
-    assert jobs[0]["role_id"] == "chapter_013_tmp_001_default"
-    assert jobs[0]["voice_config_path"] == "voices/_temp/chapter_013/tmp_001_default.qvp"
-    assert (book_root / "voices" / "_temp" / "chapter_013" / "tmp_001_default.qvp").exists()
+    assert jobs[0]["role_id"] == "chapter_013_tmp_001"
+    assert jobs[0]["voice_config_path"] == "voices/_temp/chapter_013/tmp_001.qvp"
+    assert (book_root / "voices" / "_temp" / "chapter_013" / "tmp_001.qvp").exists()
     assert adapter.calls == [
         {
-            "role_id": "chapter_013_tmp_001_default",
+            "role_id": "chapter_013_tmp_001",
             "force": False,
-            "path": str(book_root / "voices" / "_temp" / "chapter_013" / "tmp_001_default.qvp"),
+            "path": str(book_root / "voices" / "_temp" / "chapter_013" / "tmp_001.qvp"),
         }
     ]
+
+
+def test_pipeline_quote_annotation_builds_single_voice_script_from_raw_chapter(tmp_path):
+    book_root = tmp_path / "demo"
+    chapter_dir = book_root / "chapters"
+    chapter_dir.mkdir(parents=True)
+    (chapter_dir / "chapter_001.txt").write_text(
+        'Callie said, "Stay here." She left.',
+        encoding="utf-8",
+    )
+    pipeline = AudiobookPipeline(
+        config=PipelineConfig(book_root=str(book_root), anthropic_api_key="fake"),
+        annotation_service=AnnotationService(QueuedLlmClient([]), repair_retries=0),
+        quote_attribution_service=QuoteAttributionService(
+            QueuedLlmClient(
+                [
+                    {
+                        "roles": ["callie_child"],
+                        "quotes": [[1, 0, "dialogue"]],
+                    }
+                ]
+            )
+        ),
+        tts_adapter=FakeTtsAdapter(sample_rate=1000, samples_per_character=5),
+        tokenizer=lambda text: ["Callie said, ", '"Stay here."', " She left."],
+    )
+    pipeline.registry.initialize_if_missing(book_title="Demo", book_slug="demo")
+    pipeline.registry.add_new_characters(
+        chapter="global_registry",
+        new_characters=[
+            {
+                "name": "Callie",
+                "profile": {
+                    "age_stage": "child",
+                    "gender": "female",
+                    "personality": ["guarded"],
+                },
+            }
+        ],
+    )
+
+    pipeline.segment_chapter("chapter_001")
+    annotation = pipeline.annotate_chapter("chapter_001")
+    jobs = pipeline.build_sentence_jobs("chapter_001", annotation)
+
+    saved = read_json(pipeline.paths.annotation("chapter_001"))
+    assert saved["schema"] == "quote_attribution_v1"
+    assert saved["quotes"] == [[1, 0, "dialogue"]]
+    assert [job["role"] for job in jobs] == ["Narrator", "callie_child", "Narrator"]
+    assert pipeline.paths.qwen_script("chapter_001").read_text(encoding="utf-8") == (
+        "Narrator: Callie said,\n"
+        'callie_child: "Stay here."\n'
+        "Narrator: She left.\n"
+    )
 
 
 def test_pipeline_locked_annotation_accepts_unique_registry_display_names(tmp_path):
@@ -541,7 +596,7 @@ def test_pipeline_locked_annotation_accepts_unique_registry_display_names(tmp_pa
     assert annotation.roles == ["Buddy Waleski"]
 
 
-def test_pipeline_prepares_default_and_internal_voice_variants_with_cache_invalidation_and_force(tmp_path):
+def test_pipeline_prepares_single_voice_with_cache_invalidation_and_force(tmp_path):
     adapter = CountingTtsAdapter()
     pipeline = AudiobookPipeline(
         config=PipelineConfig(book_root=str(tmp_path / "demo"), anthropic_api_key="fake"),
@@ -568,33 +623,85 @@ def test_pipeline_prepares_default_and_internal_voice_variants_with_cache_invali
     pipeline.prepare_voices_for_annotation(annotation)
     pipeline.prepare_voices_for_annotation(annotation)
 
-    assert [call["role_id"] for call in adapter.calls] == ["elena_adult_default", "elena_adult_internal"]
+    assert [call["role_id"] for call in adapter.calls] == ["elena_adult"]
     registry = pipeline.registry.load()
-    variants = registry["characters"]["elena_adult"]["voice_variants"]
-    assert variants["default"]["voice_config_hash"]
-    assert variants["internal"]["voice_config_hash"]
+    character = registry["characters"]["elena_adult"]
+    assert character["voice_config_hash"]
 
-    variants["internal"]["voice_profile"]["qwen_instruct"] += " More inward."
+    character["voice_profile"]["qwen_instruct"] += " More forceful."
     pipeline.registry.save(registry)
     pipeline.prepare_voices_for_annotation(annotation)
 
     assert [call["role_id"] for call in adapter.calls] == [
-        "elena_adult_default",
-        "elena_adult_internal",
-        "elena_adult_internal",
+        "elena_adult",
+        "elena_adult",
     ]
     assert adapter.calls[-1]["force"] is True
 
     pipeline.prepare_voices_for_annotation(annotation, force_regenerate=True)
 
     assert [call["role_id"] for call in adapter.calls] == [
-        "elena_adult_default",
-        "elena_adult_internal",
-        "elena_adult_internal",
-        "elena_adult_default",
-        "elena_adult_internal",
+        "elena_adult",
+        "elena_adult",
+        "elena_adult",
     ]
-    assert [call["force"] for call in adapter.calls[-2:]] == [True, True]
+    assert adapter.calls[-1]["force"] is True
+
+
+def test_pipeline_prepares_single_voice_for_local_speaker(tmp_path):
+    adapter = CountingTtsAdapter()
+    book_root = tmp_path / "demo"
+    pipeline = AudiobookPipeline(
+        config=PipelineConfig(book_root=str(book_root), anthropic_api_key="fake"),
+        annotation_service=AnnotationService(QueuedLlmClient([]), repair_retries=0),
+        tts_adapter=adapter,
+    )
+    pipeline.registry.initialize_if_missing(book_title="Demo", book_slug="demo")
+    artifact = SentenceArtifact(
+        chapter="chapter_001",
+        source_path="chapters/chapter_001.txt",
+        segmenter={"name": "test"},
+        sentences=[Sentence(0, '"Move along," the guard said.')],
+    )
+    write_json_atomic(pipeline.paths.sentence_artifact("chapter_001"), artifact.to_dict())
+    annotation = AnnotationResult(
+        new_characters=[],
+        local_speakers=[
+            {
+                "local_id": "tmp_001",
+                "label": "Security Guard",
+                "profile": {
+                    "age_stage": "adult",
+                    "gender": "male",
+                    "personality": ["authoritative"],
+                    "occupation": "security guard",
+                },
+            }
+        ],
+        roles=["tmp_001"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 1, 0)],
+    )
+
+    jobs = pipeline.build_sentence_jobs("chapter_001", annotation)
+    pipeline.prepare_voices_for_annotation(annotation, chapter="chapter_001")
+
+    temp_registry = read_json(pipeline.paths.chapter_temp_registry("chapter_001"))
+    speaker = temp_registry["speakers"]["tmp_001"]
+    assert "voice_variants" not in speaker
+    assert speaker["role_id"] == "chapter_001_tmp_001"
+    assert speaker["voice_config_path"] == "voices/_temp/chapter_001/tmp_001.qvp"
+    assert jobs[0]["role"] == "chapter_001_tmp_001"
+    assert jobs[0]["role_id"] == "chapter_001_tmp_001"
+    assert jobs[0]["voice_config_path"] == "voices/_temp/chapter_001/tmp_001.qvp"
+    assert (book_root / "voices" / "_temp" / "chapter_001" / "tmp_001.qvp").exists()
+    assert adapter.calls == [
+        {
+            "role_id": "chapter_001_tmp_001",
+            "force": False,
+            "path": str(book_root / "voices" / "_temp" / "chapter_001" / "tmp_001.qvp"),
+        }
+    ]
 
 
 def test_pipeline_synthesizes_tts_windows_separately(tmp_path):

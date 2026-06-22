@@ -346,8 +346,9 @@ def test_controller_saves_registry_form_values_and_refreshes_voice_profile(tmp_p
     assert "narrative_notes" not in character
     assert "first_seen" not in character
     assert "global_evidence" not in character
-    assert "teen female" in character["voice_variants"]["default"]["voice_profile"]["qwen_instruct"]
-    assert character["voice_variants"]["default"].get("voice_config_hash") is None
+    assert "voice_variants" not in character
+    assert "teen female" in character["voice_profile"]["qwen_instruct"]
+    assert character.get("voice_config_hash") is None
 
 
 def test_controller_annotation_review_uses_registry_age_stage_options(tmp_path):
@@ -408,6 +409,31 @@ def test_controller_confirming_annotation_appearance_rewrites_roles_and_approves
         }
     ]
     assert controller.chapter_stage("chapter_001") == ChapterStage.ANNOTATED
+
+
+def test_controller_confirming_quote_annotation_preserves_quote_mapping(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    _write_callie_registry(paths)
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {
+            "schema": "quote_attribution_v1",
+            "roles": ["callie_adult"],
+            "types": ["dialogue"],
+            "script": [[0, 0, 1]],
+            "quotes": [[1, 0, "dialogue"]],
+        },
+    )
+    controller = PrototypeUiController(book_root=paths.root)
+
+    controller.confirm_annotation_appearances("chapter_001", {"callie": "child"})
+
+    annotation = read_json(paths.annotation("chapter_001"))
+    assert annotation["schema"] == "quote_attribution_v1"
+    assert annotation["roles"] == ["Callie child"]
+    assert annotation["quotes"] == [[1, 0, "dialogue"]]
+    assert annotation["script"] == [[0, 0, 1]]
 
 
 def test_controller_blocks_script_generation_until_annotation_is_approved(tmp_path):

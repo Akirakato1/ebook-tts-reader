@@ -46,10 +46,6 @@ def voice_profile_hash(voice_record: Dict[str, Any]) -> str:
     return hashlib.sha256(signature.encode("utf-8")).hexdigest()
 
 
-def voice_variant_for_type(speech_type: str) -> str:
-    return "internal" if speech_type == "thought" else "default"
-
-
 def profile_id_for_character(name: str, profile: Dict[str, Any]) -> str:
     explicit = str(profile.get("profile_id", "")).strip()
     if explicit:
@@ -61,35 +57,34 @@ def profile_id_for_character(name: str, profile: Dict[str, Any]) -> str:
     return person_id
 
 
-def ensure_character_voice_variants(book_slug: str, character: Dict[str, Any]) -> None:
-    if "voice_variants" in character:
-        return
-    if "voice_profile" not in character:
-        return
-
-    role_id = str(character["role_id"])
-    display_name = str(character["display_name"])
-    base_voice = dict(character["voice_profile"])
+def ensure_character_voice_record(book_slug: str, character: Dict[str, Any]) -> None:
+    role_id = str(character.get("role_id") or character.get("profile_id") or slugify_name(str(character.get("display_name", "character"))))
+    display_name = str(character.get("display_name") or role_id)
+    character["role_id"] = role_id
+    character.setdefault("display_name", display_name)
     identity = dict(character.get("voice_identity", {}))
     seed = int(identity.get("seed", role_seed(book_slug, role_id)))
     differentiators = list(identity.get("differentiators", choose_differentiators(book_slug, role_id)))
-
-    character["voice_variants"] = {
-        "default": {
-            "role_id": f"{role_id}_default",
-            "display_name": f"{display_name}_default",
-            "voice_identity": {"seed": seed, "differentiators": differentiators},
-            "voice_profile": base_voice,
-            "voice_config_path": None,
-        },
-        "internal": {
-            "role_id": f"{role_id}_internal",
-            "display_name": f"{display_name}_internal",
-            "voice_identity": {"seed": seed, "differentiators": differentiators},
-            "voice_profile": _internal_voice_profile(display_name, base_voice),
-            "voice_config_path": None,
-        },
-    }
+    default_variant = character.get("voice_variants", {}).get("default", {})
+    if isinstance(default_variant, dict):
+        aliases = list(character.get("aliases", []))
+        for legacy_name in (default_variant.get("role_id"), default_variant.get("display_name")):
+            legacy_text = str(legacy_name or "").strip()
+            if legacy_text:
+                aliases.append(legacy_text)
+        character["aliases"] = _dedupe_preserving_order([str(alias) for alias in aliases])
+    if "voice_profile" not in character and isinstance(default_variant, dict):
+        character["voice_profile"] = dict(default_variant.get("voice_profile", {}))
+    if "voice_config_path" not in character and isinstance(default_variant, dict):
+        character["voice_config_path"] = default_variant.get("voice_config_path")
+    if "voice_config_hash" not in character and isinstance(default_variant, dict) and default_variant.get("voice_config_hash"):
+        character["voice_config_hash"] = default_variant.get("voice_config_hash")
+    if "voice_profile" not in character:
+        character["voice_profile"] = build_compact_voice_profile(display_name, character)
+    if "voice_config_path" not in character:
+        character["voice_config_path"] = None
+    character["voice_identity"] = {"seed": seed, "differentiators": differentiators}
+    character.pop("voice_variants", None)
 
 
 def resolve_effective_voice(
@@ -120,17 +115,15 @@ def resolve_effective_voice(
         if character.get("display_name")
     )
     for character in registry.get("characters", {}).values():
-        ensure_character_voice_variants(book_slug, character)
+        ensure_character_voice_record(book_slug, character)
         include_display_name = display_counts[normalize_name(str(character.get("display_name", "")))] == 1
         direct_names = _character_lookup_names(character, include_display_name=include_display_name)
-        variant_match = _matching_variant(character, normalized)
-        if normalized in direct_names or variant_match:
-            variant_key = variant_match or voice_variant_for_type(speech_type)
+        if normalized in direct_names:
             return _effective_voice_for_character(
                 character,
-                variant_key,
+                "",
                 role_name,
-                use_role_id_as_role=not include_display_name,
+                use_role_id_as_role=True,
             )
 
     short_matches = [
@@ -140,31 +133,15 @@ def resolve_effective_voice(
     ]
     if len(short_matches) == 1:
         character = short_matches[0]
-        ensure_character_voice_variants(book_slug, character)
+        ensure_character_voice_record(book_slug, character)
         return _effective_voice_for_character(
             character,
-            voice_variant_for_type(speech_type),
+            "",
             role_name,
-            use_role_id_as_role=False,
+            use_role_id_as_role=True,
         )
 
     raise ValueError(f"No registry record exists for annotated role: {role_name}")
-
-
-def _internal_voice_profile(display_name: str, base_voice: Dict[str, Any]) -> Dict[str, Any]:
-    description = str(base_voice.get("description", "")).rstrip(". ")
-    qwen_instruct = str(base_voice.get("qwen_instruct", "")).rstrip(". ")
-    return {
-        "description": (
-            f"{description}; same {display_name} identity for internal monologue, "
-            "closer, softer, reflective, less projected"
-        ).strip("; "),
-        "qwen_instruct": (
-            f"{qwen_instruct}. Keep the same {display_name} speaker identity and timbre, "
-            "but perform this as internal monologue: closer, softer, inward, reflective, "
-            "and less projected. Do not whisper unless the text itself implies whispering."
-        ).strip(),
-    }
 
 
 def _effective_voice_for_character(
@@ -173,17 +150,6 @@ def _effective_voice_for_character(
     fallback_role: str,
     use_role_id_as_role: bool = False,
 ) -> Dict[str, Any]:
-    variant = character.get("voice_variants", {}).get(variant_key)
-    if variant:
-        role_id = str(variant.get("role_id", character.get("role_id", fallback_role)))
-        role_display = str(variant.get("display_name", fallback_role))
-        return {
-            "character": str(character.get("display_name", fallback_role)),
-            "role": role_id if use_role_id_as_role else role_display,
-            "role_id": role_id,
-            "voice_variant": variant_key,
-            "voice_record": variant,
-        }
     role_id = str(character.get("role_id", fallback_role))
     role_display = str(character.get("display_name", fallback_role))
     return {
@@ -227,18 +193,6 @@ def _lookup_names_for_collision(character: Dict[str, Any]) -> Set[str]:
     return {normalize_name(name) for name in names if name}
 
 
-def _matching_variant(character: Dict[str, Any], normalized_name: str) -> str:
-    for variant_key, variant in character.get("voice_variants", {}).items():
-        names = [
-            str(variant.get("display_name", "")),
-            str(variant.get("role_id", "")),
-            str(variant.get("role_id", "")).replace("_", " "),
-        ]
-        if normalized_name in {normalize_name(name) for name in names if name}:
-            return str(variant_key)
-    return ""
-
-
 class RegistryManager:
     def __init__(self, paths: BookPaths) -> None:
         self.paths = paths
@@ -266,9 +220,12 @@ class RegistryManager:
         write_json_atomic(self.paths.registry, registry)
 
     def load(self) -> Dict[str, Any]:
-        return read_json(self.paths.registry)
+        registry = read_json(self.paths.registry)
+        migrate_registry_voice_records(registry)
+        return registry
 
     def save(self, registry: Dict[str, Any]) -> None:
+        migrate_registry_voice_records(registry)
         prune_deprecated_registry_fields(registry)
         write_json_atomic(self.paths.registry, registry)
 
@@ -381,22 +338,8 @@ def _insert_character_record(
             "seed": seed,
             "differentiators": differentiators,
         },
-        "voice_variants": {
-            "default": {
-                "role_id": f"{role_id}_default",
-                "display_name": f"{name}_default",
-                "voice_identity": {"seed": seed, "differentiators": differentiators},
-                "voice_profile": voice,
-                "voice_config_path": None,
-            },
-            "internal": {
-                "role_id": f"{role_id}_internal",
-                "display_name": f"{name}_internal",
-                "voice_identity": {"seed": seed, "differentiators": differentiators},
-                "voice_profile": _internal_voice_profile(name, voice),
-                "voice_config_path": None,
-            },
-        },
+        "voice_profile": voice,
+        "voice_config_path": None,
     }
     prune_deprecated_character_fields(registry["characters"][role_id])
 
@@ -493,6 +436,7 @@ def _merge_character_record(
 def prune_deprecated_character_fields(character: Dict[str, Any]) -> None:
     for key in DEPRECATED_CHARACTER_FIELDS:
         character.pop(key, None)
+    character.pop("voice_variants", None)
     identity = character.get("identity_profile")
     if isinstance(identity, dict):
         identity.pop("age", None)
@@ -504,6 +448,13 @@ def prune_deprecated_registry_fields(registry: Dict[str, Any]) -> None:
             prune_deprecated_character_fields(character)
 
 
+def migrate_registry_voice_records(registry: Dict[str, Any]) -> None:
+    book_slug = str(registry.get("book", {}).get("slug", "book"))
+    for character in registry.get("characters", {}).values():
+        if isinstance(character, dict):
+            ensure_character_voice_record(book_slug, character)
+
+
 def _refresh_record_voice_profiles(book_slug: str, record: Dict[str, Any]) -> None:
     role_id = str(record.get("role_id", "character"))
     display_name = str(record.get("display_name", role_id))
@@ -513,25 +464,11 @@ def _refresh_record_voice_profiles(book_slug: str, record: Dict[str, Any]) -> No
     )
     voice = build_compact_voice_profile(display_name, {"identity_profile": record.get("identity_profile", {})})
     voice["qwen_instruct"] = append_differentiators(str(voice["qwen_instruct"]), differentiators)
-    variants = record.setdefault("voice_variants", {})
-    variants["default"] = {
-        **dict(variants.get("default", {})),
-        "role_id": f"{role_id}_default",
-        "display_name": f"{display_name}_default",
-        "voice_identity": {"seed": seed, "differentiators": differentiators},
-        "voice_profile": voice,
-        "voice_config_path": variants.get("default", {}).get("voice_config_path"),
-        "voice_config_hash": None,
-    }
-    variants["internal"] = {
-        **dict(variants.get("internal", {})),
-        "role_id": f"{role_id}_internal",
-        "display_name": f"{display_name}_internal",
-        "voice_identity": {"seed": seed, "differentiators": differentiators},
-        "voice_profile": _internal_voice_profile(display_name, voice),
-        "voice_config_path": variants.get("internal", {}).get("voice_config_path"),
-        "voice_config_hash": None,
-    }
+    record["voice_identity"] = {"seed": seed, "differentiators": differentiators}
+    record["voice_profile"] = voice
+    record.setdefault("voice_config_path", None)
+    record["voice_config_hash"] = None
+    record.pop("voice_variants", None)
 
 
 def build_compact_voice_profile(display_name: str, profile: Dict[str, Any]) -> Dict[str, str]:

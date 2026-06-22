@@ -9,6 +9,8 @@ from ebook_tts_pipeline.annotation.global_registry import (
     GlobalRegistryService,
 )
 from ebook_tts_pipeline.annotation.merge import merge_annotation_windows
+from ebook_tts_pipeline.annotation.quote_attribution import QuoteAttributionResult, QuoteAttributionService
+from ebook_tts_pipeline.annotation.quotes import extract_quoted_dialogue
 from ebook_tts_pipeline.annotation.service import AnnotationService, known_annotation_role_names
 from ebook_tts_pipeline.annotation.validator import AnnotationValidationError, validate_annotation
 from ebook_tts_pipeline.audio import ChapterAudioBuilder
@@ -28,7 +30,7 @@ from ebook_tts_pipeline.temp_registry import (
     resolve_temp_voice,
 )
 from ebook_tts_pipeline.tts.base import TtsAdapter
-from ebook_tts_pipeline.tts.script import build_tts_script
+from ebook_tts_pipeline.tts.script import build_tts_script, build_tts_script_from_quotes
 from ebook_tts_pipeline.windowing import build_llm_windows, build_tts_windows
 
 
@@ -39,6 +41,7 @@ class AudiobookPipeline:
         annotation_service: AnnotationService,
         tts_adapter: TtsAdapter,
         global_registry_service: Optional[GlobalRegistryService] = None,
+        quote_attribution_service: Optional[QuoteAttributionService] = None,
         tokenizer: Optional[Callable[[str], List[str]]] = None,
     ) -> None:
         self.config = config
@@ -47,6 +50,7 @@ class AudiobookPipeline:
         self.segmenter = SentenceSegmenter(tokenizer=tokenizer)
         self.annotation_service = annotation_service
         self.global_registry_service = global_registry_service
+        self.quote_attribution_service = quote_attribution_service
         self.tts_adapter = tts_adapter
 
     def segment_chapter(self, chapter: str) -> SentenceArtifact:
@@ -89,6 +93,9 @@ class AudiobookPipeline:
         return discovered_count
 
     def annotate_chapter(self, chapter: str, lock_registry: bool = True) -> AnnotationResult:
+        if self.quote_attribution_service is not None:
+            return self._annotate_chapter_quotes(chapter)
+
         artifact = SentenceArtifact.from_dict(read_json(self.paths.sentence_artifact(chapter)))
         initial_known_names = known_annotation_role_names(self.registry.load())
         window_results: List[AnnotationResult] = []
@@ -114,6 +121,21 @@ class AudiobookPipeline:
         )
         write_json_atomic(self.paths.annotation(chapter), merged.to_dict())
         return merged
+
+    def _annotate_chapter_quotes(self, chapter: str) -> AnnotationResult:
+        chapter_text = self.paths.chapter_text(chapter).read_text(encoding="utf-8", errors="replace")
+        extraction = extract_quoted_dialogue(chapter_text)
+        if extraction.quotes:
+            attribution = self.quote_attribution_service.attribute_quotes(
+                chapter=chapter,
+                extraction=extraction,
+                registry=self.registry.load(),
+            )
+        else:
+            attribution = QuoteAttributionResult(roles=[], quotes=[], local_speakers=[])
+        payload = _quote_attribution_annotation_payload(attribution)
+        write_json_atomic(self.paths.annotation(chapter), payload)
+        return AnnotationResult.from_dict(payload)
 
     def _annotate_sentences_with_fallback(
         self,
@@ -163,20 +185,12 @@ class AudiobookPipeline:
         )
         prepared_role_ids = set()
 
-        for role_idx, type_idx, _ in annotation.script:
-            role_name = annotation.roles[role_idx]
-            type_name = annotation.types[type_idx]
-            try:
-                effective = resolve_effective_voice(registry, role_name, type_name)
-            except ValueError:
-                effective = resolve_temp_voice(temp_registry, role_name, type_name)
-                if effective is None:
-                    raise
+        def prepare_effective(effective: Dict[str, object]) -> None:
             record = effective["voice_record"]
             role_id = str(effective["role_id"])
             role_display = str(effective["role"])
             if role_id in prepared_role_ids:
-                continue
+                return
             prepared_role_ids.add(role_id)
 
             voice_path = self._voice_path_for_record(role_id, record)
@@ -196,14 +210,52 @@ class AudiobookPipeline:
                 self.tts_adapter.role_voice_paths[role_id] = voice_path
             record["voice_config_path"] = voice_path.relative_to(self.paths.root).as_posix()
 
+        if chapter is not None and self.paths.annotation(chapter).exists():
+            raw_annotation = read_json(self.paths.annotation(chapter))
+            if _is_quote_attribution_payload(raw_annotation):
+                prepare_effective(resolve_effective_voice(registry, "Narrator", "narration"))
+
+        for role_idx, type_idx, _ in annotation.script:
+            role_name = annotation.roles[role_idx]
+            type_name = annotation.types[type_idx]
+            try:
+                effective = resolve_effective_voice(registry, role_name, type_name)
+            except ValueError:
+                effective = resolve_temp_voice(temp_registry, role_name, type_name)
+                if effective is None:
+                    raise
+            prepare_effective(effective)
+
         self.registry.save(registry)
         if chapter is not None:
             temp_manager.save(chapter, temp_registry)
 
     def build_sentence_jobs(self, chapter: str, annotation: AnnotationResult) -> List[Dict]:
-        artifact = SentenceArtifact.from_dict(read_json(self.paths.sentence_artifact(chapter)))
         registry = self.registry.load()
         annotation = normalize_annotation_local_speakers(annotation)
+        raw_annotation = read_json(self.paths.annotation(chapter)) if self.paths.annotation(chapter).exists() else {}
+        if _is_quote_attribution_payload(raw_annotation):
+            temp_registry = ChapterTempRegistryManager(self.paths).write_for_annotation(chapter, registry, annotation)
+            chapter_text = self.paths.chapter_text(chapter).read_text(encoding="utf-8", errors="replace")
+            extraction = extract_quoted_dialogue(chapter_text)
+            script = build_tts_script_from_quotes(
+                chapter=chapter,
+                chapter_text=chapter_text,
+                extraction=extraction,
+                attribution=QuoteAttributionResult.from_dict(raw_annotation),
+                registry=registry,
+                max_chars=self.config.max_tts_window_chars,
+                max_roles=self.config.max_tts_roles,
+                language="auto",
+                temp_registry=temp_registry,
+            )
+            write_json_atomic(self.paths.tts_script(chapter), script.to_dict())
+            qwen_script_path = self.paths.qwen_script(chapter)
+            qwen_script_path.parent.mkdir(parents=True, exist_ok=True)
+            qwen_script_path.write_text(script.qwen_dialogue_text + "\n", encoding="utf-8")
+            return [job.to_adapter_job() for job in script.jobs]
+
+        artifact = SentenceArtifact.from_dict(read_json(self.paths.sentence_artifact(chapter)))
         if self.paths.annotation(chapter).exists():
             write_json_atomic(self.paths.annotation(chapter), annotation.to_dict())
         temp_registry = ChapterTempRegistryManager(self.paths).write_for_annotation(chapter, registry, annotation)
@@ -296,3 +348,27 @@ def _chunk_global_registry_chapters(
         chunks.append(current)
 
     return chunks
+
+
+def _quote_attribution_annotation_payload(attribution: QuoteAttributionResult) -> Dict:
+    quote_types: List[str] = []
+    script = []
+    for quote_idx, role_idx, quote_type in attribution.quotes:
+        if quote_type not in quote_types:
+            quote_types.append(quote_type)
+        script.append([role_idx, quote_types.index(quote_type), quote_idx])
+    if not quote_types:
+        quote_types = ["dialogue", "narrator_quote"]
+    payload = attribution.to_dict()
+    payload.update(
+        {
+            "schema": "quote_attribution_v1",
+            "types": quote_types,
+            "script": script,
+        }
+    )
+    return payload
+
+
+def _is_quote_attribution_payload(payload: Dict) -> bool:
+    return payload.get("schema") == "quote_attribution_v1" or "quotes" in payload

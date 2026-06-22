@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, Union
 
 from ebook_tts_pipeline.annotation.anthropic_client import AnthropicJsonClient
 from ebook_tts_pipeline.annotation.global_registry import GlobalRegistryService
+from ebook_tts_pipeline.annotation.quote_attribution import QuoteAttributionService
 from ebook_tts_pipeline.annotation.service import AnnotationService
 from ebook_tts_pipeline.config import PipelineConfig
 from ebook_tts_pipeline.debug_logging import FailureLogger
@@ -17,7 +18,11 @@ from ebook_tts_pipeline.epub_ingestion import EpubChapterExtractor, EpubExtractR
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.pipeline import AudiobookPipeline
-from ebook_tts_pipeline.registry import build_compact_voice_profile, prune_deprecated_registry_fields
+from ebook_tts_pipeline.registry import (
+    build_compact_voice_profile,
+    migrate_registry_voice_records,
+    prune_deprecated_registry_fields,
+)
 from ebook_tts_pipeline.registry import normalize_name
 from ebook_tts_pipeline.temp_registry import normalize_annotation_local_speakers
 from ebook_tts_pipeline.tts.fake import FakeTtsAdapter
@@ -193,6 +198,7 @@ class PrototypeUiController:
             payload = json.loads(text)
         except json.JSONDecodeError as exc:
             raise ValueError(f"Registry JSON is invalid: {exc}") from exc
+        migrate_registry_voice_records(payload)
         prune_deprecated_registry_fields(payload)
         write_json_atomic(self.paths.registry, payload)
 
@@ -233,16 +239,12 @@ class PrototypeUiController:
         if not self.paths.registry.exists():
             return []
         registry = read_json(self.paths.registry)
+        migrate_registry_voice_records(registry)
         forms = []
         for role_id, character in sorted(registry.get("characters", {}).items()):
             identity = dict(character.get("identity_profile", character.get("character_profile", {})))
             voice_identity = dict(character.get("voice_identity", {}))
-            variants = dict(character.get("voice_variants", {}))
-            qvp_paths = [
-                str(variant.get("voice_config_path", ""))
-                for variant in variants.values()
-                if variant.get("voice_config_path")
-            ]
+            qvp_path = str(character.get("voice_config_path", "") or "")
             forms.append(
                 RegistryCharacterForm(
                     role_id=role_id,
@@ -252,7 +254,7 @@ class PrototypeUiController:
                         RegistryField("profile_id", "Profile ID", str(character.get("profile_id", ""))),
                         RegistryField("person_id", "Person ID", str(character.get("person_id", ""))),
                         RegistryField("seed", "Seed", str(voice_identity.get("seed", ""))),
-                        RegistryField("voice_config_path", "Voice Files", ", ".join(qvp_paths)),
+                        RegistryField("voice_config_path", "Voice File", qvp_path),
                     ],
                     editable_fields=[
                         RegistryField("display_name", "Character Name", str(character.get("display_name", ""))),
@@ -296,6 +298,7 @@ class PrototypeUiController:
         character["aliases"] = _split_csv(values.get("aliases", ""))
         character["identity_profile"] = identity
         self._refresh_character_voice_profiles(character)
+        migrate_registry_voice_records(registry)
         prune_deprecated_registry_fields(registry)
         write_json_atomic(self.paths.registry, registry)
 
@@ -336,7 +339,8 @@ class PrototypeUiController:
     def confirm_annotation_appearances(self, chapter: str, selections: Dict[str, str]) -> None:
         if not self.paths.annotation(chapter).exists():
             raise ValueError(f"Annotation does not exist for {chapter}.")
-        annotation = self._load_annotation(chapter)
+        raw_annotation = read_json(self.paths.annotation(chapter))
+        annotation = AnnotationResult.from_dict(raw_annotation)
         annotation = self._normalize_annotation_local_speakers(chapter, annotation)
         registry = read_json(self.paths.registry) if self.paths.registry.exists() else {}
         forms = self.annotation_appearance_forms(chapter)
@@ -383,7 +387,14 @@ class PrototypeUiController:
             local_speakers=annotation.local_speakers,
             proposed_new_characters=annotation.proposed_new_characters,
         )
-        write_json_atomic(self.paths.annotation(chapter), rewritten.to_dict())
+        payload = rewritten.to_dict()
+        if _is_quote_annotation_payload(raw_annotation):
+            payload["schema"] = str(raw_annotation.get("schema", "quote_attribution_v1"))
+            payload["quotes"] = [
+                [int(quote_idx), old_to_new_role_idx[int(role_idx)], str(quote_type)]
+                for quote_idx, role_idx, quote_type in raw_annotation.get("quotes", [])
+            ]
+        write_json_atomic(self.paths.annotation(chapter), payload)
         write_json_atomic(
             self.paths.annotation_approval(chapter),
             {
@@ -596,18 +607,9 @@ class PrototypeUiController:
         differentiators = list(character.get("voice_identity", {}).get("differentiators", []))
         if differentiators:
             voice["qwen_instruct"] = append_differentiators(str(voice["qwen_instruct"]), differentiators)
-
-        variants = character.setdefault("voice_variants", {})
-        default = variants.get("default")
-        if isinstance(default, dict):
-            default["display_name"] = f"{display_name}_default"
-            default["voice_profile"] = voice
-            default["voice_config_hash"] = None
-        internal = variants.get("internal")
-        if isinstance(internal, dict):
-            internal["display_name"] = f"{display_name}_internal"
-            internal["voice_profile"] = _internal_voice_profile(display_name, voice)
-            internal["voice_config_hash"] = None
+        character["voice_profile"] = voice
+        character["voice_config_hash"] = None
+        character.pop("voice_variants", None)
 
 
 def _find_character_record_by_role_name(registry: Dict[str, Any], role_name: str) -> Optional[Tuple[str, Dict[str, Any]]]:
@@ -684,7 +686,12 @@ def _character_age_stage(record: Dict[str, Any]) -> str:
     return str(record.get("age_stage") or identity.get("age_stage") or "unknown").strip().lower().replace(" ", "_")
 
 
+def _is_quote_annotation_payload(payload: Dict[str, Any]) -> bool:
+    return payload.get("schema") == "quote_attribution_v1" or "quotes" in payload
+
+
 def _default_pipeline_factory(config: PipelineConfig, needs_llm: bool, fake_tts: bool) -> AudiobookPipeline:
+    quote_client = _build_llm_client(config) if needs_llm else _UnavailableJsonClient()
     return AudiobookPipeline(
         config=config,
         annotation_service=AnnotationService(
@@ -702,6 +709,7 @@ def _default_pipeline_factory(config: PipelineConfig, needs_llm: bool, fake_tts:
                 context={"book_root": config.book_root},
             ),
         ),
+        quote_attribution_service=QuoteAttributionService(quote_client) if needs_llm else None,
         tts_adapter=FakeTtsAdapter() if fake_tts else _build_qwen_adapter(config),
     )
 
@@ -733,22 +741,6 @@ def _open_audio_file(path: Path) -> None:
 class _UnavailableJsonClient:
     def complete_json(self, system_prompt: str, user_prompt: str) -> Any:
         raise RuntimeError("This UI action does not perform LLM annotation.")
-
-
-def _internal_voice_profile(display_name: str, base_voice: Dict[str, Any]) -> Dict[str, str]:
-    description = str(base_voice.get("description", "")).rstrip(". ")
-    qwen_instruct = str(base_voice.get("qwen_instruct", "")).rstrip(". ")
-    return {
-        "description": (
-            f"{description}; same {display_name} identity for internal monologue, "
-            "closer, softer, reflective, less projected"
-        ).strip("; "),
-        "qwen_instruct": (
-            f"{qwen_instruct}. Keep the same {display_name} speaker identity and timbre, "
-            "but perform this as internal monologue: closer, softer, inward, reflective, "
-            "and less projected. Do not whisper unless the text itself implies whispering."
-        ).strip(),
-    }
 
 
 def _field_text(value: Any) -> str:

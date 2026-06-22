@@ -38,10 +38,10 @@ def test_render_global_registry_prompt_requests_canonical_characters_only():
     assert "Return new characters and existing-character updates" in prompt
     assert "Do not echo unchanged registry records" in prompt
     assert "named, story-important" in prompt
-    assert "expected to have dialogue or internal thoughts" in prompt
+    assert "expected to have dialogue on page" in prompt
     assert "only mentioned, referenced, described, or part of backstory" in prompt
     assert "unnamed one-off speakers" in prompt
-    assert "animals/pets unless they have spoken or thought lines" in prompt
+    assert "animals/pets unless they have spoken dialogue lines" in prompt
     assert '"characters":[{"name":str,"age_stage":str,"gender":str' in prompt
     assert '"profile":object' not in prompt
     assert "evidence" not in prompt

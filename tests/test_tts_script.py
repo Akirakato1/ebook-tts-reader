@@ -1,5 +1,82 @@
+from ebook_tts_pipeline.annotation.quote_attribution import QuoteAttributionResult
+from ebook_tts_pipeline.annotation.quotes import extract_quoted_dialogue
 from ebook_tts_pipeline.domain import AnnotationResult, Sentence, SentenceArtifact, SentenceUnit
-from ebook_tts_pipeline.tts.script import build_tts_script, render_qwen_dialogue_script
+from ebook_tts_pipeline.tts.script import build_tts_script, build_tts_script_from_quotes, render_qwen_dialogue_script
+
+
+def test_builds_quote_attributed_tts_script_with_single_voice_roles():
+    chapter_text = 'Callie said, "Stay here." She left.'
+    extraction = extract_quoted_dialogue(chapter_text)
+    attribution = QuoteAttributionResult.from_dict(
+        {
+            "roles": ["callie_child"],
+            "quotes": [[1, 0, "dialogue"]],
+        }
+    )
+    registry = {
+        "book": {"slug": "demo"},
+        "narrator": {
+            "role_id": "narrator",
+            "display_name": "Narrator",
+            "voice_config_path": "voices/narrator.qvp",
+        },
+        "characters": {
+            "callie_child": {
+                "role_id": "callie_child",
+                "display_name": "Callie",
+                "aliases": ["Callie child"],
+                "voice_profile": {"qwen_instruct": "Callie child voice."},
+                "voice_config_path": "voices/callie_child.qvp",
+            }
+        },
+    }
+
+    script = build_tts_script_from_quotes(
+        chapter="chapter_001",
+        chapter_text=chapter_text,
+        extraction=extraction,
+        attribution=attribution,
+        registry=registry,
+        max_chars=1000,
+        max_roles=8,
+        language="auto",
+    )
+
+    assert [job.to_dict() for job in script.jobs] == [
+        {
+            "sentence_idx": 0,
+            "unit_idx": 0,
+            "role": "Narrator",
+            "role_id": "narrator",
+            "type": "narration",
+            "text": "Callie said,",
+            "voice_config_path": "voices/narrator.qvp",
+        },
+        {
+            "sentence_idx": 1,
+            "unit_idx": 1,
+            "role": "callie_child",
+            "role_id": "callie_child",
+            "character": "Callie",
+            "type": "dialogue",
+            "text": '"Stay here."',
+            "voice_config_path": "voices/callie_child.qvp",
+        },
+        {
+            "sentence_idx": 2,
+            "unit_idx": 2,
+            "role": "Narrator",
+            "role_id": "narrator",
+            "type": "narration",
+            "text": "She left.",
+            "voice_config_path": "voices/narrator.qvp",
+        },
+    ]
+    assert script.qwen_dialogue_text == (
+        "Narrator: Callie said,\n"
+        'callie_child: "Stay here."\n'
+        "Narrator: She left."
+    )
 
 
 def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
@@ -26,27 +103,15 @@ def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
             "voice_config_path": "voices/narrator.qvp",
         },
         "characters": {
-            "elena": {
-                "role_id": "elena",
-                "display_name": "Elena",
-                "aliases": [],
-                "voice_variants": {
-                    "default": {
-                        "role_id": "elena_default",
-                        "display_name": "Elena_default",
-                        "voice_config_path": "voices/elena_default.qvp",
-                        "voice_profile": {"qwen_instruct": "Elena aloud."},
-                    },
-                    "internal": {
-                        "role_id": "elena_internal",
-                        "display_name": "Elena_internal",
-                        "voice_config_path": "voices/elena_internal.qvp",
-                        "voice_profile": {"qwen_instruct": "Elena inward."},
-                    },
-                },
-            }
-        },
-    }
+                "elena": {
+                    "role_id": "elena",
+                    "display_name": "Elena",
+                    "aliases": [],
+                    "voice_config_path": "voices/elena.qvp",
+                    "voice_profile": {"qwen_instruct": "Elena voice."},
+                }
+            },
+        }
 
     script = build_tts_script(
         chapter="chapter_001",
@@ -71,13 +136,12 @@ def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
         {
             "sentence_idx": 1,
             "unit_idx": 1,
-            "role": "Elena_default",
-            "role_id": "elena_default",
+            "role": "elena",
+            "role_id": "elena",
             "character": "Elena",
-            "voice_variant": "default",
             "type": "dialogue",
             "text": '"Hello,"',
-            "voice_config_path": "voices/elena_default.qvp",
+            "voice_config_path": "voices/elena.qvp",
         },
         {
             "sentence_idx": 1,
@@ -91,13 +155,12 @@ def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
         {
             "sentence_idx": 2,
             "unit_idx": 2,
-            "role": "Elena_internal",
-            "role_id": "elena_internal",
+            "role": "elena",
+            "role_id": "elena",
             "character": "Elena",
-            "voice_variant": "internal",
             "type": "thought",
             "text": "She left.",
-            "voice_config_path": "voices/elena_internal.qvp",
+            "voice_config_path": "voices/elena.qvp",
         },
     ]
     assert [batch.to_dict() for batch in script.windows[0].batches] == [
@@ -114,9 +177,9 @@ def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
         },
         {
             "batch_idx": 1,
-            "role": "Elena_default",
-            "role_id": "elena_default",
-            "voice_config_path": "voices/elena_default.qvp",
+            "role": "elena",
+            "role_id": "elena",
+            "voice_config_path": "voices/elena.qvp",
             "language": "auto",
             "sentence_indices": [1],
             "unit_indices": [1],
@@ -136,9 +199,9 @@ def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
         },
         {
             "batch_idx": 3,
-            "role": "Elena_internal",
-            "role_id": "elena_internal",
-            "voice_config_path": "voices/elena_internal.qvp",
+            "role": "elena",
+            "role_id": "elena",
+            "voice_config_path": "voices/elena.qvp",
             "language": "auto",
             "sentence_indices": [2],
             "unit_indices": [2],
@@ -148,9 +211,9 @@ def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
     ]
     assert script.qwen_dialogue_text == (
         "Narrator: It rained.\n"
-        'Elena_default: "Hello,"\n'
+        'elena: "Hello,"\n'
         "Narrator: Elena said.\n"
-        "Elena_internal: She left."
+        "elena: She left."
     )
 
 
@@ -178,44 +241,20 @@ def test_tts_script_resolves_age_stage_aliases_to_unique_voice_roles():
             "voice_config_path": "voices/narrator.qvp",
         },
         "characters": {
-            "callie_child": {
-                "role_id": "callie_child",
-                "display_name": "Callie",
-                "aliases": ["Callie child"],
-                "voice_variants": {
-                    "default": {
-                        "role_id": "callie_child_default",
-                        "display_name": "Callie_default",
-                        "voice_config_path": "voices/callie_child_default.qvp",
-                        "voice_profile": {"qwen_instruct": "Callie child aloud."},
-                    },
-                    "internal": {
-                        "role_id": "callie_child_internal",
-                        "display_name": "Callie_internal",
-                        "voice_config_path": "voices/callie_child_internal.qvp",
-                        "voice_profile": {"qwen_instruct": "Callie child inward."},
-                    },
+                "callie_child": {
+                    "role_id": "callie_child",
+                    "display_name": "Callie",
+                    "aliases": ["Callie child"],
+                    "voice_config_path": "voices/callie_child.qvp",
+                    "voice_profile": {"qwen_instruct": "Callie child voice."},
                 },
-            },
-            "callie_adult": {
-                "role_id": "callie_adult",
-                "display_name": "Callie",
-                "aliases": ["Callie adult"],
-                "voice_variants": {
-                    "default": {
-                        "role_id": "callie_adult_default",
-                        "display_name": "Callie_default",
-                        "voice_config_path": "voices/callie_adult_default.qvp",
-                        "voice_profile": {"qwen_instruct": "Callie adult aloud."},
-                    },
-                    "internal": {
-                        "role_id": "callie_adult_internal",
-                        "display_name": "Callie_internal",
-                        "voice_config_path": "voices/callie_adult_internal.qvp",
-                        "voice_profile": {"qwen_instruct": "Callie adult inward."},
-                    },
+                "callie_adult": {
+                    "role_id": "callie_adult",
+                    "display_name": "Callie",
+                    "aliases": ["Callie adult"],
+                    "voice_config_path": "voices/callie_adult.qvp",
+                    "voice_profile": {"qwen_instruct": "Callie adult voice."},
                 },
-            },
         },
     }
 
@@ -233,13 +272,12 @@ def test_tts_script_resolves_age_stage_aliases_to_unique_voice_roles():
         {
             "sentence_idx": 0,
             "unit_idx": 0,
-            "role": "callie_child_default",
-            "role_id": "callie_child_default",
+            "role": "callie_child",
+            "role_id": "callie_child",
             "character": "Callie",
-            "voice_variant": "default",
             "type": "dialogue",
             "text": '"Stay here,"',
-            "voice_config_path": "voices/callie_child_default.qvp",
+            "voice_config_path": "voices/callie_child.qvp",
         },
         {
             "sentence_idx": 0,
@@ -253,13 +291,12 @@ def test_tts_script_resolves_age_stage_aliases_to_unique_voice_roles():
         {
             "sentence_idx": 1,
             "unit_idx": 1,
-            "role": "callie_adult_internal",
-            "role_id": "callie_adult_internal",
+            "role": "callie_adult",
+            "role_id": "callie_adult",
             "character": "Callie",
-            "voice_variant": "internal",
             "type": "thought",
             "text": '"I remember,"',
-            "voice_config_path": "voices/callie_adult_internal.qvp",
+            "voice_config_path": "voices/callie_adult.qvp",
         },
         {
             "sentence_idx": 1,
@@ -272,9 +309,9 @@ def test_tts_script_resolves_age_stage_aliases_to_unique_voice_roles():
         },
     ]
     assert script.qwen_dialogue_text == (
-        'callie_child_default: "Stay here,"\n'
+        'callie_child: "Stay here,"\n'
         "Narrator: Callie said.\n"
-        'callie_adult_internal: "I remember,"\n'
+        'callie_adult: "I remember,"\n'
         "Narrator: Callie thought."
     )
 
@@ -304,19 +341,13 @@ def test_tts_script_uses_annotation_units_for_embedded_dialogue_tags():
             "voice_config_path": "voices/narrator.qvp",
         },
         "characters": {
-            "callie_child": {
-                "role_id": "callie_child",
-                "display_name": "Callie",
-                "aliases": ["Callie child"],
-                "voice_variants": {
-                    "default": {
-                        "role_id": "callie_child_default",
-                        "display_name": "Callie_default",
-                        "voice_config_path": "voices/callie_child_default.qvp",
-                        "voice_profile": {"qwen_instruct": "Callie child aloud."},
-                    }
+                "callie_child": {
+                    "role_id": "callie_child",
+                    "display_name": "Callie",
+                    "aliases": ["Callie child"],
+                    "voice_config_path": "voices/callie_child.qvp",
+                    "voice_profile": {"qwen_instruct": "Callie child voice."},
                 },
-            },
         },
     }
 
@@ -334,13 +365,12 @@ def test_tts_script_uses_annotation_units_for_embedded_dialogue_tags():
         {
             "sentence_idx": 0,
             "unit_idx": 0,
-            "role": "Callie_default",
-            "role_id": "callie_child_default",
+            "role": "callie_child",
+            "role_id": "callie_child",
             "character": "Callie",
-            "voice_variant": "default",
             "type": "dialogue",
             "text": '"Stay here,"',
-            "voice_config_path": "voices/callie_child_default.qvp",
+            "voice_config_path": "voices/callie_child.qvp",
         },
         {
             "sentence_idx": 0,
@@ -352,7 +382,7 @@ def test_tts_script_uses_annotation_units_for_embedded_dialogue_tags():
             "voice_config_path": "voices/narrator.qvp",
         },
     ]
-    assert script.qwen_dialogue_text == 'Callie_default: "Stay here,"\nNarrator: Callie said.'
+    assert script.qwen_dialogue_text == 'callie_child: "Stay here,"\nNarrator: Callie said.'
 
 
 def test_tts_script_extracts_narrator_context_after_annotation_without_changing_quote_speaker():
@@ -377,19 +407,13 @@ def test_tts_script_extracts_narrator_context_after_annotation_without_changing_
             "voice_config_path": "voices/narrator.qvp",
         },
         "characters": {
-            "walter": {
-                "role_id": "walter",
-                "display_name": "Walter",
-                "aliases": [],
-                "voice_variants": {
-                    "default": {
-                        "role_id": "walter_default",
-                        "display_name": "Walter_default",
-                        "voice_config_path": "voices/walter_default.qvp",
-                        "voice_profile": {"qwen_instruct": "Walter aloud."},
-                    }
-                },
-            }
+                "walter": {
+                    "role_id": "walter",
+                    "display_name": "Walter",
+                    "aliases": [],
+                    "voice_config_path": "voices/walter.qvp",
+                    "voice_profile": {"qwen_instruct": "Walter voice."},
+                }
         },
     }
 
@@ -405,7 +429,7 @@ def test_tts_script_extracts_narrator_context_after_annotation_without_changing_
 
     assert [(job.role, job.type, job.text) for job in script.jobs] == [
         ("Narrator", "narration", "Walter said,"),
-        ("Walter_default", "dialogue", '"I like your jacket."'),
+        ("walter", "dialogue", '"I like your jacket."'),
     ]
 
     continuation_artifact = SentenceArtifact(
@@ -427,7 +451,7 @@ def test_tts_script_extracts_narrator_context_after_annotation_without_changing_
     )
 
     assert [(job.role, job.type, job.text) for job in continuation_script.jobs] == [
-        ("Walter_default", "dialogue", "You did what she told you to do.\u201d"),
+        ("walter", "dialogue", "You did what she told you to do.\u201d"),
         ("Narrator", "narration", "It was almost a relief."),
     ]
 
@@ -468,14 +492,9 @@ def test_tts_script_resolves_chapter_local_speakers_from_temp_registry():
             "tmp_001": {
                 "local_id": "tmp_001",
                 "label": "Security Guard",
-                "voice_variants": {
-                    "default": {
-                        "role_id": "chapter_013_tmp_001_default",
-                        "display_name": "Security Guard_default",
-                        "voice_config_path": "voices/_temp/chapter_013/tmp_001_default.qvp",
-                        "voice_profile": {"qwen_instruct": "An adult male security guard voice."},
-                    }
-                },
+                "role_id": "chapter_013_tmp_001",
+                "voice_config_path": "voices/_temp/chapter_013/tmp_001.qvp",
+                "voice_profile": {"qwen_instruct": "An adult male security guard voice."},
             }
         },
     }
@@ -495,13 +514,12 @@ def test_tts_script_resolves_chapter_local_speakers_from_temp_registry():
         {
             "sentence_idx": 0,
             "unit_idx": 0,
-            "role": "Security Guard_default",
-            "role_id": "chapter_013_tmp_001_default",
+            "role": "chapter_013_tmp_001",
+            "role_id": "chapter_013_tmp_001",
             "character": "Security Guard",
-            "voice_variant": "default",
             "type": "dialogue",
             "text": '"Move along,"',
-            "voice_config_path": "voices/_temp/chapter_013/tmp_001_default.qvp",
+            "voice_config_path": "voices/_temp/chapter_013/tmp_001.qvp",
         },
         {
             "sentence_idx": 0,
@@ -514,7 +532,7 @@ def test_tts_script_resolves_chapter_local_speakers_from_temp_registry():
         }
     ]
     assert script.qwen_dialogue_text == (
-        'Security Guard_default: "Move along,"\n'
+        'chapter_013_tmp_001: "Move along,"\n'
         "Narrator: the guard said."
     )
 

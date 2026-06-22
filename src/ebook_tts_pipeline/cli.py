@@ -6,6 +6,7 @@ from typing import List, Optional
 
 from ebook_tts_pipeline.annotation.anthropic_client import AnthropicJsonClient
 from ebook_tts_pipeline.annotation.global_registry import GlobalRegistryService
+from ebook_tts_pipeline.annotation.quote_attribution import QuoteAttributionService
 from ebook_tts_pipeline.annotation.service import AnnotationService
 from ebook_tts_pipeline.config import PipelineConfig
 from ebook_tts_pipeline.debug_logging import FailureLogger
@@ -120,6 +121,7 @@ def _add_book_chapter_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _build_pipeline(config: PipelineConfig, needs_llm: bool, fake_tts: bool) -> AudiobookPipeline:
+    quote_client = _build_llm_client(config) if needs_llm else _UnavailableJsonClient()
     return AudiobookPipeline(
         config=config,
         annotation_service=AnnotationService(
@@ -137,6 +139,7 @@ def _build_pipeline(config: PipelineConfig, needs_llm: bool, fake_tts: bool) -> 
                 context={"book_root": config.book_root},
             ),
         ),
+        quote_attribution_service=QuoteAttributionService(quote_client) if needs_llm else None,
         tts_adapter=FakeTtsAdapter() if fake_tts else _build_qwen_adapter(config),
     )
 

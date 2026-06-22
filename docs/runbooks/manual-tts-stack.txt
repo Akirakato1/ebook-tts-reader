@@ -53,10 +53,11 @@ Runtime Order
 
      books/<book_slug>/sentence_segments/
 
-3. Run annotation.
-   - The pipeline reads only sentence_segments/*.sentences.json for annotation.
-   - Anthropic labels each sentence as narration, dialogue, or thought and assigns a role.
-   - New characters are written to registry.json only after validation succeeds.
+3. Run quote attribution.
+   - The pipeline extracts quoted dialogue spans directly from the raw chapter text.
+   - Anthropic maps each quote ID to either a global registry role or a chapter-local temporary speaker.
+   - Narrator text is everything outside quote spans and is assembled deterministically during script generation.
+   - Chapter-local temporary speakers are not written to the global registry.
 
 4. Run voice preparation.
    - For every role in the chapter, the pipeline checks registry.json.
@@ -97,7 +98,7 @@ The registry treats age-stage versions of the same underlying person as separate
   trevor_child
   andrew_adult
 
-Use the same person_id to link those profiles when the text supports that they are the same underlying person. Do not force one voice profile across life stages; age stage, experience, and personality changes should produce separate default/internal voice files.
+Use the same person_id to link those profiles when the text supports that they are the same underlying person. Do not force one voice profile across life stages; age stage, experience, and personality changes should produce separate voice files.
 
 New-character LLM output should be compact. It should provide identity fields only:
 

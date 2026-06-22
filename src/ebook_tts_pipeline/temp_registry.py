@@ -11,7 +11,6 @@ from ebook_tts_pipeline.registry import (
     normalize_character_profile,
     normalize_name,
     slugify_name,
-    voice_variant_for_type,
 )
 from ebook_tts_pipeline.voice_identity import append_differentiators, choose_differentiators, role_seed
 
@@ -106,16 +105,15 @@ def resolve_temp_voice(
     for speaker in temp_registry.get("speakers", {}).values():
         if normalized not in _speaker_lookup_names(speaker):
             continue
-        variant_key = _matching_variant(speaker, normalized) or voice_variant_for_type(speech_type)
-        variant = speaker.get("voice_variants", {}).get(variant_key)
-        if not isinstance(variant, dict):
+        _migrate_temp_speaker_voice(speaker)
+        if not isinstance(speaker.get("voice_profile"), dict):
             return None
         return {
             "character": str(speaker.get("label", role_name)),
-            "role": str(variant.get("display_name", role_name)),
-            "role_id": str(variant.get("role_id", role_name)),
-            "voice_variant": variant_key,
-            "voice_record": variant,
+            "role": str(speaker.get("role_id", role_name)),
+            "role_id": str(speaker.get("role_id", role_name)),
+            "voice_variant": None,
+            "voice_record": speaker,
         }
     return None
 
@@ -133,32 +131,17 @@ def _normalize_local_speaker_record(
     profile = normalize_character_profile(label, speaker.get("profile", {}))
     identity_profile = profile["identity_profile"]
     base_voice = build_compact_voice_profile(label, {"identity_profile": identity_profile})
-
-    variants: Dict[str, Dict[str, Any]] = {}
-    for variant_key in ("default", "internal"):
-        role_id = f"{slugify_name(chapter)}_{local_id}_{variant_key}"
-        differentiators = choose_differentiators(book_slug, role_id)
-        voice_profile = dict(base_voice)
-        if variant_key == "internal":
-            voice_profile = _internal_voice_profile(label, base_voice)
-        voice_profile["qwen_instruct"] = append_differentiators(
-            str(voice_profile["qwen_instruct"]),
-            differentiators,
-        )
-        variants[variant_key] = {
-            "role_id": role_id,
-            "display_name": f"{label}_{variant_key}",
-            "voice_identity": {
-                "seed": role_seed(book_slug, role_id),
-                "differentiators": differentiators,
-            },
-            "voice_profile": voice_profile,
-            "voice_config_path": _relative_temp_voice_path(paths, chapter, local_id, variant_key),
-        }
+    role_id = f"{slugify_name(chapter)}_{local_id}"
+    differentiators = choose_differentiators(book_slug, role_id)
+    base_voice["qwen_instruct"] = append_differentiators(
+        str(base_voice["qwen_instruct"]),
+        differentiators,
+    )
 
     return {
         "local_id": local_id,
         "label": label,
+        "role_id": role_id,
         "profile": {
             "age_stage": identity_profile.get("age_stage", "unknown"),
             "gender": identity_profile.get("gender", "unknown"),
@@ -167,7 +150,12 @@ def _normalize_local_speaker_record(
             "accent": identity_profile.get("accent"),
             "occupation": identity_profile.get("occupation"),
         },
-        "voice_variants": variants,
+        "voice_identity": {
+            "seed": role_seed(book_slug, role_id),
+            "differentiators": differentiators,
+        },
+        "voice_profile": base_voice,
+        "voice_config_path": _relative_temp_voice_path(paths, chapter, local_id),
     }
 
 
@@ -195,8 +183,8 @@ def _speaker_key(speaker: Dict[str, Any]) -> str:
     return normalize_name(str(speaker.get("local_id") or speaker.get("label") or speaker.get("name") or ""))
 
 
-def _relative_temp_voice_path(paths: BookPaths, chapter: str, local_id: str, variant: str) -> str:
-    path = paths.temp_voice_qvp(chapter, local_id, variant)
+def _relative_temp_voice_path(paths: BookPaths, chapter: str, local_id: str) -> str:
+    path = paths.temp_voice_qvp(chapter, local_id)
     return path.relative_to(paths.root).as_posix()
 
 
@@ -204,6 +192,8 @@ def _speaker_lookup_names(speaker: Dict[str, Any]) -> Set[str]:
     names = {
         normalize_name(str(speaker.get("local_id", ""))),
         normalize_name(str(speaker.get("label", ""))),
+        normalize_name(str(speaker.get("role_id", ""))),
+        normalize_name(str(speaker.get("role_id", "")).replace("_", " ")),
     }
     for variant in speaker.get("voice_variants", {}).values():
         if not isinstance(variant, dict):
@@ -215,31 +205,16 @@ def _speaker_lookup_names(speaker: Dict[str, Any]) -> Set[str]:
     return names
 
 
-def _matching_variant(speaker: Dict[str, Any], normalized_name: str) -> str:
-    for variant_key, variant in speaker.get("voice_variants", {}).items():
-        if not isinstance(variant, dict):
-            continue
-        names = {
-            normalize_name(str(variant.get("display_name", ""))),
-            normalize_name(str(variant.get("role_id", ""))),
-            normalize_name(str(variant.get("role_id", "")).replace("_", " ")),
-        }
-        if normalized_name in names:
-            return str(variant_key)
-    return ""
-
-
-def _internal_voice_profile(label: str, base_voice: Dict[str, Any]) -> Dict[str, str]:
-    description = str(base_voice.get("description", "")).rstrip(". ")
-    qwen_instruct = str(base_voice.get("qwen_instruct", "")).rstrip(". ")
-    return {
-        "description": (
-            f"{description}; same {label} identity for internal monologue, "
-            "closer, softer, reflective, less projected"
-        ).strip("; "),
-        "qwen_instruct": (
-            f"{qwen_instruct}. Keep the same {label} speaker identity and timbre, "
-            "but perform this as internal monologue: closer, softer, inward, reflective, "
-            "and less projected. Do not whisper unless the text itself implies whispering."
-        ).strip(),
-    }
+def _migrate_temp_speaker_voice(speaker: Dict[str, Any]) -> None:
+    default_variant = speaker.get("voice_variants", {}).get("default", {})
+    if "role_id" not in speaker and isinstance(default_variant, dict):
+        role_id = str(default_variant.get("role_id", ""))
+        if role_id.endswith("_default"):
+            role_id = role_id[: -len("_default")]
+        speaker["role_id"] = role_id
+    if "voice_profile" not in speaker and isinstance(default_variant, dict):
+        speaker["voice_profile"] = dict(default_variant.get("voice_profile", {}))
+    if "voice_config_path" not in speaker and isinstance(default_variant, dict):
+        path = str(default_variant.get("voice_config_path", ""))
+        speaker["voice_config_path"] = path.replace("_default.qvp", ".qvp") if path else None
+    speaker.pop("voice_variants", None)
