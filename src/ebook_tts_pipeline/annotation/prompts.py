@@ -56,8 +56,11 @@ def render_annotation_prompt(
         '- Use exactly "Narrator" for narration, not "narrator" or another variant.\n'
         '- types: exactly ["narration", "dialogue", "thought"]\n'
         "- Each annotation unit contains at most one non-narrator speaker section.\n"
+        "- These units are for speaker labeling, not final TTS text.\n"
         "- A unit may include quoted speech plus narrator context, such as said-tags or short action beats.\n"
         "- If a unit contains quoted speech plus narrator context, label the unit as the quoted speaker/dialogue.\n"
+        "- After annotation, deterministic script generation will extract narrator context later, before TTS.\n"
+        "- Do not add extra Narrator rows for said-tags or action beats inside a speaker-labeled unit.\n"
         "- If a unit contains no quoted speech or thought, label it Narrator/narration.\n"
         "- Do not split or merge unit_idx values in your output.\n"
         "- script: list of [role_idx, type_idx, unit_idx]\n"

@@ -41,6 +41,9 @@ def test_annotation_prompt_describes_role_allocation_units():
 
     assert "Each annotation unit contains at most one non-narrator speaker section." in prompt
     assert "If a unit contains quoted speech plus narrator context" in prompt
+    assert "These units are for speaker labeling, not final TTS text." in prompt
+    assert "deterministic script generation will extract narrator context later" in prompt
+    assert "Do not add extra Narrator rows for said-tags or action beats inside a speaker-labeled unit." in prompt
     assert "Do not split or merge unit_idx values in your output." in prompt
 
 
