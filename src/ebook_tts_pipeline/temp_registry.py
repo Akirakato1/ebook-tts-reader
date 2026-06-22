@@ -71,12 +71,13 @@ class ChapterTempRegistryManager:
 
 
 def normalize_annotation_local_speakers(annotation: AnnotationResult) -> AnnotationResult:
-    if not annotation.proposed_new_characters:
+    legacy_characters = list(annotation.proposed_new_characters) + list(annotation.new_characters)
+    if not legacy_characters:
         return annotation
     existing = list(annotation.local_speakers)
     seen = {_speaker_key(speaker) for speaker in existing}
     converted: List[Dict[str, Any]] = []
-    for index, character in enumerate(annotation.proposed_new_characters, start=len(existing) + 1):
+    for index, character in enumerate(legacy_characters, start=len(existing) + 1):
         speaker = _legacy_character_to_local_speaker(character, index)
         key = _speaker_key(speaker)
         if key in seen:
@@ -85,6 +86,7 @@ def normalize_annotation_local_speakers(annotation: AnnotationResult) -> Annotat
         converted.append(speaker)
     return replace(
         annotation,
+        new_characters=[],
         local_speakers=existing + converted,
         proposed_new_characters=[],
     )

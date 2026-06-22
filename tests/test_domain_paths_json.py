@@ -1,6 +1,6 @@
 import json
 
-from ebook_tts_pipeline.domain import Sentence, SentenceArtifact
+from ebook_tts_pipeline.domain import AnnotationResult, Sentence, SentenceArtifact
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
 
@@ -43,6 +43,19 @@ def test_sentence_artifact_serializes_with_stable_sentence_indexes():
 
     assert [s.idx for s in restored.sentences] == [0, 1]
     assert restored.sentences[1].text == "Goodbye."
+
+
+def test_annotation_result_omits_empty_legacy_character_fields():
+    annotation = AnnotationResult(
+        roles=["Narrator"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 0, 0)],
+    )
+
+    data = annotation.to_dict()
+
+    assert "new_characters" not in data
+    assert "proposed_new_characters" not in data
 
 
 def test_write_json_atomic_creates_parent_and_valid_json(tmp_path):

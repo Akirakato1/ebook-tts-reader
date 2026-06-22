@@ -11,9 +11,10 @@ from ebook_tts_pipeline.tts.fake import FakeTtsAdapter
 class TinyBookLlm:
     def complete_json(self, system_prompt, user_prompt):
         return {
-            "new_characters": [
+            "local_speakers": [
                 {
-                    "name": "Elena",
+                    "local_id": "tmp_001",
+                    "label": "Elena",
                     "profile": {"age_stage": "adult", "gender": "female", "personality": ["soft"]},
                 }
             ],
@@ -42,5 +43,5 @@ def test_fake_pipeline_from_whole_book_to_audio_outputs(tmp_path):
 
     assert timeline["sentences"][0]["sentence_idx"] == 0
     assert (book_root / "registry.json").exists()
-    assert (book_root / "voices" / "elena_adult_default.qvp").exists()
+    assert (book_root / "voices" / "_temp" / "chapter_001" / "tmp_001_default.qvp").exists()
     assert (book_root / "audio" / "chapter_001.wav").exists()

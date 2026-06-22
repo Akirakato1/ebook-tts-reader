@@ -2,14 +2,16 @@ from ebook_tts_pipeline.annotation.prompts import render_annotation_prompt
 from ebook_tts_pipeline.domain import Sentence, SentenceUnit
 
 
-def test_annotation_prompt_requires_profile_object_for_new_characters():
+def test_annotation_prompt_requires_profile_object_for_local_speakers():
     prompt = render_annotation_prompt(
         "chapter_001",
         [Sentence(idx=0, text="Hello.")],
         {"characters": {}},
     )
 
+    assert "local_speakers" in prompt
     assert "profile must be a JSON object, never null, never a string" in prompt
+    assert "new_characters" not in prompt
 
 
 def test_annotation_prompt_requires_one_script_row_per_annotation_unit():
@@ -29,14 +31,16 @@ def test_annotation_prompt_requires_one_script_row_per_annotation_unit():
     assert "choose the first or primary speaker" not in prompt
 
 
-def test_annotation_prompt_rejects_numbered_person_ids():
+def test_annotation_prompt_does_not_request_global_character_creation():
     prompt = render_annotation_prompt(
         "chapter_001",
         [Sentence(idx=0, text="Callie waited.")],
         {"characters": {}},
     )
 
-    assert "Do not append chapter, window, or sentence numbers to person_id or profile_id" in prompt
+    assert "new_characters" not in prompt
+    assert "proposed_new_characters" not in prompt
+    assert "local_speakers" in prompt
 
 
 def test_annotation_prompt_uses_lean_character_profile_schema():
@@ -122,4 +126,4 @@ def test_locked_annotation_prompt_uses_local_speakers_for_unregistered_disposabl
     assert "unnamed one-off" in prompt
     assert "No approval is required for local_speakers" in prompt
     assert "proposed_new_characters" not in prompt
-    assert "new_characters: []" in prompt
+    assert "new_characters" not in prompt

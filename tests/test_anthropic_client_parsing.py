@@ -35,7 +35,8 @@ def test_annotation_prompt_explicitly_forbids_markdown_fences_and_names_narrator
 
     assert "Do not wrap the JSON in Markdown code fences." in prompt
     assert "Use exactly \"Narrator\"" in prompt
-    assert "Do not include Narrator in new_characters." in prompt
+    assert "new_characters" not in prompt
+    assert "local_speakers" in prompt
     assert "profile required fields: age_stage, gender, personality." in prompt
     assert "Allowed unit_idx values: [0]" in prompt
     assert "script must contain exactly 1 rows" in prompt

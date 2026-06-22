@@ -88,7 +88,7 @@ class AudiobookPipeline:
             discovered_count += len(result.characters)
         return discovered_count
 
-    def annotate_chapter(self, chapter: str, lock_registry: bool = False) -> AnnotationResult:
+    def annotate_chapter(self, chapter: str, lock_registry: bool = True) -> AnnotationResult:
         artifact = SentenceArtifact.from_dict(read_json(self.paths.sentence_artifact(chapter)))
         initial_known_names = known_annotation_role_names(self.registry.load())
         window_results: List[AnnotationResult] = []
@@ -119,7 +119,7 @@ class AudiobookPipeline:
         self,
         chapter: str,
         sentences: List[Sentence],
-        lock_registry: bool = False,
+        lock_registry: bool = True,
     ) -> List[AnnotationResult]:
         try:
             result = self.annotation_service.annotate_window(
@@ -145,8 +145,6 @@ class AudiobookPipeline:
                 )
             )
 
-        if result.new_characters and not lock_registry:
-            self.registry.add_new_characters(chapter, result.new_characters)
         return [result]
 
     def prepare_voices_for_annotation(

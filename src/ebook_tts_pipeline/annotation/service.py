@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import replace
 from typing import Any, Dict, List, Optional, Set
 
 from ebook_tts_pipeline.annotation.anthropic_client import (
@@ -35,12 +34,12 @@ class AnnotationService:
         chapter: str,
         sentences: List[Sentence],
         registry: Dict,
-        lock_registry: bool = False,
+        lock_registry: bool = True,
     ) -> AnnotationResult:
         prompt = render_annotation_prompt(chapter, sentences, registry, lock_registry=lock_registry)
         payload = self._complete_json(chapter, sentences, "annotation", prompt)
         result = self._annotation_result_from_payload(chapter, sentences, "annotation", prompt, payload)
-        result = _lock_annotation_result(result) if lock_registry else result
+        result = _localize_annotation_result(result)
         expected = [sentence.idx for sentence in sentences]
         known_names = known_annotation_role_names(registry)
 
@@ -76,7 +75,7 @@ class AnnotationService:
                     repair_prompt,
                     payload,
                 )
-                result = _lock_annotation_result(result) if lock_registry else result
+                result = _localize_annotation_result(result)
 
         return result
 
@@ -182,23 +181,5 @@ def _normalize_name(name: str) -> str:
     return "".join(ch for ch in name.lower() if ch.isalnum())
 
 
-def _lock_annotation_result(result: AnnotationResult) -> AnnotationResult:
-    normalized = normalize_annotation_local_speakers(result)
-    if not normalized.new_characters:
-        return normalized
-    local_speakers = list(normalized.local_speakers)
-    start = len(local_speakers) + 1
-    for offset, character in enumerate(normalized.new_characters):
-        local_speakers.append(
-            {
-                "local_id": f"tmp_{start + offset:03d}",
-                "label": str(character.get("name", "")).strip() or f"Temporary speaker {start + offset}",
-                "profile": dict(character.get("profile", {})) if isinstance(character.get("profile"), dict) else {},
-            }
-        )
-    return replace(
-        normalized,
-        new_characters=[],
-        local_speakers=local_speakers,
-        proposed_new_characters=[],
-    )
+def _localize_annotation_result(result: AnnotationResult) -> AnnotationResult:
+    return normalize_annotation_local_speakers(result)

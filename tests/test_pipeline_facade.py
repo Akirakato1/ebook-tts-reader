@@ -18,9 +18,10 @@ class FakeLlmClient:
     def complete_json(self, system_prompt, user_prompt):
         self.calls += 1
         return {
-            "new_characters": [
+            "local_speakers": [
                 {
-                    "name": "Elena",
+                    "local_id": "tmp_001",
+                    "label": "Elena",
                     "profile": {"age_stage": "adult", "gender": "female", "personality": ["soft"]},
                 }
             ],
@@ -153,10 +154,11 @@ def test_pipeline_runs_tiny_chapter_with_fake_adapters(tmp_path):
     assert (book_root / "tts_scripts" / "chapter_001.qwen_script.txt").exists()
     assert (book_root / "audio" / "chapter_001.wav").exists()
     assert (book_root / "audio" / "chapter_001.timeline.json").exists()
-    assert (book_root / "voices" / "elena_adult_default.qvp").exists()
+    assert pipeline.registry.load()["characters"] == {}
+    assert (book_root / "voices" / "_temp" / "chapter_001" / "tmp_001_default.qvp").exists()
 
 
-def test_pipeline_annotates_multi_window_chapter_and_preserves_new_characters(tmp_path):
+def test_pipeline_annotates_multi_window_chapter_converts_legacy_new_characters_to_local_speakers(tmp_path):
     book_root = tmp_path / "demo"
     chapter_dir = book_root / "chapters"
     chapter_dir.mkdir(parents=True)
@@ -178,7 +180,13 @@ def test_pipeline_annotates_multi_window_chapter_and_preserves_new_characters(tm
                 "script": [[0, 0, 0], [1, 1, 1], [0, 0, 2]],
             },
             {
-                "new_characters": [],
+                "local_speakers": [
+                    {
+                        "local_id": "tmp_001",
+                        "label": "Elena",
+                        "profile": {"age_stage": "adult", "gender": "female", "personality": ["soft"]},
+                    }
+                ],
                 "roles": ["Narrator", "Elena"],
                 "types": ["narration", "dialogue", "thought"],
                 "script": [[1, 2, 3]],
@@ -206,9 +214,10 @@ def test_pipeline_annotates_multi_window_chapter_and_preserves_new_characters(tm
     registry = pipeline.registry.load()
 
     assert client.calls == 2
-    assert [character["name"] for character in annotation.new_characters] == ["Elena"]
+    assert annotation.new_characters == []
+    assert [speaker["label"] for speaker in annotation.local_speakers] == ["Elena"]
     assert annotation.script == [(0, 0, 0), (1, 1, 1), (0, 0, 2), (1, 2, 3)]
-    assert registry["characters"]["elena_adult"]["display_name"] == "Elena"
+    assert registry["characters"] == {}
 
 
 def test_pipeline_splits_annotation_window_after_unparseable_model_output(tmp_path):

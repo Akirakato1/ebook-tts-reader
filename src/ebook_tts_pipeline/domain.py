@@ -75,10 +75,10 @@ class SentenceArtifact:
 
 @dataclass(frozen=True)
 class AnnotationResult:
-    new_characters: List[Dict[str, Any]]
     roles: List[str]
     types: List[str]
     script: List[Tuple[int, int, int]]
+    new_characters: List[Dict[str, Any]] = field(default_factory=list)
     local_speakers: List[Dict[str, Any]] = field(default_factory=list)
     proposed_new_characters: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -95,11 +95,12 @@ class AnnotationResult:
 
     def to_dict(self) -> Dict[str, Any]:
         payload = {
-            "new_characters": self.new_characters,
             "roles": self.roles,
             "types": self.types,
             "script": [list(row) for row in self.script],
         }
+        if self.new_characters:
+            payload["new_characters"] = self.new_characters
         if self.local_speakers:
             payload["local_speakers"] = self.local_speakers
         if self.proposed_new_characters:
