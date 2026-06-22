@@ -5,6 +5,7 @@ import pytest
 from ebook_tts_pipeline.epub_ingestion import EpubExtractResult
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
+from ebook_tts_pipeline.registry import resolve_effective_voice
 from ebook_tts_pipeline.ui.controller import ChapterStage, PrototypeUiController
 
 
@@ -446,6 +447,106 @@ def test_controller_blocks_script_generation_until_annotation_is_approved(tmp_pa
     scripted = controller.run_next_chapter_action("chapter_001")
 
     assert scripted.stage == ChapterStage.SCRIPTED
+    assert ("build_scripts", "chapter_001") in calls
+
+
+def test_controller_promotes_proposed_characters_when_appearances_are_confirmed(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    write_json_atomic(
+        paths.registry,
+        {
+            "book": {"title": "Demo", "slug": "demo"},
+            "narrator": {"role_id": "narrator", "display_name": "Narrator"},
+            "characters": {},
+        },
+    )
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {
+            "new_characters": [],
+            "proposed_new_characters": [
+                {
+                    "name": "Houseless man",
+                    "profile": {
+                        "age_stage": "adult",
+                        "gender": "male",
+                        "personality": ["anxious", "paranoid"],
+                    },
+                }
+            ],
+            "roles": ["Narrator", "Houseless man"],
+            "types": ["narration", "dialogue", "thought"],
+            "script": [[0, 0, 0], [1, 1, 1]],
+        },
+    )
+    controller = PrototypeUiController(book_root=paths.root)
+
+    controller.confirm_annotation_appearances("chapter_001", {})
+
+    registry = read_json(paths.registry)
+    annotation = read_json(paths.annotation("chapter_001"))
+    assert "houseless_man_adult" in registry["characters"]
+    voice = resolve_effective_voice(registry, "Houseless man", "dialogue")
+    assert voice["character"] == "Houseless man"
+    assert annotation.get("proposed_new_characters", []) == []
+    assert read_json(paths.annotation_approval("chapter_001"))["approved"] is True
+
+
+def test_controller_promotes_proposed_characters_before_script_generation(tmp_path):
+    calls = []
+    paths = BookPaths(tmp_path / "book")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text("Chapter One\nText.", encoding="utf-8")
+    write_json_atomic(
+        paths.registry,
+        {
+            "book": {"title": "Demo", "slug": "demo"},
+            "narrator": {"role_id": "narrator", "display_name": "Narrator"},
+            "characters": {},
+        },
+    )
+    paths.sentence_artifact("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.sentence_artifact("chapter_001"),
+        {"chapter": "chapter_001", "source_path": "chapters/chapter_001.txt", "sentences": []},
+    )
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {
+            "new_characters": [],
+            "proposed_new_characters": [
+                {
+                    "name": "Security Guard",
+                    "profile": {
+                        "age_stage": "adult",
+                        "gender": "male",
+                        "personality": ["authoritative"],
+                        "occupation": "security guard",
+                    },
+                }
+            ],
+            "roles": ["Narrator", "Security Guard"],
+            "types": ["narration", "dialogue", "thought"],
+            "script": [[0, 0, 0], [1, 1, 1]],
+        },
+    )
+    paths.annotation_approval("chapter_001").parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(paths.annotation_approval("chapter_001"), {"approved": True, "appearances": []})
+    controller = PrototypeUiController(
+        book_root=paths.root,
+        pipeline_factory=fake_pipeline_factory(calls),
+        fake_tts=True,
+    )
+
+    result = controller.run_next_chapter_action("chapter_001")
+
+    registry = read_json(paths.registry)
+    annotation = read_json(paths.annotation("chapter_001"))
+    assert result.stage == ChapterStage.SCRIPTED
+    assert "security_guard_adult" in registry["characters"]
+    assert annotation.get("proposed_new_characters", []) == []
     assert ("build_scripts", "chapter_001") in calls
 
 

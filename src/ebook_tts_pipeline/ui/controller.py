@@ -17,7 +17,7 @@ from ebook_tts_pipeline.epub_ingestion import EpubChapterExtractor, EpubExtractR
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.pipeline import AudiobookPipeline
-from ebook_tts_pipeline.registry import build_compact_voice_profile, prune_deprecated_registry_fields
+from ebook_tts_pipeline.registry import RegistryManager, build_compact_voice_profile, prune_deprecated_registry_fields
 from ebook_tts_pipeline.registry import normalize_name
 from ebook_tts_pipeline.tts.fake import FakeTtsAdapter
 from ebook_tts_pipeline.tts.qwen_adapter import QwenTtsAdapter
@@ -335,8 +335,9 @@ class PrototypeUiController:
     def confirm_annotation_appearances(self, chapter: str, selections: Dict[str, str]) -> None:
         if not self.paths.annotation(chapter).exists():
             raise ValueError(f"Annotation does not exist for {chapter}.")
-        registry = read_json(self.paths.registry) if self.paths.registry.exists() else {}
         annotation = self._load_annotation(chapter)
+        annotation = self._promote_annotation_proposed_characters(chapter, annotation)
+        registry = read_json(self.paths.registry) if self.paths.registry.exists() else {}
         forms = self.annotation_appearance_forms(chapter)
         option_by_person: Dict[str, Dict[str, AgeStageOption]] = {
             form.key: {option.age_stage: option for option in form.age_stage_options}
@@ -437,7 +438,7 @@ class PrototypeUiController:
 
         if stage == ChapterStage.SCRIPTED:
             pipeline = self._pipeline(needs_llm=False)
-            annotation = self._load_annotation(chapter)
+            annotation = self._promote_annotation_proposed_characters(chapter, self._load_annotation(chapter))
             pipeline.prepare_voices_for_annotation(annotation)
             pipeline.synthesize_chapter_from_tts_script(chapter)
             return ChapterActionResult(chapter=chapter, stage=ChapterStage.AUDIO, message="Generated audio.")
@@ -451,7 +452,8 @@ class PrototypeUiController:
 
         if stage == ChapterStage.ANNOTATED:
             pipeline = self._pipeline(needs_llm=False)
-            pipeline.build_sentence_jobs(chapter, self._load_annotation(chapter))
+            annotation = self._promote_annotation_proposed_characters(chapter, self._load_annotation(chapter))
+            pipeline.build_sentence_jobs(chapter, annotation)
             return ChapterActionResult(chapter=chapter, stage=ChapterStage.SCRIPTED, message="Generated scripts.")
 
         pipeline = self._pipeline(needs_llm=True)
@@ -493,6 +495,47 @@ class PrototypeUiController:
             return bool(read_json(approval_path).get("approved"))
         except Exception:
             return False
+
+    def _promote_annotation_proposed_characters(
+        self,
+        chapter: str,
+        annotation: AnnotationResult,
+    ) -> AnnotationResult:
+        if not annotation.proposed_new_characters:
+            return annotation
+
+        if not self.paths.registry.exists():
+            title, slug = self._registry_book_metadata()
+            RegistryManager(self.paths).initialize_if_missing(book_title=title, book_slug=slug)
+
+        registry = read_json(self.paths.registry)
+        pending: List[Dict[str, Any]] = []
+        promoted_names = set()
+
+        for character in annotation.proposed_new_characters:
+            if not isinstance(character, dict):
+                continue
+            name = str(character.get("name", "")).strip()
+            if not name:
+                continue
+            promoted_names.add(normalize_name(name))
+            if _find_character_record_by_role_name(registry, name) is None:
+                pending.append(character)
+
+        if pending:
+            RegistryManager(self.paths).add_new_characters(chapter, pending)
+
+        remaining = [
+            character
+            for character in annotation.proposed_new_characters
+            if normalize_name(str(character.get("name", ""))) not in promoted_names
+        ]
+        if len(remaining) == len(annotation.proposed_new_characters):
+            return annotation
+
+        promoted = replace(annotation, proposed_new_characters=remaining)
+        write_json_atomic(self.paths.annotation(chapter), promoted.to_dict())
+        return promoted
 
     def _invalidate_downstream_artifacts(self, chapter: str) -> None:
         for path in [
