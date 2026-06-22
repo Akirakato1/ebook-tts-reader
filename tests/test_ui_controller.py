@@ -420,9 +420,7 @@ def test_controller_confirming_quote_annotation_preserves_quote_mapping(tmp_path
         {
             "schema": "quote_attribution_v1",
             "roles": ["callie_adult"],
-            "types": ["dialogue"],
-            "script": [[0, 0, 1]],
-            "quotes": [[1, 0, "dialogue"]],
+            "quotes": [[1, 0]],
         },
     )
     controller = PrototypeUiController(book_root=paths.root)
@@ -432,8 +430,9 @@ def test_controller_confirming_quote_annotation_preserves_quote_mapping(tmp_path
     annotation = read_json(paths.annotation("chapter_001"))
     assert annotation["schema"] == "quote_attribution_v1"
     assert annotation["roles"] == ["Callie child"]
-    assert annotation["quotes"] == [[1, 0, "dialogue"]]
-    assert annotation["script"] == [[0, 0, 1]]
+    assert annotation["quotes"] == [[1, 0]]
+    assert "script" not in annotation
+    assert "types" not in annotation
 
 
 def test_controller_blocks_script_generation_until_annotation_is_approved(tmp_path):

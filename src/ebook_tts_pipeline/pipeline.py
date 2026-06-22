@@ -359,22 +359,8 @@ def _chunk_global_registry_chapters(
 
 
 def _quote_attribution_annotation_payload(attribution: QuoteAttributionResult) -> Dict:
-    quote_types: List[str] = []
-    script = []
-    for quote_idx, role_idx, quote_type in attribution.quotes:
-        if quote_type not in quote_types:
-            quote_types.append(quote_type)
-        script.append([role_idx, quote_types.index(quote_type), quote_idx])
-    if not quote_types:
-        quote_types = ["dialogue", "narrator_quote"]
     payload = attribution.to_dict()
-    payload.update(
-        {
-            "schema": "quote_attribution_v1",
-            "types": quote_types,
-            "script": script,
-        }
-    )
+    payload["schema"] = "quote_attribution_v1"
     return payload
 
 

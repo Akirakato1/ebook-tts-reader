@@ -52,6 +52,7 @@ def test_quote_attribution_prompt_uses_marked_quotes_and_registry_role_ids():
     assert "local_speakers" in prompt
     assert "Do not create global registry characters" in prompt
     assert "Do not label normal quoted dialogue as Narrator" in prompt
+    assert "Omit the third item for normal dialogue" in prompt
 
 
 def test_quote_attribution_validator_accepts_registry_and_local_speakers():
@@ -72,11 +73,22 @@ def test_quote_attribution_validator_accepts_registry_and_local_speakers():
                     },
                 }
             ],
-            "quotes": [[1, 0, "dialogue"], [2, 1, "dialogue"]],
+            "quotes": [[1, 0], [2, 1]],
         }
     )
 
     validate_quote_attribution(result, quote_indices=[1, 2], known_role_ids={"callie_child"})
+
+
+def test_quote_attribution_result_serializes_dialogue_rows_compactly():
+    result = QuoteAttributionResult.from_dict(
+        {
+            "roles": ["callie_child", "Narrator"],
+            "quotes": [[1, 0, "dialogue"], [2, 1, "narrator_quote"]],
+        }
+    )
+
+    assert result.to_dict()["quotes"] == [[1, 0], [2, 1, "narrator_quote"]]
 
 
 def test_quote_attribution_result_accepts_model_rows_with_quote_and_role_ids():

@@ -102,6 +102,16 @@ class AnnotationResult:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AnnotationResult":
+        if _is_compact_quote_annotation(data):
+            types, script = _quote_annotation_types_and_script(data)
+            return cls(
+                new_characters=list(data.get("new_characters", [])),
+                roles=[str(role) for role in data["roles"]],
+                types=types,
+                script=script,
+                local_speakers=list(data.get("local_speakers", [])),
+                proposed_new_characters=list(data.get("proposed_new_characters", [])),
+            )
         return cls(
             new_characters=list(data.get("new_characters", [])),
             roles=[str(role) for role in data["roles"]],
@@ -124,3 +134,25 @@ class AnnotationResult:
         if self.proposed_new_characters:
             payload["proposed_new_characters"] = self.proposed_new_characters
         return payload
+
+
+def _is_compact_quote_annotation(data: Dict[str, Any]) -> bool:
+    return "quotes" in data and ("types" not in data or "script" not in data)
+
+
+def _quote_annotation_types_and_script(data: Dict[str, Any]) -> Tuple[List[str], List[Tuple[int, int, int]]]:
+    types: List[str] = []
+    script: List[Tuple[int, int, int]] = []
+    for row in data.get("quotes", []):
+        values = list(row)
+        if len(values) < 2:
+            continue
+        quote_idx = int(values[0])
+        role_idx = int(values[1])
+        quote_type = str(values[2]) if len(values) > 2 else "dialogue"
+        if quote_type not in types:
+            types.append(quote_type)
+        script.append((role_idx, types.index(quote_type), quote_idx))
+    if not types:
+        types = ["dialogue"]
+    return types, script

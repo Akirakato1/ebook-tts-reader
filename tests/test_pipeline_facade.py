@@ -544,7 +544,9 @@ def test_pipeline_quote_annotation_builds_single_voice_script_from_raw_chapter(t
 
     saved = read_json(pipeline.paths.annotation("chapter_001"))
     assert saved["schema"] == "quote_attribution_v1"
-    assert saved["quotes"] == [[1, 0, "dialogue"]]
+    assert saved["quotes"] == [[1, 0]]
+    assert "script" not in saved
+    assert "types" not in saved
     assert [job["role"] for job in jobs] == ["Narrator", "callie_child", "Narrator"]
     assert pipeline.paths.qwen_script("chapter_001").read_text(encoding="utf-8") == (
         "Narrator: Callie said,\n"

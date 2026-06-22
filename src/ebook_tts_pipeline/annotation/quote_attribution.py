@@ -39,7 +39,7 @@ class QuoteAttributionResult:
     def to_dict(self) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "roles": self.roles,
-            "quotes": [list(row) for row in self.quotes],
+            "quotes": [_compact_quote_row(row) for row in self.quotes],
         }
         if self.local_speakers:
             payload["local_speakers"] = self.local_speakers
@@ -87,10 +87,12 @@ def render_quote_attribution_prompt(
         "      }\n"
         "    }\n"
         "  ],\n"
-        '  "quotes": [[1, 0, "dialogue"]]\n'
+        '  "quotes": [[1, 0]]\n'
         "}\n"
         "In quotes rows, use numeric quote_idx and numeric role_idx: q001 is quote_idx 1, "
-        "and role_idx is the zero-based index into roles.\n"
+        "and role_idx is the zero-based index into roles. Omit the third item for normal dialogue; "
+        'only add a third item, "narrator_quote", for quoted terms, titles, or other marked text '
+        "that should be read by the narrator rather than spoken by a character.\n"
     )
 
 
@@ -175,6 +177,13 @@ def _registry_role_ids(registry: Dict[str, Any]) -> List[str]:
     if not isinstance(characters, dict):
         return []
     return [str(record.get("role_id") or role_id) for role_id, record in characters.items() if isinstance(record, dict)]
+
+
+def _compact_quote_row(row: Tuple[int, int, str]) -> List[Any]:
+    quote_idx, role_idx, quote_type = row
+    if quote_type == "dialogue":
+        return [quote_idx, role_idx]
+    return [quote_idx, role_idx, quote_type]
 
 
 def _normalize_quote_row(row: Any, roles: List[str]) -> Tuple[int, int, str]:

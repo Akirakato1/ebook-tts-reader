@@ -340,6 +340,7 @@ class PrototypeUiController:
         if not self.paths.annotation(chapter).exists():
             raise ValueError(f"Annotation does not exist for {chapter}.")
         raw_annotation = read_json(self.paths.annotation(chapter))
+        is_quote_annotation = _is_quote_annotation_payload(raw_annotation)
         annotation = AnnotationResult.from_dict(raw_annotation)
         annotation = self._normalize_annotation_local_speakers(chapter, annotation)
         registry = read_json(self.paths.registry) if self.paths.registry.exists() else {}
@@ -387,13 +388,22 @@ class PrototypeUiController:
             local_speakers=annotation.local_speakers,
             proposed_new_characters=annotation.proposed_new_characters,
         )
-        payload = rewritten.to_dict()
-        if _is_quote_annotation_payload(raw_annotation):
+        if is_quote_annotation:
+            payload = dict(raw_annotation)
             payload["schema"] = str(raw_annotation.get("schema", "quote_attribution_v1"))
+            payload["roles"] = new_roles
             payload["quotes"] = [
-                [int(quote_idx), old_to_new_role_idx[int(role_idx)], str(quote_type)]
-                for quote_idx, role_idx, quote_type in raw_annotation.get("quotes", [])
+                _compact_quote_row_for_annotation(row, old_to_new_role_idx)
+                for row in raw_annotation.get("quotes", [])
             ]
+            if rewritten.local_speakers:
+                payload["local_speakers"] = rewritten.local_speakers
+            else:
+                payload.pop("local_speakers", None)
+            payload.pop("types", None)
+            payload.pop("script", None)
+        else:
+            payload = rewritten.to_dict()
         write_json_atomic(self.paths.annotation(chapter), payload)
         write_json_atomic(
             self.paths.annotation_approval(chapter),
@@ -688,6 +698,16 @@ def _character_age_stage(record: Dict[str, Any]) -> str:
 
 def _is_quote_annotation_payload(payload: Dict[str, Any]) -> bool:
     return payload.get("schema") == "quote_attribution_v1" or "quotes" in payload
+
+
+def _compact_quote_row_for_annotation(row: Any, old_to_new_role_idx: Dict[int, int]) -> List[Any]:
+    values = list(row)
+    quote_idx = int(values[0])
+    role_idx = old_to_new_role_idx[int(values[1])]
+    quote_type = str(values[2]) if len(values) > 2 else "dialogue"
+    if quote_type == "dialogue":
+        return [quote_idx, role_idx]
+    return [quote_idx, role_idx, quote_type]
 
 
 def _default_pipeline_factory(config: PipelineConfig, needs_llm: bool, fake_tts: bool) -> AudiobookPipeline:
