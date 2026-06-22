@@ -553,6 +553,58 @@ def test_pipeline_quote_annotation_builds_single_voice_script_from_raw_chapter(t
     )
 
 
+def test_pipeline_prepare_voices_refreshes_existing_quote_tts_script_paths(tmp_path):
+    adapter = CountingTtsAdapter()
+    book_root = tmp_path / "demo"
+    chapter_dir = book_root / "chapters"
+    chapter_dir.mkdir(parents=True)
+    (chapter_dir / "chapter_001.txt").write_text(
+        'Callie said, "Stay here."',
+        encoding="utf-8",
+    )
+    pipeline = AudiobookPipeline(
+        config=PipelineConfig(book_root=str(book_root), anthropic_api_key="fake"),
+        annotation_service=AnnotationService(QueuedLlmClient([]), repair_retries=0),
+        quote_attribution_service=QuoteAttributionService(
+            QueuedLlmClient(
+                [
+                    {
+                        "roles": ["callie_child"],
+                        "quotes": [[1, 0, "dialogue"]],
+                    }
+                ]
+            )
+        ),
+        tts_adapter=adapter,
+    )
+    pipeline.registry.initialize_if_missing(book_title="Demo", book_slug="demo")
+    pipeline.registry.add_new_characters(
+        chapter="global_registry",
+        new_characters=[
+            {
+                "name": "Callie",
+                "profile": {
+                    "age_stage": "child",
+                    "gender": "female",
+                    "personality": ["guarded"],
+                },
+            }
+        ],
+    )
+
+    annotation = pipeline.annotate_chapter("chapter_001")
+    pipeline.build_sentence_jobs("chapter_001", annotation)
+    before = read_json(pipeline.paths.tts_script("chapter_001"))
+
+    pipeline.prepare_voices_for_annotation(annotation, chapter="chapter_001")
+    after = read_json(pipeline.paths.tts_script("chapter_001"))
+
+    assert before["jobs"][1]["voice_config_path"] is None
+    assert after["jobs"][1]["voice_config_path"] == "voices/callie_child.qvp"
+    assert after["windows"][0]["jobs"][1]["voice_config_path"] == "voices/callie_child.qvp"
+    assert after["windows"][0]["batches"][1]["voice_config_path"] == "voices/callie_child.qvp"
+
+
 def test_pipeline_locked_annotation_accepts_unique_registry_display_names(tmp_path):
     book_root = tmp_path / "demo"
     chapter_dir = book_root / "chapters"

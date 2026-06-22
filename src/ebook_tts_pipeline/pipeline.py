@@ -229,6 +229,8 @@ class AudiobookPipeline:
         self.registry.save(registry)
         if chapter is not None:
             temp_manager.save(chapter, temp_registry)
+            if self.paths.tts_script(chapter).exists() and self._can_refresh_tts_script(chapter):
+                self.build_sentence_jobs(chapter, annotation)
 
     def build_sentence_jobs(self, chapter: str, annotation: AnnotationResult) -> List[Dict]:
         registry = self.registry.load()
@@ -274,6 +276,12 @@ class AudiobookPipeline:
         qwen_script_path.parent.mkdir(parents=True, exist_ok=True)
         qwen_script_path.write_text(script.qwen_dialogue_text + "\n", encoding="utf-8")
         return [job.to_adapter_job() for job in script.jobs]
+
+    def _can_refresh_tts_script(self, chapter: str) -> bool:
+        raw_annotation = read_json(self.paths.annotation(chapter)) if self.paths.annotation(chapter).exists() else {}
+        if _is_quote_attribution_payload(raw_annotation):
+            return self.paths.chapter_text(chapter).exists()
+        return self.paths.sentence_artifact(chapter).exists()
 
     def _voice_path_for_record(self, role_id: str, record: Dict[str, object]) -> Path:
         configured = str(record.get("voice_config_path") or "").strip()

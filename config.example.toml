@@ -1,11 +1,12 @@
 book_root = "books/demo"
-anthropic_model = "claude-haiku-4-5-20251001"
+anthropic_model = "claude-sonnet-4-6"
 qwen_model_choice = "1.7B"
 qwen_model_root = "models/qwen-tts"
 qwen_device = "auto"
 qwen_precision = "bf16"
 qwen_attention = "auto"
 qwen_batch_size = 8
+global_registry_window_chars = 2000000
 max_llm_window_chars = 48000
 max_tts_window_chars = 6000
 max_tts_roles = 8

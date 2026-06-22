@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 
-DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 
 
 @dataclass(frozen=True)
@@ -22,7 +22,7 @@ class PipelineConfig:
     qwen_precision: str = "bf16"
     qwen_attention: str = "auto"
     qwen_batch_size: int = 24
-    global_registry_window_chars: int = 130000
+    global_registry_window_chars: int = 2000000
     max_llm_window_chars: int = 48000
     max_llm_window_sentences: int = 300
     max_tts_window_chars: int = 6000
@@ -53,7 +53,7 @@ class PipelineConfig:
             qwen_attention=os.environ.get("EBOOK_TTS_QWEN_ATTENTION", "auto"),
             qwen_batch_size=int(os.environ.get("EBOOK_TTS_QWEN_BATCH_SIZE", "24")),
             global_registry_window_chars=int(
-                os.environ.get("EBOOK_TTS_GLOBAL_REGISTRY_WINDOW_CHARS", "130000")
+                os.environ.get("EBOOK_TTS_GLOBAL_REGISTRY_WINDOW_CHARS", "2000000")
             ),
             max_llm_window_sentences=int(os.environ.get("EBOOK_TTS_MAX_LLM_WINDOW_SENTENCES", "300")),
             tts_speed=float(os.environ.get("EBOOK_TTS_SPEED", "1.0")),
