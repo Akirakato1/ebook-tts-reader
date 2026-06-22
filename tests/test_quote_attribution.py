@@ -53,6 +53,7 @@ def test_quote_attribution_prompt_uses_marked_quotes_and_registry_role_ids():
     assert "Do not create global registry characters" in prompt
     assert "Do not label normal quoted dialogue as Narrator" in prompt
     assert "Omit the third item for normal dialogue" in prompt
+    assert "Do not reuse one local speaker for distinct unnamed people" in prompt
 
 
 def test_quote_attribution_validator_accepts_registry_and_local_speakers():

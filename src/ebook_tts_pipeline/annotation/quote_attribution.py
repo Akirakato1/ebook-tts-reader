@@ -66,6 +66,7 @@ def render_quote_attribution_prompt(
         "- Choose a global role_id when the speaker is a recurring registry character.\n"
         "- If the same person has multiple age stages in the registry, choose the active age-stage role_id.\n"
         "- If the speaker is not in the global registry and appears chapter-only, create a local speaker.\n"
+        "- Do not reuse one local speaker for distinct unnamed people. Different scenes, occupations, descriptions, or speech contexts require separate local_speakers.\n"
         "- Do not create global registry characters in this output.\n"
         "- Do not label normal quoted dialogue as Narrator.\n"
         "- Use narrator_quote only when quote marks are not spoken dialogue, such as titles, quoted terms, or sarcasm.\n"
