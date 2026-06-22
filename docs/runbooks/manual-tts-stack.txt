@@ -12,7 +12,7 @@ Required Services And Credentials
 1. Anthropic
    - Create or use an Anthropic API key.
    - Set ANTHROPIC_API_KEY in the shell before running the pipeline.
-   - Default model is Haiku. The exact pinned model ID should live in pipeline config and can be changed without editing code.
+   - Default model is Sonnet. The exact pinned model ID lives in pipeline config and can be changed without editing code.
 
 2. Qwen3-TTS local runtime
    - Install the Python dependencies required by the Qwen TTS wrapper from flybirdxx/ComfyUI-Qwen-TTS.
@@ -68,9 +68,10 @@ Runtime Order
      books/<book_slug>/voices/
 
 5. Run chapter TTS.
-   - The pipeline builds TTS windows with at most 8 roles.
+   - The pipeline builds role-tagged Qwen sections with at most 8 roles and a hard 1100-character section limit.
    - Sentences are atomic. A sentence that does not fit in the current window moves to the next window.
    - A single sentence that is too large for a window causes a clear failure.
+   - When a split occurs inside a contiguous speaker block, the next section repeats the speaker role tag so every section is self-contained.
 
 6. Inspect outputs.
    - Annotation:

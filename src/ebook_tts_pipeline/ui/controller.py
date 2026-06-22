@@ -205,7 +205,6 @@ class PrototypeUiController:
     def tts_settings(self) -> Dict[str, Any]:
         config = PipelineConfig.from_env(str(self.book_root))
         defaults = {
-            "qwen_batch_size": config.qwen_batch_size,
             "tts_speed": config.tts_speed,
             "pause_between_sentences_ms": config.pause_between_sentences_ms,
             "intra_sentence_pause_ms": config.intra_sentence_pause_ms,
@@ -214,7 +213,6 @@ class PrototypeUiController:
             return defaults
         payload = read_json(self.paths.settings)
         return {
-            "qwen_batch_size": _positive_int(payload.get("qwen_batch_size"), defaults["qwen_batch_size"]),
             "tts_speed": _positive_float(payload.get("tts_speed"), defaults["tts_speed"]),
             "pause_between_sentences_ms": _nonnegative_int(
                 payload.get("pause_between_sentences_ms"),
@@ -228,7 +226,6 @@ class PrototypeUiController:
 
     def save_tts_settings(self, values: Dict[str, Any]) -> None:
         settings = {
-            "qwen_batch_size": _positive_int(values.get("qwen_batch_size"), 8),
             "tts_speed": _positive_float(values.get("tts_speed"), 1.0),
             "pause_between_sentences_ms": _nonnegative_int(values.get("pause_between_sentences_ms"), 250),
             "intra_sentence_pause_ms": _nonnegative_int(values.get("intra_sentence_pause_ms"), 50),
@@ -500,7 +497,6 @@ class PrototypeUiController:
         settings = self.tts_settings()
         config = replace(
             PipelineConfig.from_env(str(self.book_root)),
-            qwen_batch_size=settings["qwen_batch_size"],
             tts_speed=settings["tts_speed"],
             pause_between_sentences_ms=settings["pause_between_sentences_ms"],
             intra_sentence_pause_ms=settings["intra_sentence_pause_ms"],
@@ -750,8 +746,6 @@ def _build_qwen_adapter(config: PipelineConfig) -> QwenTtsAdapter:
         device=config.qwen_device,
         precision=config.qwen_precision,
         attention=config.qwen_attention,
-        max_batch_size=config.qwen_batch_size,
-        max_block_chars=config.qwen_max_block_chars,
     )
 
 

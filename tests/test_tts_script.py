@@ -126,7 +126,7 @@ def test_quote_tts_script_splits_narrator_spans_into_sentence_jobs():
     assert [job.sentence_idx for job in script.jobs] == [0, 1, 2, 3]
 
 
-def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
+def test_tts_script_builds_role_tagged_qwen_sections_from_annotation_and_sentences():
     artifact = SentenceArtifact(
         chapter="chapter_001",
         source_path="chapters/chapter_001.txt",
@@ -210,58 +210,61 @@ def test_tts_script_builds_qwen_batches_from_annotation_and_sentences():
             "voice_config_path": "voices/elena.qvp",
         },
     ]
-    assert [batch.to_dict() for batch in script.windows[0].batches] == [
-        {
-            "batch_idx": 0,
-            "role": "Narrator",
-            "role_id": "narrator",
-            "voice_config_path": "voices/narrator.qvp",
-            "language": "auto",
-            "sentence_indices": [0],
-            "unit_indices": [0],
-            "types": ["narration"],
-            "text": ["It rained."],
-        },
-        {
-            "batch_idx": 1,
-            "role": "elena",
-            "role_id": "elena",
-            "voice_config_path": "voices/elena.qvp",
-            "language": "auto",
-            "sentence_indices": [1],
-            "unit_indices": [1],
-            "types": ["dialogue"],
-            "text": ['"Hello,"'],
-        },
-        {
-            "batch_idx": 2,
-            "role": "Narrator",
-            "role_id": "narrator",
-            "voice_config_path": "voices/narrator.qvp",
-            "language": "auto",
-            "sentence_indices": [1],
-            "unit_indices": [1],
-            "types": ["narration"],
-            "text": ["Elena said."],
-        },
-        {
-            "batch_idx": 3,
-            "role": "elena",
-            "role_id": "elena",
-            "voice_config_path": "voices/elena.qvp",
-            "language": "auto",
-            "sentence_indices": [2],
-            "unit_indices": [2],
-            "types": ["thought"],
-            "text": ["She left."],
-        },
-    ]
+    window = script.windows[0].to_dict()
+    assert "batches" not in window
+    assert window["qwen_text"] == (
+        "Narrator: It rained.\n"
+        'elena: "Hello,"\n'
+        "Narrator: Elena said.\n"
+        "elena: She left."
+    )
     assert script.qwen_dialogue_text == (
         "Narrator: It rained.\n"
         'elena: "Hello,"\n'
         "Narrator: Elena said.\n"
         "elena: She left."
     )
+
+
+def test_tts_script_readds_role_tags_when_sections_split_inside_same_role():
+    artifact = SentenceArtifact(
+        chapter="chapter_001",
+        source_path="chapters/chapter_001.txt",
+        segmenter={"name": "test"},
+        sentences=[
+            Sentence(0, "First long line."),
+            Sentence(1, "Second long line."),
+        ],
+    )
+    annotation = AnnotationResult(
+        new_characters=[],
+        roles=["Narrator"],
+        types=["narration", "dialogue", "thought"],
+        script=[(0, 0, 0), (0, 0, 1)],
+    )
+    registry = {
+        "narrator": {
+            "role_id": "narrator",
+            "display_name": "Narrator",
+            "voice_config_path": "voices/narrator.qvp",
+        },
+        "characters": {},
+    }
+
+    script = build_tts_script(
+        chapter="chapter_001",
+        annotation=annotation,
+        artifact=artifact,
+        registry=registry,
+        max_chars=28,
+        max_roles=8,
+        language="auto",
+    )
+
+    assert [window.qwen_text for window in script.windows] == [
+        "Narrator: First long line.",
+        "Narrator: Second long line.",
+    ]
 
 
 def test_tts_script_resolves_age_stage_aliases_to_unique_voice_roles():

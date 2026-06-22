@@ -66,36 +66,10 @@ class TtsSentenceJob:
 
 
 @dataclass(frozen=True)
-class QwenTtsBatch:
-    batch_idx: int
-    role: str
-    role_id: str
-    voice_config_path: Optional[str]
-    language: str
-    sentence_indices: List[int]
-    unit_indices: List[int]
-    types: List[str]
-    text: List[str]
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "batch_idx": self.batch_idx,
-            "role": self.role,
-            "role_id": self.role_id,
-            "voice_config_path": self.voice_config_path,
-            "language": self.language,
-            "sentence_indices": self.sentence_indices,
-            "unit_indices": self.unit_indices,
-            "types": self.types,
-            "text": self.text,
-        }
-
-
-@dataclass(frozen=True)
 class TtsScriptWindow:
     window_idx: int
     jobs: List[TtsSentenceJob]
-    batches: List[QwenTtsBatch]
+    language: str
 
     @property
     def sentence_indices(self) -> List[int]:
@@ -111,17 +85,23 @@ class TtsScriptWindow:
 
     @property
     def char_count(self) -> int:
-        return sum(len(job.text) for job in self.jobs)
+        return len(self.qwen_text)
+
+    @property
+    def qwen_text(self) -> str:
+        return render_qwen_dialogue_script([job.to_adapter_job() for job in self.jobs])
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "window_idx": self.window_idx,
+            "section_idx": self.window_idx,
             "sentence_indices": self.sentence_indices,
             "unit_indices": self.unit_indices,
             "role_count": self.role_count,
             "char_count": self.char_count,
+            "language": self.language,
+            "qwen_text": self.qwen_text,
             "jobs": [job.to_dict() for job in self.jobs],
-            "batches": [batch.to_dict() for batch in self.batches],
         }
 
 
@@ -133,16 +113,19 @@ class TtsScript:
 
     @property
     def qwen_dialogue_text(self) -> str:
-        return render_qwen_dialogue_script([job.to_adapter_job() for job in self.jobs])
+        return "\n\n".join(window.qwen_text for window in self.windows)
 
     def to_dict(self) -> Dict[str, Any]:
+        serialized_sections = [window.to_dict() for window in self.windows]
         return {
             "chapter": self.chapter,
             "job_count": len(self.jobs),
             "window_count": len(self.windows),
+            "section_count": len(self.windows),
             "qwen_dialogue_text": self.qwen_dialogue_text,
             "jobs": [job.to_dict() for job in self.jobs],
-            "windows": [window.to_dict() for window in self.windows],
+            "windows": serialized_sections,
+            "sections": serialized_sections,
         }
 
 
@@ -249,7 +232,7 @@ def _build_script_from_jobs(
             TtsScriptWindow(
                 window_idx=window_idx,
                 jobs=window_jobs,
-                batches=_build_qwen_batches(window_jobs, language),
+                language=language,
             )
         )
 
@@ -389,41 +372,6 @@ def _narrator_job_like(
         type="narration",
         text=text,
         voice_config_path=record.get("voice_config_path"),
-    )
-
-
-def _build_qwen_batches(jobs: List[TtsSentenceJob], language: str) -> List[QwenTtsBatch]:
-    batches: List[QwenTtsBatch] = []
-    current: List[TtsSentenceJob] = []
-
-    for job in jobs:
-        if current and job.role != current[-1].role:
-            batches.append(_batch_from_jobs(len(batches), current, language))
-            current = []
-        current.append(job)
-
-    if current:
-        batches.append(_batch_from_jobs(len(batches), current, language))
-
-    return batches
-
-
-def _batch_from_jobs(
-    batch_idx: int,
-    jobs: List[TtsSentenceJob],
-    language: str,
-) -> QwenTtsBatch:
-    first = jobs[0]
-    return QwenTtsBatch(
-        batch_idx=batch_idx,
-        role=first.role,
-        role_id=first.role_id,
-        voice_config_path=first.voice_config_path,
-        language=language,
-        sentence_indices=[job.sentence_idx for job in jobs],
-        unit_indices=[job.unit_idx for job in jobs],
-        types=[job.type for job in jobs],
-        text=[job.text for job in jobs],
     )
 
 

@@ -160,8 +160,6 @@ class QwenTtsAdapter:
         device: str = "auto",
         precision: str = "bf16",
         attention: str = "auto",
-        max_batch_size: int = 8,
-        max_block_chars: int = 600,
     ) -> None:
         self.torch = torch_module if torch_module is not None else self._load_torch()
         self.model = model if model is not None else self._load_default_model(
@@ -173,8 +171,6 @@ class QwenTtsAdapter:
         )
         self.role_voice_paths = role_voice_paths or {}
         self.language = language
-        self.max_batch_size = max(1, int(max_batch_size))
-        self.max_block_chars = max(1, int(max_block_chars))
         self._voice_prompt_cache: Dict[str, Any] = {}
 
     def ensure_voice(self, role_id: str, voice_record: Dict, voice_path: Path) -> Path:
@@ -215,34 +211,26 @@ class QwenTtsAdapter:
 
     def generate_sentence_batches(self, jobs: List[Dict]) -> Iterator[List[GeneratedSentenceAudio]]:
         blocks = self._build_generation_blocks(jobs)
-        for start in range(0, len(blocks), self.max_batch_size):
-            generated = self._generate_block_batch(blocks[start:start + self.max_batch_size])
-            try:
-                yield generated
-            finally:
-                del generated
-                gc.collect()
-                self._clear_device_cache()
+        generated = self._generate_blocks(blocks)
+        try:
+            yield generated
+        finally:
+            del generated
+            gc.collect()
+            self._clear_device_cache()
 
     def _build_generation_blocks(self, jobs: List[Dict]) -> List[_GenerationBlock]:
         blocks: List[_GenerationBlock] = []
         current_jobs: List[Dict] = []
         current_role: Optional[str] = None
         current_voice_path: Optional[Path] = None
-        current_chars = 0
 
         for job in jobs:
             role = str(job["role"])
             voice_path = self.role_voice_paths[role]
-            job_chars = _audio_timeline_weight(str(job["text"]))
-            separator_chars = 1 if current_jobs else 0
-            would_exceed_block = current_jobs and (
-                current_chars + separator_chars + job_chars > self.max_block_chars
-            )
             if current_jobs and (
                 role != current_role
                 or voice_path != current_voice_path
-                or would_exceed_block
             ):
                 blocks.append(
                     _GenerationBlock(
@@ -252,11 +240,8 @@ class QwenTtsAdapter:
                     )
                 )
                 current_jobs = []
-                current_chars = 0
             current_role = role
             current_voice_path = voice_path
-            separator_chars = 1 if current_jobs else 0
-            current_chars += separator_chars + job_chars
             current_jobs.append(job)
 
         if current_jobs:
@@ -269,7 +254,7 @@ class QwenTtsAdapter:
             )
         return blocks
 
-    def _generate_block_batch(self, blocks: List[_GenerationBlock]) -> List[GeneratedSentenceAudio]:
+    def _generate_blocks(self, blocks: List[_GenerationBlock]) -> List[GeneratedSentenceAudio]:
         prompts = [self._load_voice_prompt(block.voice_path) for block in blocks]
         wavs, sample_rate = self.model.generate_voice_clone(
             text=[block.text for block in blocks],

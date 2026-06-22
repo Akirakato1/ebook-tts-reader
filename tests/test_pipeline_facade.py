@@ -604,7 +604,8 @@ def test_pipeline_prepare_voices_refreshes_existing_quote_tts_script_paths(tmp_p
     assert before["jobs"][1]["voice_config_path"] is None
     assert after["jobs"][1]["voice_config_path"] == "voices/callie_child.qvp"
     assert after["windows"][0]["jobs"][1]["voice_config_path"] == "voices/callie_child.qvp"
-    assert after["windows"][0]["batches"][1]["voice_config_path"] == "voices/callie_child.qvp"
+    assert "batches" not in after["windows"][0]
+    assert after["windows"][0]["qwen_text"] == 'Narrator: Callie said,\ncallie_child: "Stay here."'
 
 
 def test_pipeline_locked_annotation_accepts_unique_registry_display_names(tmp_path):
@@ -764,7 +765,7 @@ def test_pipeline_synthesizes_tts_windows_separately(tmp_path):
         config=PipelineConfig(
             book_root=str(tmp_path / "demo"),
             anthropic_api_key="fake",
-            max_tts_window_chars=10,
+            max_tts_window_chars=20,
             pause_between_sentences_ms=0,
         ),
         annotation_service=AnnotationService(QueuedLlmClient([]), repair_retries=0),
