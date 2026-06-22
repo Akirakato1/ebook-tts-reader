@@ -79,6 +79,56 @@ def test_quote_attribution_validator_accepts_registry_and_local_speakers():
     validate_quote_attribution(result, quote_indices=[1, 2], known_role_ids={"callie_child"})
 
 
+def test_quote_attribution_result_accepts_model_rows_with_quote_and_role_ids():
+    result = QuoteAttributionResult.from_dict(
+        {
+            "roles": ["callie_child", "local_001"],
+            "local_speakers": [
+                {
+                    "local_id": "local_001",
+                    "label": "Security Guard",
+                    "profile": {"age_stage": "adult", "gender": "unknown", "personality": ["brusque"]},
+                }
+            ],
+            "quotes": [["q001", "callie_child", "dialogue"], ["q002", "local_001", "dialogue"]],
+        }
+    )
+
+    assert result.quotes == [(1, 0, "dialogue"), (2, 1, "dialogue")]
+
+
+def test_quote_attribution_result_accepts_model_rows_with_role_id_first():
+    result = QuoteAttributionResult.from_dict(
+        {
+            "roles": ["local_001"],
+            "local_speakers": [
+                {
+                    "local_id": "local_001",
+                    "label": "Security Guard",
+                    "profile": {"age_stage": "adult", "gender": "unknown", "personality": ["brusque"]},
+                }
+            ],
+            "quotes": [["local_001", "q001", "dialogue"]],
+        }
+    )
+
+    assert result.quotes == [(1, 0, "dialogue")]
+
+
+def test_quote_attribution_result_accepts_model_rows_with_extra_quote_text():
+    result = QuoteAttributionResult.from_dict(
+        {
+            "roles": ["callie_child"],
+            "quotes": [
+                [1, 0, "Stay here.", "dialogue"],
+                [2, 0, "A quoted term without explicit type"],
+            ],
+        }
+    )
+
+    assert result.quotes == [(1, 0, "dialogue"), (2, 0, "dialogue")]
+
+
 def test_quote_attribution_validator_rejects_missing_quote_assignment():
     result = QuoteAttributionResult.from_dict(
         {

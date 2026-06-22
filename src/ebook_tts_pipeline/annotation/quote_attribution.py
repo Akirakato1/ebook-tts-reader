@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Set, Tuple
 
@@ -25,11 +26,12 @@ class QuoteAttributionResult:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "QuoteAttributionResult":
+        roles = [str(role) for role in data["roles"]]
         return cls(
-            roles=[str(role) for role in data["roles"]],
+            roles=roles,
             local_speakers=list(data.get("local_speakers", [])),
             quotes=[
-                (int(row[0]), int(row[1]), str(row[2]))
+                _normalize_quote_row(row, roles)
                 for row in data["quotes"]
             ],
         )
@@ -87,6 +89,8 @@ def render_quote_attribution_prompt(
         "  ],\n"
         '  "quotes": [[1, 0, "dialogue"]]\n'
         "}\n"
+        "In quotes rows, use numeric quote_idx and numeric role_idx: q001 is quote_idx 1, "
+        "and role_idx is the zero-based index into roles.\n"
     )
 
 
@@ -171,6 +175,72 @@ def _registry_role_ids(registry: Dict[str, Any]) -> List[str]:
     if not isinstance(characters, dict):
         return []
     return [str(record.get("role_id") or role_id) for role_id, record in characters.items() if isinstance(record, dict)]
+
+
+def _normalize_quote_row(row: Any, roles: List[str]) -> Tuple[int, int, str]:
+    if isinstance(row, dict):
+        quote_ref = _first_present(row.get("quote_idx"), row.get("quote_id"), row.get("quote"))
+        role_ref = _first_present(row.get("role_idx"), row.get("role_id"), row.get("role"), row.get("speaker"))
+        quote_type = str(_first_present(row.get("type"), row.get("quote_type"), "dialogue"))
+        return (_quote_index(quote_ref), _role_index(role_ref, roles), quote_type)
+
+    values = list(row) if isinstance(row, (list, tuple)) else []
+    if len(values) < 2:
+        raise ValueError(f"Quote attribution row must have at least two values: {row!r}")
+    quote_type = _quote_type_from_values(values[2:])
+    first, second = values[0], values[1]
+    if _looks_like_quote_ref(second) and not _looks_like_quote_ref(first):
+        role_ref, quote_ref = first, second
+    else:
+        quote_ref, role_ref = first, second
+    return (_quote_index(quote_ref), _role_index(role_ref, roles), quote_type)
+
+
+def _quote_index(value: Any) -> int:
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if text.isdigit():
+        return int(text)
+    match = re.fullmatch(r"q0*(\d+)", text, flags=re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    raise ValueError(f"Invalid quote reference: {value!r}")
+
+
+def _role_index(value: Any, roles: List[str]) -> int:
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if text.isdigit():
+        return int(text)
+    normalized = normalize_name(text)
+    for index, role in enumerate(roles):
+        if normalize_name(role) == normalized:
+            return index
+    raise ValueError(f"Invalid role reference: {value!r}")
+
+
+def _looks_like_quote_ref(value: Any) -> bool:
+    if isinstance(value, int):
+        return True
+    text = str(value).strip()
+    return text.isdigit() or re.fullmatch(r"q0*\d+", text, flags=re.IGNORECASE) is not None
+
+
+def _quote_type_from_values(values: List[Any]) -> str:
+    for value in values:
+        text = str(value).strip()
+        if text in ALLOWED_QUOTE_TYPES:
+            return text
+    return "dialogue"
+
+
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, "", [], {}):
+            return value
+    return None
 
 
 def _validate_local_speakers(
