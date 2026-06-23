@@ -9,6 +9,7 @@ from ebook_tts_pipeline.domain import AnnotationResult, SentenceArtifact
 from ebook_tts_pipeline.ingestion import fallback_sentence_tokenize
 from ebook_tts_pipeline.registry import resolve_effective_voice
 from ebook_tts_pipeline.temp_registry import resolve_temp_voice
+from ebook_tts_pipeline.tts.text_normalization import normalize_tts_text
 from ebook_tts_pipeline.windowing import build_tts_windows
 
 
@@ -376,4 +377,4 @@ def _narrator_job_like(
 
 
 def _normalize_script_text(text: str) -> str:
-    return " ".join(text.split())
+    return normalize_tts_text(text)

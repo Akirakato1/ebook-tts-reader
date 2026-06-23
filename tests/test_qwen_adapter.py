@@ -101,6 +101,22 @@ def test_qwen_adapter_generates_sentence_audio_in_order(tmp_path):
     assert [len(item.samples) for item in generated] == [5, 5]
 
 
+def test_qwen_adapter_speaks_hash_symbol_as_hashtag(tmp_path):
+    model = FakeQwenModel()
+    torch_store = FakeTorchStore()
+    voice_path = tmp_path / "voices" / "narrator.qvp"
+    torch_store.save({"prompt": "narrator"}, voice_path)
+    adapter = QwenTtsAdapter(model=model, torch_module=torch_store, role_voice_paths={"Narrator": voice_path})
+
+    adapter.generate_sentences(
+        [
+            {"sentence_idx": 0, "role": "Narrator", "type": "narration", "text": "Follow #TeamCallie."},
+        ]
+    )
+
+    assert [call["text"] for call in model.voice_clone_calls] == [["Follow hashtag TeamCallie."]]
+
+
 def test_qwen_adapter_generates_contiguous_same_role_run_as_one_block(tmp_path):
     model = FakeQwenModel()
     torch_store = FakeTorchStore()

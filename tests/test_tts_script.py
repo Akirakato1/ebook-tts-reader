@@ -711,3 +711,18 @@ def test_render_qwen_dialogue_script_uses_one_role_prefix_per_contiguous_block()
         "Elena: Hello.\n"
         "Narrator: Back to narration."
     )
+
+
+def test_render_qwen_dialogue_script_speaks_hash_symbol_as_hashtag():
+    script = render_qwen_dialogue_script(
+        [
+            {
+                "sentence_idx": 0,
+                "role": "Narrator",
+                "type": "narration",
+                "text": "Follow #TeamCallie.",
+            }
+        ]
+    )
+
+    assert script == "Narrator: Follow hashtag TeamCallie."

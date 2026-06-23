@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import numpy as np
 
 from ebook_tts_pipeline.tts.base import GeneratedSentenceAudio
+from ebook_tts_pipeline.tts.text_normalization import normalize_tts_text
 
 
 HF_MODEL_MAP = {
@@ -366,7 +367,7 @@ class QwenTtsAdapter:
 
 
 def _normalize_block_text(text: str) -> str:
-    return " ".join(text.split())
+    return normalize_tts_text(text)
 
 
 def _audio_timeline_weight(text: str) -> int:
