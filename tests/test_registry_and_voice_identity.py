@@ -3,6 +3,57 @@ from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.registry import RegistryManager, resolve_effective_voice
 
 
+def test_registry_initializes_specific_narrator_voice(tmp_path):
+    paths = BookPaths(tmp_path / "demo")
+    manager = RegistryManager(paths)
+    manager.initialize_if_missing(book_title="Demo Book", book_slug="demo")
+
+    registry = read_json(paths.registry)
+    narrator_voice = registry["narrator"]["voice_profile"]
+
+    assert "adult male" in narrator_voice["description"]
+    assert "baritone" in narrator_voice["qwen_instruct"]
+    assert "clear audiobook narration" in narrator_voice["qwen_instruct"]
+
+
+def test_registry_migrates_only_legacy_default_narrator_voice(tmp_path):
+    paths = BookPaths(tmp_path / "demo")
+    write_json_atomic(
+        paths.registry,
+        {
+            "book": {"title": "Demo", "slug": "demo"},
+            "narrator": {
+                "role_id": "narrator",
+                "display_name": "Narrator",
+                "voice_profile": {
+                    "description": "calm literary narrator, clear pacing",
+                    "qwen_instruct": "A calm literary narrator voice with clear pacing.",
+                },
+                "voice_config_path": "voices/narrator.qvp",
+                "voice_config_hash": "old-profile-hash",
+            },
+            "characters": {},
+        },
+    )
+
+    registry = RegistryManager(paths).load()
+
+    narrator_voice = registry["narrator"]["voice_profile"]
+    assert "adult male" in narrator_voice["description"]
+    assert "baritone" in narrator_voice["qwen_instruct"]
+    assert registry["narrator"]["voice_config_hash"] == "old-profile-hash"
+
+    registry["narrator"]["voice_profile"] = {
+        "description": "custom narrator",
+        "qwen_instruct": "A custom narrator selected by the user.",
+    }
+    RegistryManager(paths).save(registry)
+
+    reloaded = RegistryManager(paths).load()
+
+    assert reloaded["narrator"]["voice_profile"]["description"] == "custom narrator"
+
+
 def test_inserted_character_uses_single_voice_record(tmp_path):
     paths = BookPaths(tmp_path / "demo")
     manager = RegistryManager(paths)

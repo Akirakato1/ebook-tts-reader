@@ -16,6 +16,7 @@ class GeneratedSentenceAudio:
     sample_rate: int
     unit_idx: Optional[int] = None
     pause_after_ms: Optional[int] = None
+    voice_config_path: Optional[str] = None
 
 
 class TtsAdapter(Protocol):

@@ -51,6 +51,19 @@ class BookPaths:
     def chapter_timeline(self, chapter: str) -> Path:
         return self.root / "audio" / f"{chapter}.timeline.json"
 
+    def read_along_units(self, chapter: str) -> Path:
+        return self.root / "read_along" / f"{chapter}.units.json"
+
+    @property
+    def read_along_settings(self) -> Path:
+        return self.root / "read_along" / "settings.json"
+
+    def read_along_session_dir(self, session_id: str) -> Path:
+        return self.root / "read_along_sessions" / session_id
+
+    def read_along_timing_log(self, session_id: str) -> Path:
+        return self.read_along_session_dir(session_id) / "timings.jsonl"
+
     def voice_qvp(self, role_id: str) -> Path:
         return self.root / "voices" / f"{role_id}.qvp"
 

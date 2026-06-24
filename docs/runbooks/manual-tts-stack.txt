@@ -68,7 +68,13 @@ Runtime Order
      books/<book_slug>/voices/
 
 5. Run chapter TTS.
-   - The pipeline builds role-tagged Qwen sections with at most 8 roles and a hard 1100-character section limit.
+   - The pipeline builds role-tagged Qwen sections with at most 8 roles and a default 1100-character section limit.
+   - Override section size with EBOOK_TTS_MAX_TTS_WINDOW_CHARS only when changing annotation/TTS section shape. This is not the main VRAM throttle.
+   - Saved TTS sections are generation checkpoints. Within each section, Qwen still receives a multi-item voice_clone_prompt call for mixed roles unless an explicit generation guard splits that section.
+   - EBOOK_TTS_QWEN_MAX_GENERATION_BLOCKS_PER_CALL defaults to 0, which means no static block-count split. Set it only as a temporary safety cap while investigating a risky section.
+   - Qwen peak VRAM is driven by generation-call shape: generated audio/token length, number of role-run prompt items, max_new_tokens, attention backend, and hidden-state/KV-cache retention. Character count is only a rough proxy.
+   - Use EBOOK_TTS_QWEN_PERF_LOG to write one JSONL row per Qwen generation call with section indices, section shape, text lengths, sample counts, elapsed time, and CUDA allocated/reserved/peak memory when torch.cuda is available.
+   - Sentence timelines include the actual generated voice_config_path used for each audio span.
    - Sentences are atomic. A sentence that does not fit in the current window moves to the next window.
    - A single sentence that is too large for a window causes a clear failure.
    - When a split occurs inside a contiguous speaker block, the next section repeats the speaker role tag so every section is self-contained.
@@ -158,8 +164,16 @@ Optional environment overrides:
   $env:EBOOK_TTS_QWEN_MODEL="1.7B"
   $env:EBOOK_TTS_QWEN_DEVICE="cuda"
   $env:EBOOK_TTS_QWEN_PRECISION="bf16"
-  $env:EBOOK_TTS_QWEN_ATTENTION="sdpa"
-  $env:EBOOK_TTS_QWEN_BATCH_SIZE="8"
+  $env:EBOOK_TTS_QWEN_ATTENTION="auto"
+  $env:EBOOK_TTS_QWEN_MAX_NEW_TOKENS="2048"
+  $env:EBOOK_TTS_QWEN_MAX_GENERATION_BLOCK_CHARS="0"
+  $env:EBOOK_TTS_QWEN_MAX_GENERATION_BLOCKS_PER_CALL="0"
+  $env:EBOOK_TTS_QWEN_ADAPTIVE_TARGET_GB="13"
+  $env:EBOOK_TTS_QWEN_PERF_LOG="logs/qwen_generation_perf.jsonl"
+
+For speed tuning on a 16 GB GPU, start with EBOOK_TTS_QWEN_PERF_LOG enabled and set EBOOK_TTS_QWEN_ADAPTIVE_TARGET_GB to the desired working ceiling, such as 13. The adapter records max_memory_reserved/max_memory_allocated per generation call and, when an adaptive target is set, adjusts the next call's block limit from the measured peak. The first metrics to compare are tts_section_indices, generation_block_count, text_char_sum, sample_counts/audio_seconds, elapsed_seconds, adaptive_next_blocks_per_call, and CUDA peak memory. Leave EBOOK_TTS_QWEN_MAX_GENERATION_BLOCKS_PER_CALL and EBOOK_TTS_QWEN_MAX_GENERATION_BLOCK_CHARS at 0 unless the logs identify a specific risky section that needs a temporary guard. Lower EBOOK_TTS_QWEN_MAX_NEW_TOKENS only if logs show runaway or near-limit generations, because setting it too low can truncate valid long speech.
+
+Install FlashAttention 2 when supported by the GPU/runtime. With EBOOK_TTS_QWEN_ATTENTION=auto, the adapter uses flash_attention_2 when flash_attn is importable and bf16 precision is selected; otherwise it falls back to sdpa.
 
 Download local Qwen model folders:
 

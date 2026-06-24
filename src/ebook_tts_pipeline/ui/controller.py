@@ -1,32 +1,46 @@
 from __future__ import annotations
 
 import json
+import time
 import webbrowser
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Protocol, Tuple, Union
 
 from ebook_tts_pipeline.annotation.anthropic_client import AnthropicJsonClient
 from ebook_tts_pipeline.annotation.global_registry import GlobalRegistryService
 from ebook_tts_pipeline.annotation.quote_attribution import QuoteAttributionService
 from ebook_tts_pipeline.annotation.service import AnnotationService
-from ebook_tts_pipeline.config import PipelineConfig
+from ebook_tts_pipeline.config import PipelineConfig, resolve_project_path, resolve_qwen_model_root
 from ebook_tts_pipeline.debug_logging import FailureLogger
 from ebook_tts_pipeline.domain import AnnotationResult
 from ebook_tts_pipeline.epub_ingestion import EpubChapterExtractor, EpubExtractResult
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.pipeline import AudiobookPipeline
+from ebook_tts_pipeline.read_along.session import ReadAlongSession
+from ebook_tts_pipeline.read_along.units import (
+    FUNCTIONAL_NARRATOR_ROLE,
+    FUNCTIONAL_NARRATOR_ROLE_ID,
+    FUNCTIONAL_NARRATOR_VARIANT,
+    ReadAlongUnit,
+)
 from ebook_tts_pipeline.registry import (
     build_compact_voice_profile,
     migrate_registry_voice_records,
+    narrator_voice_profile_for_type,
     prune_deprecated_registry_fields,
+    voice_profile_hash,
 )
 from ebook_tts_pipeline.registry import normalize_name
-from ebook_tts_pipeline.temp_registry import normalize_annotation_local_speakers
+from ebook_tts_pipeline.runtime_logging import log_runtime_step
+from ebook_tts_pipeline.temp_registry import ChapterTempRegistryManager, normalize_annotation_local_speakers
+from ebook_tts_pipeline.tts.base import GeneratedSentenceAudio, TtsAdapter
 from ebook_tts_pipeline.tts.fake import FakeTtsAdapter
 from ebook_tts_pipeline.tts.qwen_adapter import QwenTtsAdapter
+from ebook_tts_pipeline.tts.vllm_omni_adapter import WslVllmOmniQwenAdapter
+from ebook_tts_pipeline.tts.wsl_adapter import WslQwenWorkerAdapter
 from ebook_tts_pipeline.voice_identity import append_differentiators
 
 
@@ -54,6 +68,7 @@ class BookLibraryEntry:
     slug: str
     book_root: Path
     epub_path: Path
+    author: str = ""
 
 
 @dataclass(frozen=True)
@@ -104,6 +119,62 @@ PipelineFactory = Callable[[PipelineConfig, bool, bool], AudiobookPipeline]
 AudioOpener = Callable[[Path], None]
 
 
+class _LazyTtsAdapter:
+    def __init__(self, adapter_factory: Callable[[], TtsAdapter]) -> None:
+        self._adapter_factory = adapter_factory
+        self._adapter: Optional[TtsAdapter] = None
+
+    def _require_adapter(self) -> TtsAdapter:
+        if self._adapter is None:
+            self._adapter = self._adapter_factory()
+        return self._adapter
+
+    def ensure_voice(self, role_id: str, voice_record: Dict, voice_path: Path) -> Path:
+        return self._require_adapter().ensure_voice(role_id, voice_record, voice_path)
+
+    def generate_sentence_batches(self, jobs: List[Dict]) -> Iterator[List[GeneratedSentenceAudio]]:
+        yield from self._require_adapter().generate_sentence_batches(jobs)
+
+    def generate_sentences(self, jobs: List[Dict]) -> List[GeneratedSentenceAudio]:
+        return self._require_adapter().generate_sentences(jobs)
+
+    def close(self) -> None:
+        if self._adapter is None:
+            return
+        close = getattr(self._adapter, "close", None)
+        if callable(close):
+            close()
+
+
+ACCENT_OPTIONS = [
+    "",
+    "General American",
+    "Southern American",
+    "British",
+    "Irish",
+    "Scottish",
+    "Australian",
+    "Canadian",
+    "New York",
+    "Tokyo",
+    "Custom",
+]
+
+RACE_OR_ETHNICITY_OPTIONS = [
+    "",
+    "African American",
+    "British",
+    "Chinese",
+    "Hispanic / Latino",
+    "Indian",
+    "Irish",
+    "Japanese",
+    "Korean",
+    "White",
+    "Custom",
+]
+
+
 class PrototypeUiController:
     def __init__(
         self,
@@ -144,6 +215,7 @@ class PrototypeUiController:
                     slug=str(item.get("slug", "")).strip() or Path(book_root).name,
                     book_root=Path(book_root),
                     epub_path=Path(str(item.get("epub_path", "")).strip()),
+                    author=str(item.get("author", "")).strip(),
                 )
             )
         return books
@@ -232,6 +304,89 @@ class PrototypeUiController:
         }
         write_json_atomic(self.paths.settings, settings)
 
+    def read_along_settings(self) -> Dict[str, Any]:
+        defaults = {
+            "playback_speed": 1.0,
+            "generation_mode": "balanced",
+            "buffer_limit": 2,
+            "target_buffer_seconds": 20.0,
+            "start_buffer_seconds": 20.0,
+            "max_buffer_seconds": 40.0,
+            "max_buffer_units": 32,
+            "narrator_voice_type": "male",
+        }
+        if not self.paths.read_along_settings.exists():
+            return defaults
+        payload = read_json(self.paths.read_along_settings)
+        return {
+            "playback_speed": _bounded_positive_float(
+                payload.get("playback_speed"),
+                defaults["playback_speed"],
+                1.0,
+                4.0,
+            ),
+            "generation_mode": _choice(
+                payload.get("generation_mode"),
+                {"precise", "balanced", "fast"},
+                defaults["generation_mode"],
+            ),
+            "buffer_limit": min(
+                8,
+                max(1, _positive_int(payload.get("buffer_limit"), defaults["buffer_limit"])),
+            ),
+            "target_buffer_seconds": _bounded_positive_float(
+                payload.get("target_buffer_seconds"),
+                defaults["target_buffer_seconds"],
+                0.1,
+                120.0,
+            ),
+            "start_buffer_seconds": _bounded_positive_float(
+                payload.get("start_buffer_seconds"),
+                defaults["start_buffer_seconds"],
+                0.1,
+                120.0,
+            ),
+            "max_buffer_seconds": _bounded_positive_float(
+                payload.get("max_buffer_seconds"),
+                defaults["max_buffer_seconds"],
+                0.1,
+                240.0,
+            ),
+            "max_buffer_units": min(
+                32,
+                max(1, _positive_int(payload.get("max_buffer_units"), defaults["max_buffer_units"])),
+            ),
+            "narrator_voice_type": _choice(
+                payload.get("narrator_voice_type"),
+                {"male", "female", "current"},
+                defaults["narrator_voice_type"],
+            ),
+        }
+
+    def save_read_along_settings(self, values: Dict[str, Any]) -> None:
+        target_buffer_seconds = _bounded_positive_float(values.get("target_buffer_seconds"), 20.0, 0.1, 120.0)
+        start_buffer_seconds = _bounded_positive_float(values.get("start_buffer_seconds"), 20.0, 0.1, 120.0)
+        max_buffer_seconds = _bounded_positive_float(values.get("max_buffer_seconds"), 40.0, 0.1, 240.0)
+        if start_buffer_seconds > target_buffer_seconds:
+            start_buffer_seconds = target_buffer_seconds
+        if target_buffer_seconds > max_buffer_seconds:
+            max_buffer_seconds = target_buffer_seconds
+        settings = {
+            "playback_speed": _bounded_positive_float(values.get("playback_speed"), 1.0, 1.0, 4.0),
+            "generation_mode": _choice(values.get("generation_mode"), {"precise", "balanced", "fast"}, "balanced"),
+            "buffer_limit": min(8, max(1, _positive_int(values.get("buffer_limit"), 2))),
+            "target_buffer_seconds": target_buffer_seconds,
+            "start_buffer_seconds": start_buffer_seconds,
+            "max_buffer_seconds": max_buffer_seconds,
+            "max_buffer_units": min(32, max(1, _positive_int(values.get("max_buffer_units"), 32))),
+            "narrator_voice_type": _choice(
+                values.get("narrator_voice_type"),
+                {"male", "female", "current"},
+                "male",
+            ),
+        }
+        write_json_atomic(self.paths.read_along_settings, settings)
+
     def registry_character_forms(self) -> List[RegistryCharacterForm]:
         if not self.paths.registry.exists():
             return []
@@ -266,6 +421,98 @@ class PrototypeUiController:
                 )
             )
         return forms
+
+    def registry_review_payload(self) -> Dict[str, Any]:
+        registry = read_json(self.paths.registry) if self.paths.registry.exists() else {}
+        entries: List[Dict[str, Any]] = []
+        for form in self.registry_character_forms():
+            fields = {field.key: field.value for field in form.editable_fields}
+            voice_path = ""
+            for field in form.readonly_fields:
+                if field.key == "voice_config_path":
+                    voice_path = field.value
+                    break
+            entries.append(
+                {
+                    "kind": "character",
+                    "role_id": form.role_id,
+                    "title": form.title,
+                    "editable": True,
+                    "fields": fields,
+                    "voice_config_path": voice_path,
+                    "sample_url": self._voice_sample_url(form.role_id),
+                }
+            )
+        return {
+            "book": dict(registry.get("book", {})),
+            "accent_options": _merged_detected_options(
+                ACCENT_OPTIONS,
+                _detected_identity_values(self.paths, registry, "accent"),
+            ),
+            "race_or_ethnicity_options": _merged_detected_options(
+                RACE_OR_ETHNICITY_OPTIONS,
+                _detected_identity_values(self.paths, registry, "race_or_ethnicity"),
+            ),
+            "entries": entries,
+        }
+
+    def _voice_sample_url(self, role_id: str) -> str:
+        sample_path = self.paths.root / "voices" / "_samples" / f"{role_id}.wav"
+        return f"/api/registry/sample/{role_id}.wav" if sample_path.exists() else ""
+
+    def generate_registry_voice_sample(
+        self,
+        role_id: str,
+        pipeline: Optional[AudiobookPipeline] = None,
+    ) -> Dict[str, str]:
+        role_id = str(role_id).strip()
+        if not role_id:
+            raise ValueError("role_id is required")
+        registry = read_json(self.paths.registry)
+        record = self._registry_voice_record(role_id, registry)
+        display_name = str(record.get("display_name", role_id)).strip() or role_id
+        owns_pipeline = pipeline is None
+        if pipeline is None:
+            pipeline = self._voice_asset_pipeline()
+        if hasattr(pipeline, "_voice_path_for_record"):
+            voice_path = pipeline._voice_path_for_record(role_id, record)
+        else:
+            voice_path = self.paths.voice_qvp(role_id)
+        try:
+            pipeline.tts_adapter.ensure_voice(role_id, record, voice_path)
+            record["voice_config_path"] = voice_path.relative_to(self.paths.root).as_posix()
+            record["voice_config_hash"] = voice_profile_hash(record)
+            pipeline.registry.save(registry)
+
+            generated = pipeline.tts_adapter.generate_sentences(
+                [
+                    {
+                        "index": 0,
+                        "sentence_idx": 0,
+                        "unit_idx": 0,
+                        "text": f"Hi, my name is {display_name}.",
+                        "role": display_name,
+                        "role_id": role_id,
+                        "type": "dialogue",
+                        "voice_config_path": record["voice_config_path"],
+                    }
+                ]
+            )
+            if not generated:
+                raise RuntimeError("Voice sample generation returned no audio.")
+            sample_dir = self.paths.root / "voices" / "_samples"
+            sample_path = sample_dir / f"{role_id}.wav"
+            _write_wav_file(sample_path, generated[0].samples, generated[0].sample_rate)
+            return {
+                "role_id": role_id,
+                "sample_path": sample_path.relative_to(self.paths.root).as_posix(),
+                "sample_url": f"/api/registry/sample/{role_id}.wav",
+            }
+        finally:
+            if owns_pipeline:
+                close = getattr(pipeline.tts_adapter, "close", None)
+                if callable(close):
+                    close()
 
     def save_registry_character_form(self, role_id: str, values: Dict[str, str]) -> None:
         registry = read_json(self.paths.registry)
@@ -421,11 +668,17 @@ class PrototypeUiController:
         if new_roles != old_roles:
             self._invalidate_downstream_artifacts(chapter)
 
-    def load_epub(self, epub_path: Union[str, Path], title: str, slug: str) -> EpubExtractResult:
+    def load_epub(
+        self,
+        epub_path: Union[str, Path],
+        title: str,
+        slug: str,
+        author: str = "",
+    ) -> EpubExtractResult:
         self.paths.root.mkdir(parents=True, exist_ok=True)
         result = self.extractor.extract(epub_path, self.paths)
-        pipeline = self._pipeline(needs_llm=False)
-        pipeline.registry.initialize_if_missing(book_title=title, book_slug=slug)
+        pipeline = self._pipeline(needs_llm=False, read_along=True)
+        pipeline.registry.initialize_if_missing(book_title=title, book_slug=slug, book_author=author)
         self.current_book_slug = slug
         toc = []
         for index, chapter in enumerate(result.chapters, start=1):
@@ -446,6 +699,7 @@ class PrototypeUiController:
                 slug=slug,
                 book_root=self.book_root,
                 epub_path=Path(epub_path),
+                author=author,
             )
         )
         return result
@@ -486,6 +740,522 @@ class PrototypeUiController:
             message="Annotated chapter. Review character appearances before scripts.",
         )
 
+    def build_read_along_units(self, chapter: str) -> List[Dict[str, Any]]:
+        pipeline = self._pipeline(needs_llm=False)
+        return pipeline.build_read_along_units(chapter)
+
+    def read_along_units(self, chapter: str) -> List[Dict[str, Any]]:
+        if not self.paths.read_along_units(chapter).exists():
+            return self.build_read_along_units(chapter)
+        return list(read_json(self.paths.read_along_units(chapter)).get("units", []))
+
+    def chapter_text(self, chapter: str) -> str:
+        return self.paths.chapter_text(chapter).read_text(encoding="utf-8", errors="replace")
+
+    def create_read_along_session(
+        self,
+        chapter: str,
+        units: List[Dict[str, Any]],
+        settings: Dict[str, Any],
+        store_audio_files: bool = True,
+    ) -> ReadAlongSession:
+        session_id = f"{chapter}-{int(time.time())}"
+        pipeline = self._pipeline(needs_llm=False, read_along=True)
+        units = pipeline.build_read_along_units(chapter)
+        session_voice_paths = self._ensure_read_along_session_narrator_voices(
+            pipeline,
+            settings,
+            session_id,
+            units,
+        )
+        units = self._apply_session_narrator_voice_paths(units, session_voice_paths)
+        units = self._ensure_read_along_session_temp_voices(pipeline, chapter, units)
+        write_json_atomic(self.paths.read_along_units(chapter), {"chapter": chapter, "units": units})
+        missing = self._missing_read_along_voice_paths([chapter])
+        if missing:
+            raise ValueError("Prepare Voices before starting a read-along session.")
+        self._register_session_narrator_voice_paths(pipeline.tts_adapter, session_voice_paths)
+        return ReadAlongSession(
+            session_id=session_id,
+            units=[ReadAlongUnit.from_dict(unit) for unit in units],
+            tts_adapter=pipeline.tts_adapter,
+            session_dir=self.paths.read_along_session_dir(session_id),
+            timing_log_path=self.paths.read_along_timing_log(session_id),
+            buffer_limit=int(settings["buffer_limit"]),
+            playback_speed=float(settings["playback_speed"]),
+            generation_mode=str(settings["generation_mode"]),
+            target_buffer_seconds=float(settings.get("target_buffer_seconds", 20.0)),
+            start_buffer_seconds=float(settings.get("start_buffer_seconds", 20.0)),
+            max_buffer_seconds=float(settings.get("max_buffer_seconds", 40.0)),
+            max_buffer_units=int(settings.get("max_buffer_units", 32)),
+            store_audio_files=store_audio_files,
+        )
+
+    def process_read_along_book(self) -> Dict[str, int]:
+        pipeline = self._pipeline(needs_llm=True)
+        title, slug = self._registry_book_metadata()
+        pipeline.registry.initialize_if_missing(book_title=title, book_slug=slug)
+        registry_count = pipeline.build_global_registry(book_title=title)
+        chapters = [row.chapter for row in self.chapter_rows()]
+        segmented = 0
+        annotated = 0
+        units_built = 0
+        for chapter in chapters:
+            if not self.paths.sentence_artifact(chapter).exists():
+                pipeline.segment_chapter(chapter)
+                segmented += 1
+            annotation_payload = read_json(self.paths.annotation(chapter)) if self.paths.annotation(chapter).exists() else {}
+            if not _is_quote_annotation_payload(annotation_payload):
+                pipeline.annotate_chapter(chapter, lock_registry=True)
+                annotated += 1
+            pipeline.build_read_along_units(chapter)
+            units_built += 1
+        return {
+            "registry_characters": registry_count,
+            "chapters": len(chapters),
+            "segmented": segmented,
+            "annotated": annotated,
+            "units_built": units_built,
+        }
+
+    def annotate_read_along_book(
+        self,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, int]:
+        pipeline = self._pipeline(needs_llm=True)
+        chapters = [row.chapter for row in self.chapter_rows()]
+        start_index = self._annotation_resume_start_index(chapters)
+        annotated = 0
+        units_built = 0
+        self._write_annotation_progress(
+            {
+                "status": "running",
+                "completed": start_index,
+                "total": len(chapters),
+                "current_chapter": "",
+                "failed_chapter": "",
+                "error": "",
+            }
+        )
+        for index, chapter in enumerate(chapters[start_index:], start=start_index + 1):
+            started_event = {
+                "chapter": chapter,
+                "index": index,
+                "total": len(chapters),
+                "status": "started",
+            }
+            self._emit_annotation_progress(started_event, progress_callback)
+            self._write_annotation_progress(
+                {
+                    "status": "running",
+                    "completed": index - 1,
+                    "total": len(chapters),
+                    "current_chapter": chapter,
+                    "failed_chapter": "",
+                    "error": "",
+                }
+            )
+            try:
+                if not self.paths.sentence_artifact(chapter).exists():
+                    pipeline.segment_chapter(chapter)
+                annotation_payload = read_json(self.paths.annotation(chapter)) if self.paths.annotation(chapter).exists() else {}
+                if not _is_quote_annotation_payload(annotation_payload):
+                    pipeline.annotate_chapter(chapter, lock_registry=True)
+                    annotated += 1
+                pipeline.build_read_along_units(chapter)
+                units_built += 1
+            except Exception as exc:
+                error = str(exc)
+                failed_event = {
+                    "chapter": chapter,
+                    "index": index,
+                    "total": len(chapters),
+                    "status": "failed",
+                    "error": error,
+                }
+                self._emit_annotation_progress(failed_event, progress_callback)
+                self._write_annotation_progress(
+                    {
+                        "status": "failed",
+                        "completed": index - 1,
+                        "total": len(chapters),
+                        "current_chapter": chapter,
+                        "failed_chapter": chapter,
+                        "error": error,
+                    }
+                )
+                raise RuntimeError(f"Annotation failed at {chapter}: {error}") from exc
+            completed_event = {"chapter": chapter, "index": index, "total": len(chapters), "status": "completed"}
+            self._emit_annotation_progress(completed_event, progress_callback)
+            self._write_annotation_progress(
+                {
+                    "status": "running",
+                    "completed": index,
+                    "total": len(chapters),
+                    "current_chapter": chapter,
+                    "failed_chapter": "",
+                    "error": "",
+                }
+            )
+        self._write_annotation_progress(
+            {
+                "status": "completed",
+                "completed": len(chapters),
+                "total": len(chapters),
+                "current_chapter": "",
+                "failed_chapter": "",
+                "error": "",
+            }
+        )
+        return {
+            "chapters": len(chapters),
+            "annotated": annotated,
+            "units_built": units_built,
+        }
+
+    def _annotation_resume_start_index(self, chapters: List[str]) -> int:
+        progress_path = self.paths.root / "read_along" / "annotation_progress.json"
+        progress: Dict[str, Any] = {}
+        if progress_path.exists():
+            try:
+                payload = read_json(progress_path)
+                progress = payload if isinstance(payload, dict) else {}
+            except Exception:
+                progress = {}
+
+        status = str(progress.get("status") or "")
+        if status in {"failed", "running"}:
+            for key in ("failed_chapter", "current_chapter"):
+                chapter = str(progress.get(key) or "")
+                if chapter in chapters:
+                    return chapters.index(chapter)
+            try:
+                completed = int(progress.get("completed") or 0)
+            except (TypeError, ValueError):
+                completed = 0
+            if 0 < completed <= len(chapters):
+                return completed - 1
+
+        for index, chapter in enumerate(chapters):
+            annotation_payload = read_json(self.paths.annotation(chapter)) if self.paths.annotation(chapter).exists() else {}
+            if not _is_quote_annotation_payload(annotation_payload):
+                return index
+            if not self.paths.read_along_units(chapter).exists():
+                return index
+        return 0
+
+    def _emit_annotation_progress(
+        self,
+        event: Dict[str, Any],
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]],
+    ) -> None:
+        if progress_callback is not None:
+            progress_callback(dict(event))
+
+    def _write_annotation_progress(self, payload: Dict[str, Any]) -> None:
+        progress_path = self.paths.root / "read_along" / "annotation_progress.json"
+        write_json_atomic(progress_path, payload)
+
+    def prepare_read_along_voices(
+        self,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        pipeline = self._voice_asset_pipeline()
+        self._apply_read_along_narrator_voice_type(pipeline, self.read_along_settings())
+        chapters = [row.chapter for row in self.chapter_rows()]
+        voice_count, voice_total = self._registry_voice_readiness_counts()
+        self._emit_voice_progress(
+            {
+                "phase": "chapters",
+                "status": "started",
+                "completed": voice_count,
+                "total": voice_total,
+            },
+            progress_callback,
+        )
+        prepared_chapters = 0
+        try:
+            for chapter in chapters:
+                if not self.paths.annotation(chapter).exists():
+                    raise ValueError(f"Annotation missing for {chapter}.")
+            sample_count = self.generate_registry_voice_samples(
+                pipeline=pipeline,
+                progress_callback=progress_callback,
+            )
+            voice_count, voice_total = self._registry_voice_readiness_counts()
+            for chapter in chapters:
+                self._emit_voice_progress(
+                    {
+                        "phase": "chapters",
+                        "status": "started",
+                        "chapter": chapter,
+                        "completed": voice_count,
+                        "total": voice_total,
+                    },
+                    progress_callback,
+                )
+                pipeline.build_read_along_units(chapter)
+                prepared_chapters += 1
+            voice_count, voice_total = self._registry_voice_readiness_counts()
+            missing = self._missing_read_along_voice_paths(chapters)
+            return {
+                "chapters": len(chapters),
+                "prepared_chapters": prepared_chapters,
+                "sample_count": sample_count,
+                "voice_count": voice_count,
+                "voice_total": voice_total,
+                "missing_voice_paths": missing,
+                "voices_ready": not missing and voice_count >= voice_total,
+            }
+        finally:
+            close = getattr(pipeline.tts_adapter, "close", None)
+            if callable(close):
+                close()
+
+    def generate_registry_voice_samples(
+        self,
+        pipeline: Optional[AudiobookPipeline] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> int:
+        registry = read_json(self.paths.registry) if self.paths.registry.exists() else {}
+        role_ids = self._registry_character_role_ids(registry)
+        generated = 0
+        for role_id in role_ids:
+            record = dict(registry.get("characters", {}).get(role_id, {}))
+            self.generate_registry_voice_sample(role_id, pipeline=pipeline)
+            generated += 1
+            log_runtime_step(
+                "readalong_voice_sample_ready",
+                role_id=role_id,
+                completed=generated,
+                total=len(role_ids),
+            )
+            self._emit_voice_progress(
+                {
+                    "phase": "samples",
+                    "status": "completed",
+                    "role_id": role_id,
+                    "display_name": record.get("display_name", role_id),
+                    "completed": generated,
+                    "total": len(role_ids),
+                },
+                progress_callback,
+            )
+        return generated
+
+    def _emit_voice_progress(
+        self,
+        event: Dict[str, Any],
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]],
+    ) -> None:
+        if progress_callback is not None:
+            progress_callback(dict(event))
+
+    def _apply_read_along_narrator_voice_type(
+        self,
+        pipeline: AudiobookPipeline,
+        settings: Dict[str, Any],
+    ) -> None:
+        voice_type = _choice(
+            settings.get("narrator_voice_type"),
+            {"male", "female", "current"},
+            "male",
+        )
+        if voice_type == "current":
+            return
+        registry = pipeline.registry.load()
+        narrator = registry.setdefault("narrator", {})
+        desired_profile = narrator_voice_profile_for_type(voice_type)
+        if narrator.get("voice_profile") == desired_profile:
+            return
+        narrator["role_id"] = str(narrator.get("role_id", "narrator"))
+        narrator["display_name"] = str(narrator.get("display_name", "Narrator"))
+        narrator["voice_profile"] = desired_profile
+        narrator["voice_config_hash"] = None
+        pipeline.registry.save(registry)
+
+    def _validate_read_along_narrator_voice_type(
+        self,
+        pipeline: AudiobookPipeline,
+        settings: Dict[str, Any],
+    ) -> None:
+        voice_type = _choice(
+            settings.get("narrator_voice_type"),
+            {"male", "female", "current"},
+            "male",
+        )
+        if voice_type == "current":
+            return
+        registry = pipeline.registry.load()
+        narrator = dict(registry.get("narrator", {}))
+        desired_profile = narrator_voice_profile_for_type(voice_type)
+        if narrator.get("voice_profile") != desired_profile:
+            raise ValueError("Change narrator voice type before Prepare Voices, then prepare voices again.")
+
+    def _ensure_read_along_session_narrator_voices(
+        self,
+        pipeline: AudiobookPipeline,
+        settings: Dict[str, Any],
+        session_id: str,
+        units: List[Dict[str, Any]],
+    ) -> Dict[str, str]:
+        self._apply_read_along_narrator_voice_type(pipeline, settings)
+        registry = pipeline.registry.load()
+        narrator = registry.setdefault("narrator", {})
+        narrator["role_id"] = "narrator"
+        narrator["display_name"] = "Narrator"
+        if not isinstance(narrator.get("voice_profile"), dict):
+            narrator["voice_profile"] = narrator_voice_profile_for_type("male")
+
+        narrator_path = self.paths.voice_qvp("narrator")
+        narrator_rel = self._ensure_voice_asset(
+            pipeline.tts_adapter,
+            "narrator",
+            narrator,
+            narrator_path,
+        )
+
+        pipeline.registry.save(registry)
+        voice_paths = {"narrator": narrator_rel}
+        if any(_is_functional_narrator_unit(unit) for unit in units):
+            functional_record = self._functional_narrator_voice_record(narrator)
+            functional_path = self.paths.root / "voices" / "_session" / session_id / "functional_narrator.qvp"
+            voice_paths[FUNCTIONAL_NARRATOR_ROLE_ID] = self._ensure_voice_asset(
+                pipeline.tts_adapter,
+                FUNCTIONAL_NARRATOR_ROLE_ID,
+                functional_record,
+                functional_path,
+            )
+        return voice_paths
+
+    def _ensure_voice_asset(
+        self,
+        adapter: Any,
+        role_id: str,
+        record: Dict[str, Any],
+        voice_path: Path,
+    ) -> str:
+        current_hash = voice_profile_hash(record)
+        cached_hash = record.get("voice_config_hash")
+        should_generate = not voice_path.exists() or cached_hash != current_hash
+        if should_generate:
+            adapter_record = dict(record)
+            adapter_record["_force_regenerate"] = voice_path.exists() and cached_hash != current_hash
+            adapter.ensure_voice(role_id, adapter_record, voice_path)
+            record["voice_config_hash"] = current_hash
+        if hasattr(adapter, "role_voice_paths"):
+            adapter.role_voice_paths[role_id] = voice_path
+        record["voice_config_path"] = voice_path.relative_to(self.paths.root).as_posix()
+        return str(record["voice_config_path"])
+
+    def _functional_narrator_voice_record(self, narrator: Dict[str, Any]) -> Dict[str, Any]:
+        profile = dict(narrator.get("voice_profile") or {})
+        base_description = str(profile.get("description") or "audiobook narrator")
+        base_instruction = str(profile.get("qwen_instruct") or base_description)
+        description = (
+            f"{base_description}; same narrator identity for quoted non-dialogue text, "
+            "slightly higher pitch, flatter monotone delivery, crisp and restrained"
+        )
+        instruction = (
+            f"{base_instruction}. Keep the same base narrator identity, but render quoted "
+            "non-dialogue text with a slightly higher pitch, flatter monotone cadence, "
+            "restrained emotion, and crisp articulation."
+        )
+        return {
+            "role_id": FUNCTIONAL_NARRATOR_ROLE_ID,
+            "display_name": FUNCTIONAL_NARRATOR_ROLE,
+            "voice_identity": dict(narrator.get("voice_identity") or {}),
+            "voice_profile": {
+                "description": description,
+                "qwen_instruct": instruction,
+            },
+        }
+
+    def _apply_session_narrator_voice_paths(
+        self,
+        units: List[Dict[str, Any]],
+        voice_paths: Dict[str, str],
+    ) -> List[Dict[str, Any]]:
+        patched: List[Dict[str, Any]] = []
+        for unit in units:
+            item = dict(unit)
+            if _is_functional_narrator_unit(item):
+                item["role"] = FUNCTIONAL_NARRATOR_ROLE
+                item["role_id"] = FUNCTIONAL_NARRATOR_ROLE_ID
+                item["type"] = "narration"
+                item["voice_variant"] = FUNCTIONAL_NARRATOR_VARIANT
+                item["voice_config_path"] = voice_paths[FUNCTIONAL_NARRATOR_ROLE_ID]
+            elif str(item.get("role_id") or "") == "narrator" or str(item.get("role") or "") == "Narrator":
+                item["voice_config_path"] = voice_paths["narrator"]
+            patched.append(item)
+        return patched
+
+    def _ensure_read_along_session_temp_voices(
+        self,
+        pipeline: AudiobookPipeline,
+        chapter: str,
+        units: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        temp_units = [dict(unit) for unit in units if _is_temp_voice_unit(unit)]
+        if not temp_units:
+            return units
+        temp_manager = ChapterTempRegistryManager(self.paths)
+        temp_registry = temp_manager.load(chapter)
+        speakers = temp_registry.get("speakers", {})
+        if not isinstance(speakers, dict):
+            return units
+
+        patched_paths: Dict[str, str] = {}
+        for unit in temp_units:
+            current_path = str(unit.get("voice_config_path") or "").strip()
+            speaker = _temp_speaker_for_unit(speakers, unit, current_path)
+            if speaker is None:
+                continue
+            role_id = str(speaker.get("role_id") or unit.get("role_id") or "").strip()
+            if not role_id:
+                continue
+            voice_path = self.paths.root / current_path
+            log_runtime_step(
+                "readalong_session_temp_voice",
+                chapter=chapter,
+                role_id=role_id,
+                voice_path=voice_path,
+            )
+            patched_paths[role_id] = self._ensure_voice_asset(
+                pipeline.tts_adapter,
+                role_id,
+                speaker,
+                voice_path,
+            )
+        temp_manager.save(chapter, temp_registry)
+        if not patched_paths:
+            return units
+
+        patched: List[Dict[str, Any]] = []
+        for unit in units:
+            item = dict(unit)
+            role_id = str(item.get("role_id") or "")
+            if role_id in patched_paths:
+                item["voice_config_path"] = patched_paths[role_id]
+            patched.append(item)
+        return patched
+
+    def _register_session_narrator_voice_paths(
+        self,
+        adapter: Any,
+        voice_paths: Dict[str, str],
+    ) -> None:
+        role_voice_paths = getattr(adapter, "role_voice_paths", None)
+        if not isinstance(role_voice_paths, dict):
+            return
+        narrator_path = self.paths.root / voice_paths["narrator"]
+        role_voice_paths["Narrator"] = narrator_path
+        role_voice_paths["narrator"] = narrator_path
+        if FUNCTIONAL_NARRATOR_ROLE_ID in voice_paths:
+            functional_path = self.paths.root / voice_paths[FUNCTIONAL_NARRATOR_ROLE_ID]
+            role_voice_paths[FUNCTIONAL_NARRATOR_ROLE] = functional_path
+            role_voice_paths[FUNCTIONAL_NARRATOR_ROLE_ID] = functional_path
+
     def build_global_registry(self) -> int:
         pipeline = self._pipeline(needs_llm=True)
         title, slug = self._registry_book_metadata()
@@ -493,15 +1263,39 @@ class PrototypeUiController:
         count = pipeline.build_global_registry(book_title=title)
         return count
 
-    def _pipeline(self, needs_llm: bool) -> AudiobookPipeline:
+    def _pipeline(self, needs_llm: bool, read_along: bool = False) -> AudiobookPipeline:
         settings = self.tts_settings()
+        base_config = PipelineConfig.from_env(str(self.book_root))
         config = replace(
-            PipelineConfig.from_env(str(self.book_root)),
+            base_config,
             tts_speed=settings["tts_speed"],
             pause_between_sentences_ms=settings["pause_between_sentences_ms"],
             intra_sentence_pause_ms=settings["intra_sentence_pause_ms"],
         )
+        if read_along:
+            config = replace(config, tts_backend=base_config.read_along_tts_backend)
         return self.pipeline_factory(config, needs_llm, self.fake_tts)
+
+    def _voice_asset_pipeline(self) -> AudiobookPipeline:
+        settings = self.tts_settings()
+        base_config = PipelineConfig.from_env(str(self.book_root))
+        backend = base_config.voice_asset_tts_backend
+        if backend in {"wsl-vllm-omni", "vllm-omni"}:
+            backend = "wsl"
+        log_runtime_step(
+            "voice_asset_pipeline",
+            backend=backend,
+            book_root=self.book_root,
+            qwen_model_root=resolve_qwen_model_root(base_config.qwen_model_root),
+        )
+        config = replace(
+            base_config,
+            tts_backend=backend,
+            tts_speed=settings["tts_speed"],
+            pause_between_sentences_ms=settings["pause_between_sentences_ms"],
+            intra_sentence_pause_ms=settings["intra_sentence_pause_ms"],
+        )
+        return self.pipeline_factory(config, False, self.fake_tts)
 
     def _load_annotation(self, chapter: str) -> AnnotationResult:
         return AnnotationResult.from_dict(read_json(self.paths.annotation(chapter)))
@@ -589,6 +1383,7 @@ class PrototypeUiController:
                         "slug": book.slug,
                         "book_root": str(book.book_root),
                         "epub_path": str(book.epub_path),
+                        "author": book.author,
                     }
                     for book in existing
                 ]
@@ -616,6 +1411,84 @@ class PrototypeUiController:
         character["voice_profile"] = voice
         character["voice_config_hash"] = None
         character.pop("voice_variants", None)
+
+    def _registry_voice_record(self, role_id: str, registry: Dict[str, Any]) -> Dict[str, Any]:
+        if role_id == "narrator":
+            return registry.setdefault("narrator", {"role_id": "narrator", "display_name": "Narrator"})
+        characters = registry.setdefault("characters", {})
+        if role_id not in characters:
+            raise ValueError(f"Registry character not found: {role_id}")
+        return characters[role_id]
+
+    def _registry_voice_readiness_counts(self) -> Tuple[int, int]:
+        registry = read_json(self.paths.registry) if self.paths.registry.exists() else {}
+        role_ids = self._registry_character_role_ids(registry)
+        ready = 0
+        for role_id in role_ids:
+            record = registry.get("characters", {}).get(role_id, {})
+            voice_path = str(record.get("voice_config_path") or "").strip()
+            sample_path = self.paths.root / "voices" / "_samples" / f"{role_id}.wav"
+            if voice_path and (self.paths.root / voice_path).exists() and sample_path.exists():
+                ready += 1
+        return ready, len(role_ids)
+
+    def _registry_character_role_ids(self, registry: Dict[str, Any]) -> List[str]:
+        return [
+            str(role_id)
+            for role_id, record in registry.get("characters", {}).items()
+            if isinstance(record, dict)
+        ]
+
+    def _missing_read_along_voice_paths(self, chapters: List[str]) -> List[str]:
+        missing: List[str] = []
+        for chapter in chapters:
+            units_path = self.paths.read_along_units(chapter)
+            if not units_path.exists():
+                missing.append(f"{chapter}:read_along_units")
+                continue
+            for unit in read_json(units_path).get("units", []):
+                if _is_session_narrator_unit(unit) or _is_temp_voice_unit(unit):
+                    continue
+                voice_path = str(unit.get("voice_config_path") or "").strip()
+                unit_id = unit.get("unit_id")
+                if not voice_path:
+                    missing.append(f"{chapter}:unit_{unit_id}:empty")
+                    continue
+                if not (self.paths.root / voice_path).exists():
+                    missing.append(f"{chapter}:unit_{unit_id}:{voice_path}")
+        return missing
+
+
+def _is_functional_narrator_unit(unit: Dict[str, Any]) -> bool:
+    return (
+        str(unit.get("role_id") or "") == FUNCTIONAL_NARRATOR_ROLE_ID
+        or str(unit.get("voice_variant") or "") == FUNCTIONAL_NARRATOR_VARIANT
+    )
+
+
+def _is_session_narrator_unit(unit: Dict[str, Any]) -> bool:
+    return _is_functional_narrator_unit(unit) or str(unit.get("role_id") or "") == "narrator"
+
+
+def _is_temp_voice_unit(unit: Dict[str, Any]) -> bool:
+    return str(unit.get("voice_config_path") or "").strip().replace("\\", "/").startswith("voices/_temp/")
+
+
+def _temp_speaker_for_unit(
+    speakers: Dict[str, Any],
+    unit: Dict[str, Any],
+    voice_config_path: str,
+) -> Optional[Dict[str, Any]]:
+    role_id = str(unit.get("role_id") or "")
+    normalized_path = voice_config_path.replace("\\", "/")
+    for speaker in speakers.values():
+        if not isinstance(speaker, dict):
+            continue
+        if str(speaker.get("role_id") or "") == role_id:
+            return speaker
+        if str(speaker.get("voice_config_path") or "").replace("\\", "/") == normalized_path:
+            return speaker
+    return None
 
 
 def _find_character_record_by_role_name(registry: Dict[str, Any], role_name: str) -> Optional[Tuple[str, Dict[str, Any]]]:
@@ -725,8 +1598,18 @@ def _default_pipeline_factory(config: PipelineConfig, needs_llm: bool, fake_tts:
                 context={"book_root": config.book_root},
             ),
         ),
-        quote_attribution_service=QuoteAttributionService(quote_client) if needs_llm else None,
-        tts_adapter=FakeTtsAdapter() if fake_tts else _build_qwen_adapter(config),
+        quote_attribution_service=(
+            QuoteAttributionService(
+                quote_client,
+                failure_logger=FailureLogger(
+                    config.debug_log_root,
+                    context={"book_root": config.book_root},
+                ),
+            )
+            if needs_llm
+            else None
+        ),
+        tts_adapter=FakeTtsAdapter() if fake_tts else _LazyTtsAdapter(lambda: _build_qwen_adapter(config)),
     )
 
 
@@ -740,17 +1623,111 @@ def _build_llm_client(config: PipelineConfig) -> AnthropicJsonClient:
 
 
 def _build_qwen_adapter(config: PipelineConfig) -> QwenTtsAdapter:
+    qwen_model_root = resolve_qwen_model_root(config.qwen_model_root)
+    log_runtime_step(
+        "build_tts_adapter",
+        backend=config.tts_backend,
+        book_root=config.book_root,
+        qwen_model_root=qwen_model_root,
+    )
+    if config.tts_backend in {"wsl-vllm-omni", "vllm-omni"}:
+        stage_configs_path = resolve_project_path(config.vllm_omni_stage_configs_path)
+        log_runtime_step(
+            "build_tts_adapter_vllm_omni",
+            model=_resolve_vllm_omni_model(config),
+            stage_config=stage_configs_path,
+            voice_model_root=qwen_model_root,
+            wsl_distro=config.wsl_distro,
+            wsl_python=config.vllm_omni_wsl_python,
+        )
+        return WslVllmOmniQwenAdapter(
+            book_root=config.book_root,
+            distro=config.wsl_distro,
+            python_path=config.vllm_omni_wsl_python,
+            model=_resolve_vllm_omni_model(config),
+            stage_configs_path=stage_configs_path,
+            voice_model_root=qwen_model_root,
+            voice_python_path=config.wsl_python,
+            voice_model_choice=config.qwen_model_choice,
+            voice_device="cuda" if config.qwen_device == "auto" else config.qwen_device,
+            voice_precision=config.qwen_precision,
+            voice_attention=config.qwen_attention,
+            timeout_seconds=config.wsl_timeout_seconds,
+        )
+    if config.tts_backend == "wsl":
+        log_runtime_step(
+            "build_tts_adapter_wsl_qwen",
+            model_root=qwen_model_root,
+            wsl_distro=config.wsl_distro,
+            wsl_python=config.wsl_python,
+            attention=config.qwen_attention,
+            precision=config.qwen_precision,
+        )
+        return WslQwenWorkerAdapter(
+            book_root=config.book_root,
+            model_root=qwen_model_root,
+            distro=config.wsl_distro,
+            python_path=config.wsl_python,
+            model_choice=config.qwen_model_choice,
+            device="cuda" if config.qwen_device == "auto" else config.qwen_device,
+            precision=config.qwen_precision,
+            attention=config.qwen_attention,
+            max_new_tokens=config.qwen_max_new_tokens,
+            max_generation_block_chars=config.qwen_max_generation_block_chars,
+            max_generation_blocks_per_call=config.qwen_max_generation_blocks_per_call,
+            cache_clear_interval=config.qwen_cache_clear_interval,
+            streaming_text_mode=config.qwen_streaming_text_mode,
+            performance_log_path=Path(config.qwen_perf_log_path) if config.qwen_perf_log_path else None,
+            adaptive_memory_target_bytes=(
+                int(config.qwen_adaptive_memory_target_gb * (1024 ** 3))
+                if config.qwen_adaptive_memory_target_gb is not None
+                else None
+            ),
+            timeout_seconds=config.wsl_timeout_seconds,
+        )
     return QwenTtsAdapter(
-        model_root=config.qwen_model_root,
+        model_root=str(qwen_model_root),
         model_choice=config.qwen_model_choice,
         device=config.qwen_device,
         precision=config.qwen_precision,
         attention=config.qwen_attention,
+        max_new_tokens=config.qwen_max_new_tokens,
+        max_generation_block_chars=config.qwen_max_generation_block_chars,
+        max_generation_blocks_per_call=config.qwen_max_generation_blocks_per_call,
+        cache_clear_interval=config.qwen_cache_clear_interval,
+        streaming_text_mode=config.qwen_streaming_text_mode,
+        performance_log_path=config.qwen_perf_log_path,
+        adaptive_memory_target_bytes=(
+            int(config.qwen_adaptive_memory_target_gb * (1024 ** 3))
+            if config.qwen_adaptive_memory_target_gb is not None
+            else None
+        ),
     )
+
+
+def _resolve_vllm_omni_model(config: PipelineConfig) -> Path | str:
+    local_model = resolve_qwen_model_root(config.qwen_model_root) / "Qwen3-TTS-12Hz-1.7B-Base"
+    if local_model.exists():
+        return local_model.resolve()
+    return config.vllm_omni_model
 
 
 def _open_audio_file(path: Path) -> None:
     webbrowser.open(path.resolve().as_uri())
+
+
+def _write_wav_file(path: Path, samples: Any, sample_rate: int) -> None:
+    import wave
+
+    import numpy as np
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pcm16 = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2")
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(int(sample_rate))
+        wav.writeframes(pcm16.tobytes())
 
 
 class _UnavailableJsonClient:
@@ -784,6 +1761,44 @@ def _string_list(value: Any) -> List[str]:
     return [text] if text else []
 
 
+def _merged_detected_options(base_options: List[str], detected_values: List[str]) -> List[str]:
+    merged: List[str] = []
+    seen = set()
+    for value in [*base_options, *detected_values]:
+        text = str(value).strip()
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(text)
+    return merged
+
+
+def _detected_identity_values(paths: BookPaths, registry: Dict[str, Any], key: str) -> List[str]:
+    values: List[str] = []
+    for character in registry.get("characters", {}).values():
+        if not isinstance(character, dict):
+            continue
+        identity = character.get("identity_profile", {})
+        if isinstance(identity, dict) and identity.get(key):
+            values.append(str(identity[key]))
+
+    annotations_dir = paths.root / "annotations"
+    if not annotations_dir.exists():
+        return values
+    for annotation_path in sorted(annotations_dir.glob("*.annotation.json")):
+        payload = read_json(annotation_path)
+        for speaker in payload.get("local_speakers", []):
+            profile = speaker.get("profile", {})
+            if isinstance(profile, dict) and profile.get(key):
+                values.append(str(profile[key]))
+        for speaker in payload.get("proposed_new_characters", []):
+            profile = speaker.get("profile", {})
+            if isinstance(profile, dict) and profile.get(key):
+                values.append(str(profile[key]))
+    return values
+
+
 def _positive_int(value: Any, default: int) -> int:
     try:
         parsed = int(value)
@@ -806,3 +1821,13 @@ def _positive_float(value: Any, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return parsed if parsed > 0 else default
+
+
+def _bounded_positive_float(value: Any, default: float, minimum: float, maximum: float) -> float:
+    parsed = _positive_float(value, default)
+    return min(float(maximum), max(float(minimum), float(parsed)))
+
+
+def _choice(value: Any, allowed: set, default: str) -> str:
+    text = str(value).strip().lower()
+    return text if text in allowed else default

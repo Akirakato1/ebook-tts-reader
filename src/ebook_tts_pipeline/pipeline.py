@@ -19,6 +19,7 @@ from ebook_tts_pipeline.domain import AnnotationResult, SentenceArtifact
 from ebook_tts_pipeline.ingestion import SentenceSegmenter
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
+from ebook_tts_pipeline.read_along.units import build_read_along_units as build_read_along_units_from_quotes
 from ebook_tts_pipeline.registry import (
     RegistryManager,
     resolve_effective_voice,
@@ -174,6 +175,7 @@ class AudiobookPipeline:
         annotation: AnnotationResult,
         chapter: Optional[str] = None,
         force_regenerate: bool = False,
+        include_narrator: bool = True,
     ) -> None:
         registry = self.registry.load()
         annotation = normalize_annotation_local_speakers(annotation)
@@ -210,7 +212,7 @@ class AudiobookPipeline:
                 self.tts_adapter.role_voice_paths[role_id] = voice_path
             record["voice_config_path"] = voice_path.relative_to(self.paths.root).as_posix()
 
-        if chapter is not None and self.paths.annotation(chapter).exists():
+        if include_narrator and chapter is not None and self.paths.annotation(chapter).exists():
             raw_annotation = read_json(self.paths.annotation(chapter))
             if _is_quote_attribution_payload(raw_annotation):
                 prepare_effective(resolve_effective_voice(registry, "Narrator", "narration"))
@@ -277,6 +279,31 @@ class AudiobookPipeline:
         qwen_script_path.write_text(script.qwen_dialogue_text + "\n", encoding="utf-8")
         return [job.to_adapter_job() for job in script.jobs]
 
+    def build_read_along_units(self, chapter: str) -> List[Dict]:
+        raw_annotation = read_json(self.paths.annotation(chapter))
+        if not _is_quote_attribution_payload(raw_annotation):
+            raise ValueError("Read-along mode requires quote attribution annotation.")
+        registry = self.registry.load()
+        annotation = AnnotationResult.from_dict(raw_annotation)
+        temp_registry = ChapterTempRegistryManager(self.paths).write_for_annotation(
+            chapter,
+            registry,
+            annotation,
+        )
+        chapter_text = self.paths.chapter_text(chapter).read_text(encoding="utf-8", errors="replace")
+        extraction = extract_quoted_dialogue(chapter_text)
+        units = build_read_along_units_from_quotes(
+            chapter=chapter,
+            chapter_text=chapter_text,
+            extraction=extraction,
+            attribution=QuoteAttributionResult.from_dict(raw_annotation),
+            registry=registry,
+            temp_registry=temp_registry,
+        )
+        payload = {"chapter": chapter, "units": [unit.to_dict() for unit in units]}
+        write_json_atomic(self.paths.read_along_units(chapter), payload)
+        return payload["units"]
+
     def _can_refresh_tts_script(self, chapter: str) -> bool:
         raw_annotation = read_json(self.paths.annotation(chapter)) if self.paths.annotation(chapter).exists() else {}
         if _is_quote_attribution_payload(raw_annotation):
@@ -290,19 +317,17 @@ class AudiobookPipeline:
         return self.paths.voice_qvp(role_id)
 
     def synthesize_chapter(self, chapter: str, annotation: AnnotationResult) -> Dict:
-        jobs = self.build_sentence_jobs(chapter, annotation)
-        return self.synthesize_jobs(chapter, jobs)
+        self.build_sentence_jobs(chapter, annotation)
+        return self.synthesize_chapter_from_tts_script(chapter)
 
     def synthesize_chapter_from_tts_script(self, chapter: str) -> Dict:
         script = read_json(self.paths.tts_script(chapter))
-        return self.synthesize_jobs(chapter, [dict(job) for job in script["jobs"]])
+        return self.synthesize_job_windows(chapter, _job_windows_from_tts_script(script))
 
     def synthesize_jobs(self, chapter: str, jobs: List[Dict]) -> Dict:
-        windows = build_tts_windows(
-            jobs,
-            max_chars=self.config.max_tts_window_chars,
-            max_roles=self.config.max_tts_roles,
-        )
+        return self.synthesize_job_windows(chapter, [[dict(job) for job in jobs]])
+
+    def synthesize_job_windows(self, chapter: str, job_windows: List[List[Dict]]) -> Dict:
         builder = ChapterAudioBuilder(
             tts_adapter=self.tts_adapter,
             pause_between_sentences_ms=self.config.pause_between_sentences_ms,
@@ -311,7 +336,7 @@ class AudiobookPipeline:
         )
         return builder.build_chapter_audio_from_windows(
             chapter=chapter,
-            job_windows=[window.jobs for window in windows],
+            job_windows=job_windows,
             audio_path=self.paths.chapter_audio(chapter),
             timeline_path=self.paths.chapter_timeline(chapter),
         )
@@ -366,3 +391,24 @@ def _quote_attribution_annotation_payload(attribution: QuoteAttributionResult) -
 
 def _is_quote_attribution_payload(payload: Dict) -> bool:
     return payload.get("schema") == "quote_attribution_v1" or "quotes" in payload
+
+
+def _job_windows_from_tts_script(script: Dict) -> List[List[Dict]]:
+    sections = script.get("sections") or script.get("windows")
+    if not sections:
+        return [[dict(job) for job in script["jobs"]]]
+
+    job_windows: List[List[Dict]] = []
+    for index, section in enumerate(sections):
+        jobs = [dict(job) for job in section.get("jobs", [])]
+        if not jobs:
+            continue
+        section_idx = int(section.get("section_idx", section.get("window_idx", index)))
+        for job in jobs:
+            job["_tts_section_idx"] = section_idx
+            job["_tts_window_idx"] = int(section.get("window_idx", section_idx))
+            job["_tts_section_char_count"] = int(section.get("char_count", 0))
+            job["_tts_section_job_count"] = len(jobs)
+            job["_tts_section_role_count"] = int(section.get("role_count", 0))
+        job_windows.append(jobs)
+    return job_windows

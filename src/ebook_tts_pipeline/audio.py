@@ -79,16 +79,17 @@ class ChapterAudioBuilder:
                         samples = self._apply_speed(item.samples.astype(np.float32))
                         start_samples = cursor_samples
                         end_samples = start_samples + len(samples)
-                        timeline_sentences.append(
-                            {
-                                "sentence_idx": item.sentence_idx,
-                                "unit_idx": item.unit_idx if item.unit_idx is not None else item.sentence_idx,
-                                "role": item.role,
-                                "type": item.speech_type,
-                                "start_ms": int(round(start_samples * 1000 / sample_rate)),
-                                "end_ms": int(round(end_samples * 1000 / sample_rate)),
-                            }
-                        )
+                        timeline_row = {
+                            "sentence_idx": item.sentence_idx,
+                            "unit_idx": item.unit_idx if item.unit_idx is not None else item.sentence_idx,
+                            "role": item.role,
+                            "type": item.speech_type,
+                            "start_ms": int(round(start_samples * 1000 / sample_rate)),
+                            "end_ms": int(round(end_samples * 1000 / sample_rate)),
+                        }
+                        if item.voice_config_path is not None:
+                            timeline_row["voice_config_path"] = item.voice_config_path
+                        timeline_sentences.append(timeline_row)
                         chunks.append(samples)
                         cursor_samples = end_samples
                         emitted_sentences += 1

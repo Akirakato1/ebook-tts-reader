@@ -5,9 +5,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Set, Tuple
 
+from ebook_tts_pipeline.annotation.anthropic_client import AnnotationModelOutputError
 from ebook_tts_pipeline.annotation.prompts import SYSTEM_PROMPT
 from ebook_tts_pipeline.annotation.quotes import QuoteExtraction
 from ebook_tts_pipeline.annotation.registry_summary import compact_registry_for_prompt
+from ebook_tts_pipeline.debug_logging import FailureLogger
 from ebook_tts_pipeline.registry import normalize_name
 
 
@@ -61,23 +63,39 @@ def render_quote_attribution_prompt(
         "Chapter text with marked quotes:\n"
         f"{extraction.to_marked_text()}\n\n"
         f"Quote IDs to attribute: {json.dumps(quote_ids)}\n\n"
+        "Required workflow:\n"
+        "Step 1: Review the global registry. If a quote speaker is present there, use that exact global role_id.\n"
+        "Step 2: Build the chapter-local registry. local_speakers is the local registry for this chapter only: "
+        "include useful chapter-only speakers who are not present in the global registry, especially unnamed roles "
+        "such as guards, clerks, nurses, officers, children, or other one-chapter speakers.\n"
+        "Step 3: Build roles from the union of global registry role_ids and chapter-local local_ids. "
+        "roles must contain only global role_id values and local_speakers.local_id values.\n"
+        "Step 4: Assign every quote exactly once by quote_idx and role_idx, where role_idx points into roles.\n\n"
         "Rules:\n"
         "- Attribute every marked quote exactly once.\n"
         "- Choose a global role_id when the speaker is a recurring registry character.\n"
         "- If the same person has multiple age stages in the registry, choose the active age-stage role_id.\n"
         "- If the speaker is not in the global registry and appears chapter-only, create a local speaker.\n"
         "- Do not reuse one local speaker for distinct unnamed people. Different scenes, occupations, descriptions, or speech contexts require separate local_speakers.\n"
+        "- Every local_speakers entry must be assigned to at least one quote. Do not create unused local speakers.\n"
+        "- Use the exact local_id in roles for local speakers. The label is display-only and must not be used as a role_id.\n"
+        "- Prefer descriptive local_id slugs for chapter-only speakers when possible, such as security_guard_001 or waitress_001, instead of generic local_001.\n"
+        "- Use local_speakers only for real character dialogue by an agentic speaker who should get a distinct voice, "
+        "such as an unnamed guard, clerk, nurse, officer, child, or caller. Do not create local_speakers for "
+        "non-character functional quoted text such as automated phone-system messages, signs, titles, labels, "
+        "quoted terms, written snippets, or ambient/system recordings. Mark those rows as narrator_quote instead.\n"
         "- Do not create global registry characters in this output.\n"
         "- Do not label normal quoted dialogue as Narrator.\n"
         "- Use narrator_quote only when quote marks are not spoken dialogue, such as titles, quoted terms, or sarcasm.\n"
+        "- narrator_quote is a quote type only. It is never a role_id, speaker, or local_id.\n"
         "- Return JSON only. Do not include quote text or explanations.\n\n"
         "Output schema:\n"
         "{\n"
-        '  "roles": ["role_id_or_local_id"],\n'
+        '  "roles": ["role_id_or_exact_local_id"],\n'
         '  "local_speakers": [\n'
         "    {\n"
-        '      "local_id": "local_001",\n'
-        '      "label": "short visible name",\n'
+        '      "local_id": "security_guard_001",\n'
+        '      "label": "Security Guard",\n'
         '      "profile": {\n'
         '        "age_stage": "adult|child|teen|elder|unknown",\n'
         '        "gender": "female|male|nonbinary|unknown",\n'
@@ -93,7 +111,46 @@ def render_quote_attribution_prompt(
         "In quotes rows, use numeric quote_idx and numeric role_idx: q001 is quote_idx 1, "
         "and role_idx is the zero-based index into roles. Omit the third item for normal dialogue; "
         'only add a third item, "narrator_quote", for quoted terms, titles, or other marked text '
-        "that should be read by the narrator rather than spoken by a character.\n"
+        "that should be read by the narrator rather than spoken by a character. Before returning, "
+        "check that every local_speakers.local_id appears in roles and is assigned to at least one quote, "
+        "and that no local speaker label appears in roles unless the label is identical to local_id.\n"
+    )
+
+
+def render_quote_attribution_repair_prompt(
+    original_prompt: str,
+    invalid_payload: Any,
+    validation_error: str,
+) -> str:
+    return (
+        f"{original_prompt}\n\n"
+        "The previous JSON failed validation and must be corrected.\n"
+        f"Validation error: {validation_error}\n\n"
+        "Previous invalid JSON:\n"
+        f"{json.dumps(invalid_payload, ensure_ascii=False)}\n\n"
+        "Return corrected JSON only using the same output schema. "
+        "Do not add explanations. If a quote row uses the third item \"narrator_quote\", "
+        "do not create a local_speakers entry for non-character functional quoted text such as "
+        "automated phone-system messages, signs, labels, written snippets, or ambient/system recordings. "
+        "Every local speaker role must have a matching local_speakers profile, and every "
+        "local_speakers entry must be assigned to at least one quote.\n"
+    )
+
+
+def render_quote_attribution_non_json_repair_prompt(
+    original_prompt: str,
+    invalid_text: str,
+    parse_error: str,
+) -> str:
+    return (
+        f"{original_prompt}\n\n"
+        "The previous response was not valid JSON and could not be parsed.\n"
+        f"Parse error: {parse_error}\n\n"
+        "Previous invalid response text:\n"
+        f"{json.dumps(_bounded_prompt_text(invalid_text), ensure_ascii=False)}\n\n"
+        "Return corrected JSON only using the same output schema. "
+        "Do not include reasoning, Markdown headings, bullet points, or explanations. "
+        "The response must begin with { and end with }.\n"
     )
 
 
@@ -107,6 +164,12 @@ def validate_quote_attribution(
     seen: Set[int] = set()
     duplicate: Set[int] = set()
     local_ids = _validate_local_speakers(result.local_speakers, errors)
+    local_id_labels = {
+        normalize_name(str(speaker.get("local_id", ""))): str(speaker.get("local_id", "")).strip()
+        for speaker in result.local_speakers
+        if str(speaker.get("local_id", "")).strip()
+    }
+    used_local_ids: Set[str] = set()
     normalized_known = {normalize_name(role_id) for role_id in known_role_ids}
 
     for quote_idx, role_idx, quote_type in result.quotes:
@@ -119,8 +182,12 @@ def validate_quote_attribution(
         if quote_type not in ALLOWED_QUOTE_TYPES:
             errors.append(f"invalid quote type for quote {quote_idx}: {quote_type}")
             continue
+        if quote_type == "narrator_quote":
+            continue
         role = result.roles[role_idx]
         normalized_role = normalize_name(role)
+        if normalized_role in local_ids:
+            used_local_ids.add(normalized_role)
         if quote_type == "dialogue" and normalized_role == normalize_name("Narrator"):
             errors.append(f"Narrator cannot speak dialogue quote {quote_idx}")
         if (
@@ -138,14 +205,27 @@ def validate_quote_attribution(
         errors.append(f"unknown quote assignments: {extra}")
     if duplicate:
         errors.append(f"duplicate quote assignments: {sorted(duplicate)}")
+    unused_local_ids = [
+        local_id_labels.get(local_id, local_id)
+        for local_id in sorted(local_ids - used_local_ids)
+    ]
+    if unused_local_ids:
+        errors.append(f"unused local speakers: {', '.join(unused_local_ids)}")
 
     if errors:
         raise QuoteAttributionValidationError("; ".join(errors))
 
 
 class QuoteAttributionService:
-    def __init__(self, client: Any) -> None:
+    def __init__(
+        self,
+        client: Any,
+        failure_logger: FailureLogger | None = None,
+        repair_retries: int = 1,
+    ) -> None:
         self.client = client
+        self.failure_logger = failure_logger
+        self.repair_retries = max(0, int(repair_retries))
 
     def attribute_quotes(
         self,
@@ -154,14 +234,126 @@ class QuoteAttributionService:
         registry: Dict[str, Any],
     ) -> QuoteAttributionResult:
         prompt = render_quote_attribution_prompt(chapter, extraction, registry)
-        payload = self.client.complete_json(SYSTEM_PROMPT, prompt)
-        result = QuoteAttributionResult.from_dict(payload)
-        validate_quote_attribution(
-            result,
-            quote_indices=[quote.idx for quote in extraction.quotes],
-            known_role_ids=set(_registry_role_ids(registry)),
+        quote_ids = [quote.quote_id for quote in extraction.quotes]
+        quote_indices = [quote.idx for quote in extraction.quotes]
+        known_role_ids = set(_registry_role_ids(registry))
+        payload, prompt, repairs_used = self._complete_initial_payload(
+            chapter=chapter,
+            prompt=prompt,
+            quote_ids=quote_ids,
         )
-        return result
+
+        for attempt in range(repairs_used, self.repair_retries + 1):
+            try:
+                result = _canonicalize_quote_attribution_result(QuoteAttributionResult.from_dict(payload))
+                validate_quote_attribution(
+                    result,
+                    quote_indices=quote_indices,
+                    known_role_ids=known_role_ids,
+                )
+                return result
+            except Exception as exc:
+                self._log_failure(
+                    "quote_attribution_validation_failed",
+                    chapter=chapter,
+                    prompt=prompt,
+                    quote_ids=quote_ids,
+                    payload=payload,
+                    exc=exc,
+                    details={
+                        "attempt": attempt,
+                        "repair_available": attempt < self.repair_retries,
+                    },
+                )
+                if attempt >= self.repair_retries:
+                    raise
+                prompt = render_quote_attribution_repair_prompt(prompt, payload, str(exc))
+                payload = self._complete_json(
+                    chapter=chapter,
+                    prompt=prompt,
+                    quote_ids=quote_ids,
+                    call_type="repair",
+                )
+
+        raise RuntimeError("unreachable quote attribution repair state")
+
+    def _complete_initial_payload(
+        self,
+        chapter: str,
+        prompt: str,
+        quote_ids: List[str],
+    ) -> Tuple[Any, str, int]:
+        try:
+            return (
+                self._complete_json(
+                    chapter=chapter,
+                    prompt=prompt,
+                    quote_ids=quote_ids,
+                    call_type="attribution",
+                ),
+                prompt,
+                0,
+            )
+        except AnnotationModelOutputError as exc:
+            raw_text = getattr(exc, "raw_text", None)
+            if self.repair_retries <= 0 or not raw_text:
+                raise
+            repair_prompt = render_quote_attribution_non_json_repair_prompt(prompt, raw_text, str(exc))
+            return (
+                self._complete_json(
+                    chapter=chapter,
+                    prompt=repair_prompt,
+                    quote_ids=quote_ids,
+                    call_type="repair_non_json",
+                ),
+                repair_prompt,
+                1,
+            )
+
+    def _complete_json(
+        self,
+        chapter: str,
+        prompt: str,
+        quote_ids: List[str],
+        call_type: str,
+    ) -> Any:
+        try:
+            return self.client.complete_json(SYSTEM_PROMPT, prompt)
+        except Exception as exc:
+            self._log_failure(
+                "quote_attribution_model_failed",
+                chapter=chapter,
+                prompt=prompt,
+                quote_ids=quote_ids,
+                payload=None,
+                exc=exc,
+                details={"call_type": call_type},
+            )
+            raise
+
+    def _log_failure(
+        self,
+        event_type: str,
+        chapter: str,
+        prompt: str,
+        quote_ids: List[str],
+        payload: Any,
+        exc: BaseException,
+        details: Dict[str, Any] | None = None,
+    ) -> None:
+        if self.failure_logger is None:
+            return
+        event_details = {
+            "chapter": chapter,
+            "quote_ids": quote_ids,
+            "system_prompt": SYSTEM_PROMPT,
+            "user_prompt": prompt,
+            "payload": payload,
+            "raw_model_text": getattr(exc, "raw_text", None),
+        }
+        if details:
+            event_details.update(details)
+        self.failure_logger.with_context(chapter=chapter).write_failure(event_type, event_details, exc=exc)
 
 
 def _compact_registry_with_role_ids(registry: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -173,11 +365,91 @@ def _compact_registry_with_role_ids(registry: Dict[str, Any]) -> List[Dict[str, 
     return compact
 
 
+def _bounded_prompt_text(text: str, limit: int = 12000) -> str:
+    if len(text) <= limit:
+        return text
+    head = text[: limit // 2]
+    tail = text[-(limit // 2) :]
+    return f"{head}\n\n[...truncated failed model response...]\n\n{tail}"
+
+
 def _registry_role_ids(registry: Dict[str, Any]) -> List[str]:
     characters = registry.get("characters", {})
     if not isinstance(characters, dict):
         return []
     return [str(record.get("role_id") or role_id) for role_id, record in characters.items() if isinstance(record, dict)]
+
+
+def _canonicalize_quote_attribution_result(result: QuoteAttributionResult) -> QuoteAttributionResult:
+    roles = list(result.roles)
+    for index, role in enumerate(roles):
+        normalized_role = normalize_name(role)
+        if normalized_role == normalize_name("narrator_quote"):
+            roles[index] = "Narrator"
+
+    local_ids = {
+        normalize_name(str(speaker.get("local_id", "")))
+        for speaker in result.local_speakers
+        if str(speaker.get("local_id", "")).strip()
+    }
+    dialogue_local_ids: Set[str] = set()
+    narrator_quote_local_ids: Set[str] = set()
+    for _quote_idx, role_idx, quote_type in result.quotes:
+        if role_idx < 0 or role_idx >= len(roles):
+            continue
+        normalized_role = normalize_name(roles[role_idx])
+        if normalized_role not in local_ids:
+            continue
+        if quote_type == "narrator_quote":
+            narrator_quote_local_ids.add(normalized_role)
+        else:
+            dialogue_local_ids.add(normalized_role)
+
+    redundant_narrator_quote_local_ids = narrator_quote_local_ids - dialogue_local_ids
+    local_speakers = [
+        speaker
+        for speaker in result.local_speakers
+        if normalize_name(str(speaker.get("local_id", ""))) not in redundant_narrator_quote_local_ids
+    ]
+
+    narrator_index = -1
+    quotes = []
+    for quote_idx, role_idx, quote_type in result.quotes:
+        if quote_type == "narrator_quote":
+            if narrator_index < 0:
+                narrator_index = _ensure_role_index(roles, "Narrator")
+            quotes.append((quote_idx, narrator_index, quote_type))
+        else:
+            quotes.append((quote_idx, role_idx, quote_type))
+    roles, quotes = _prune_unreferenced_roles(roles, quotes)
+    return QuoteAttributionResult(roles=roles, quotes=quotes, local_speakers=local_speakers)
+
+
+def _prune_unreferenced_roles(
+    roles: List[str],
+    quotes: List[Tuple[int, int, str]],
+) -> Tuple[List[str], List[Tuple[int, int, str]]]:
+    used_indices = {role_idx for _quote_idx, role_idx, _quote_type in quotes}
+    old_to_new: Dict[int, int] = {}
+    pruned_roles: List[str] = []
+    for old_index, role in enumerate(roles):
+        if old_index not in used_indices:
+            continue
+        old_to_new[old_index] = len(pruned_roles)
+        pruned_roles.append(role)
+    return pruned_roles, [
+        (quote_idx, old_to_new[role_idx], quote_type)
+        for quote_idx, role_idx, quote_type in quotes
+    ]
+
+
+def _ensure_role_index(roles: List[str], role: str) -> int:
+    normalized = normalize_name(role)
+    for index, candidate in enumerate(roles):
+        if normalize_name(candidate) == normalized:
+            return index
+    roles.append(role)
+    return len(roles) - 1
 
 
 def _compact_quote_row(row: Tuple[int, int, str]) -> List[Any]:

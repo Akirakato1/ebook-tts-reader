@@ -5,6 +5,10 @@ import pytest
 from ebook_tts_pipeline.epub_ingestion import EpubExtractResult
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
+from ebook_tts_pipeline.config import PipelineConfig
+from ebook_tts_pipeline.registry import RegistryManager, voice_profile_hash
+from ebook_tts_pipeline.tts.fake import FakeTtsAdapter
+from ebook_tts_pipeline.ui import controller as controller_module
 from ebook_tts_pipeline.ui.controller import ChapterStage, PrototypeUiController
 
 
@@ -24,12 +28,15 @@ class FakeRegistry:
         self.paths = paths
         self.calls = calls
 
-    def initialize_if_missing(self, book_title, book_slug):
+    def initialize_if_missing(self, book_title, book_slug, book_author=""):
         self.calls.append(("initialize", book_title, book_slug))
         if not self.paths.registry.exists():
+            book = {"title": book_title, "slug": book_slug}
+            if book_author:
+                book["author"] = book_author
             write_json_atomic(
                 self.paths.registry,
-                {"book": {"title": book_title, "slug": book_slug}, "characters": {}},
+                {"book": book, "characters": {}},
             )
 
     def load(self):
@@ -91,13 +98,48 @@ class FakePipeline:
         write_json_atomic(self.paths.tts_script(chapter), {"chapter": chapter, "jobs": []})
         self.paths.qwen_script(chapter).write_text("Narrator: Text.\n", encoding="utf-8")
 
-    def prepare_voices_for_annotation(self, annotation, chapter=None):
+    def prepare_voices_for_annotation(self, annotation, chapter=None, include_narrator=True):
         self.calls.append(("prepare_voices", chapter))
 
     def synthesize_chapter_from_tts_script(self, chapter):
         self.calls.append(("synthesize", chapter))
         self.paths.chapter_audio(chapter).parent.mkdir(parents=True, exist_ok=True)
         self.paths.chapter_audio(chapter).write_bytes(b"wav")
+
+
+class VoiceAssetPipeline:
+    def __init__(self, config) -> None:
+        self.paths = BookPaths(config.book_root)
+        self.registry = RegistryManager(self.paths)
+        self.tts_adapter = FakeTtsAdapter()
+
+    def _voice_path_for_record(self, role_id, record):
+        return self.paths.voice_qvp(role_id)
+
+
+class FakeProgressPipeline(FakePipeline):
+    def annotate_chapter(self, chapter, lock_registry=False):
+        self.calls.append(("annotate", chapter, lock_registry))
+        self.paths.annotation(chapter).parent.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(
+            self.paths.annotation(chapter),
+            {"schema": "quote_attribution_v1", "roles": [], "quotes": []},
+        )
+        return {"schema": "quote_attribution_v1", "roles": [], "quotes": []}
+
+    def build_read_along_units(self, chapter):
+        self.calls.append(("build_units", chapter))
+        self.paths.read_along_units(chapter).parent.mkdir(parents=True, exist_ok=True)
+        payload = {"chapter": chapter, "units": []}
+        write_json_atomic(self.paths.read_along_units(chapter), payload)
+        return payload["units"]
+
+
+class FailingChapterPipeline(FakeProgressPipeline):
+    def annotate_chapter(self, chapter, lock_registry=False):
+        if chapter == "chapter_002":
+            raise RuntimeError("model timed out")
+        return super().annotate_chapter(chapter, lock_registry=lock_registry)
 
 
 def fake_pipeline_factory(calls):
@@ -110,9 +152,26 @@ def fake_pipeline_factory(calls):
                 config.tts_speed,
                 config.pause_between_sentences_ms,
                 config.intra_sentence_pause_ms,
+                config.tts_backend,
             )
         )
         return FakePipeline(config, calls)
+
+    return factory
+
+
+def fake_progress_pipeline_factory(calls):
+    def factory(config, needs_llm, fake_tts):
+        calls.append(("factory", needs_llm, fake_tts, config.book_root))
+        return FakeProgressPipeline(config, calls)
+
+    return factory
+
+
+def failing_chapter_pipeline_factory(calls):
+    def factory(config, needs_llm, fake_tts):
+        calls.append(("factory", needs_llm, fake_tts, config.book_root))
+        return FailingChapterPipeline(config, calls)
 
     return factory
 
@@ -184,7 +243,7 @@ def test_controller_saves_tts_settings_and_applies_them_to_pipeline_config(tmp_p
         "pause_between_sentences_ms": 150,
         "intra_sentence_pause_ms": 35,
     }
-    assert ("factory", True, True, 1.25, 150, 35) in calls
+    assert ("factory", True, True, 1.25, 150, 35, "native") in calls
 
 
 def test_controller_registry_forms_expose_only_safe_editable_fields(tmp_path):
@@ -346,6 +405,149 @@ def test_controller_saves_registry_form_values_and_refreshes_voice_profile(tmp_p
     assert "voice_variants" not in character
     assert "teen female" in character["voice_profile"]["qwen_instruct"]
     assert character.get("voice_config_hash") is None
+
+
+def test_controller_registry_review_payload_excludes_narrator_and_detects_race_accent_options(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    write_json_atomic(
+        paths.registry,
+        {
+            "book": {"title": "Demo", "slug": "demo"},
+            "narrator": {
+                "role_id": "narrator",
+                "display_name": "Narrator",
+                "voice_config_path": "voices/narrator.qvp",
+                "voice_config_hash": "narrator-hash",
+                "voice_profile": {"description": "male narrator", "qwen_instruct": "male narrator"},
+            },
+            "characters": {
+                "callie_adult": {
+                    "role_id": "callie_adult",
+                    "profile_id": "callie_adult",
+                    "person_id": "callie",
+                    "display_name": "Callie",
+                    "age_stage": "adult",
+                    "aliases": ["Callie adult"],
+                    "voice_config_path": "voices/callie_adult.qvp",
+                    "voice_config_hash": "character-hash",
+                    "identity_profile": {
+                        "age_stage": "adult",
+                        "gender": "female",
+                        "personality": ["guarded"],
+                        "race_or_ethnicity": "Japanese",
+                        "accent": "Tokyo",
+                        "occupation": "lawyer",
+                    },
+                    "voice_identity": {"seed": 123, "differentiators": ["darker timbre"]},
+                    "voice_profile": {"description": "adult female", "qwen_instruct": "adult female"},
+                }
+            },
+        },
+    )
+    paths.annotation("chapter_001").parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {
+            "schema": "quote_attribution_v1",
+            "roles": ["Security Guard", "Visitor"],
+            "quotes": [[0, 0], [1, 1]],
+            "local_speakers": [
+                {
+                    "local_id": "tmp_001",
+                    "label": "Security Guard",
+                    "profile": {
+                        "age_stage": "adult",
+                        "gender": "male",
+                        "race_or_ethnicity": "Brazilian",
+                        "accent": "Rio",
+                    },
+                }
+            ],
+            "proposed_new_characters": [
+                {
+                    "name": "Visitor",
+                    "profile": {
+                        "age_stage": "adult",
+                        "gender": "female",
+                        "race_or_ethnicity": "Nigerian",
+                        "accent": "Lagos",
+                    },
+                }
+            ],
+        },
+    )
+    controller = PrototypeUiController(book_root=paths.root)
+
+    payload = controller.registry_review_payload()
+
+    assert payload["book"] == {"title": "Demo", "slug": "demo"}
+    assert [entry["role_id"] for entry in payload["entries"]] == ["callie_adult"]
+    callie = payload["entries"][0]
+    assert callie["kind"] == "character"
+    assert callie["editable"] is True
+    assert callie["fields"]["display_name"] == "Callie"
+    assert callie["fields"]["race_or_ethnicity"] == "Japanese"
+    assert callie["fields"]["accent"] == "Tokyo"
+    assert callie["voice_config_path"] == "voices/callie_adult.qvp"
+    assert "voice_config_hash" not in callie
+    assert "qwen_instruct" not in callie
+    assert "seed" not in callie
+    assert "Tokyo" in payload["accent_options"]
+    assert "Rio" in payload["accent_options"]
+    assert "Lagos" in payload["accent_options"]
+    assert "Japanese" in payload["race_or_ethnicity_options"]
+    assert "Brazilian" in payload["race_or_ethnicity_options"]
+    assert "Nigerian" in payload["race_or_ethnicity_options"]
+
+
+def test_controller_generates_registry_voice_sample_with_voice_asset_backend(tmp_path, monkeypatch):
+    paths = BookPaths(tmp_path / "book")
+    write_json_atomic(
+        paths.registry,
+        {
+            "book": {"title": "Demo", "slug": "demo"},
+            "narrator": {
+                "role_id": "narrator",
+                "display_name": "Narrator",
+                "voice_profile": {"description": "male narrator", "qwen_instruct": "male narrator"},
+                "voice_config_path": None,
+            },
+            "characters": {
+                "leigh_adult": {
+                    "role_id": "leigh_adult",
+                    "profile_id": "leigh_adult",
+                    "person_id": "leigh",
+                    "display_name": "Leigh",
+                    "age_stage": "adult",
+                    "aliases": [],
+                    "identity_profile": {"age_stage": "adult", "gender": "female", "personality": ["direct"]},
+                    "voice_identity": {"seed": 3, "differentiators": []},
+                    "voice_profile": {"description": "adult female", "qwen_instruct": "adult female"},
+                    "voice_config_path": None,
+                }
+            },
+        },
+    )
+    captured = []
+
+    def factory(config, needs_llm, fake_tts):
+        captured.append((config.tts_backend, needs_llm, fake_tts))
+        return VoiceAssetPipeline(config)
+
+    monkeypatch.setenv("EBOOK_TTS_BACKEND", "wsl-vllm-omni")
+    monkeypatch.delenv("EBOOK_TTS_VOICE_ASSET_BACKEND", raising=False)
+    controller = PrototypeUiController(book_root=paths.root, pipeline_factory=factory)
+
+    sample = controller.generate_registry_voice_sample("leigh_adult")
+
+    assert captured == [("wsl", False, False)]
+    assert sample["role_id"] == "leigh_adult"
+    assert sample["sample_url"] == "/api/registry/sample/leigh_adult.wav"
+    sample_path = paths.root / sample["sample_path"]
+    assert sample_path.read_bytes()[:4] == b"RIFF"
+    registry = read_json(paths.registry)
+    assert registry["characters"]["leigh_adult"]["voice_config_path"] == "voices/leigh_adult.qvp"
+    assert registry["characters"]["leigh_adult"]["voice_config_hash"]
 
 
 def test_controller_annotation_review_uses_registry_age_stage_options(tmp_path):
@@ -791,3 +993,732 @@ def test_controller_builds_global_registry_initializes_missing_registry(tmp_path
     assert ("build_global_registry", "Demo") in calls
     assert read_json(paths.registry)["book"] == {"title": "Demo", "slug": "demo"}
     assert read_json(paths.registry)["characters"]["akari_adult"]["display_name"] == "Akari"
+
+
+def test_controller_builds_read_along_units_from_quote_annotation(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text('Leigh said, "Right."', encoding="utf-8")
+    _write_callie_registry(paths)
+    registry = read_json(paths.registry)
+    registry["narrator"]["voice_config_path"] = "voices/narrator.qvp"
+    registry["narrator"]["voice_profile"] = {"description": "male narrator", "qwen_instruct": "male narrator"}
+    registry["characters"]["leigh_adult"] = {
+        "role_id": "leigh_adult",
+        "profile_id": "leigh_adult",
+        "person_id": "leigh",
+        "display_name": "Leigh",
+        "age_stage": "adult",
+        "aliases": [],
+        "voice_config_path": "voices/leigh_adult.qvp",
+        "identity_profile": {"age_stage": "adult", "gender": "female", "personality": []},
+        "voice_identity": {"seed": 3, "differentiators": []},
+        "voice_profile": {"description": "adult female", "qwen_instruct": "adult female"},
+    }
+    write_json_atomic(paths.registry, registry)
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {"schema": "quote_attribution_v1", "roles": ["leigh_adult"], "quotes": [[1, 0]]},
+    )
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+
+    units = controller.build_read_along_units("chapter_001")
+
+    assert paths.read_along_units("chapter_001").exists()
+    assert any(unit["role_id"] == "leigh_adult" for unit in units)
+    assert any(unit["role_id"] == "narrator" for unit in units)
+
+
+def test_controller_prepare_read_along_voices_prepares_global_only_and_defers_local_temp_speakers(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text('Narration. "Stop there," the guard said.', encoding="utf-8")
+    write_json_atomic(
+        paths.registry,
+        {
+            "book": {"title": "Demo", "slug": "demo"},
+            "narrator": {
+                "role_id": "narrator",
+                "display_name": "Narrator",
+                "voice_profile": {"description": "male narrator", "qwen_instruct": "male narrator"},
+                "voice_config_path": None,
+            },
+            "characters": {
+                "leigh_adult": {
+                    "role_id": "leigh_adult",
+                    "profile_id": "leigh_adult",
+                    "person_id": "leigh",
+                    "display_name": "Leigh",
+                    "age_stage": "adult",
+                    "aliases": [],
+                    "identity_profile": {"age_stage": "adult", "gender": "female", "personality": ["direct"]},
+                    "voice_identity": {"seed": 2, "differentiators": []},
+                    "voice_profile": {"description": "adult female", "qwen_instruct": "adult female"},
+                    "voice_config_path": None,
+                }
+            },
+        },
+    )
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {
+            "schema": "quote_attribution_v1",
+            "roles": ["Security Guard"],
+            "quotes": [[1, 0]],
+            "local_speakers": [
+                {
+                    "local_id": "tmp_001",
+                    "label": "Security Guard",
+                    "profile": {
+                        "age_stage": "adult",
+                        "gender": "male",
+                        "personality": ["authoritative"],
+                        "occupation": "security guard",
+                    },
+                }
+            ],
+        },
+    )
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+
+    result = controller.prepare_read_along_voices()
+
+    assert result["chapters"] == 1
+    assert result["voices_ready"] is True
+    assert not paths.voice_qvp("narrator").exists()
+    assert not (paths.root / "voices" / "_temp" / "chapter_001" / "tmp_001.qvp").exists()
+    assert (paths.root / "voices" / "_samples" / "leigh_adult.wav").exists()
+    units = read_json(paths.read_along_units("chapter_001"))["units"]
+    assert any(unit["voice_config_path"] == "voices/_temp/chapter_001/tmp_001.qvp" for unit in units)
+    assert any(unit["role_id"] == "narrator" and unit["voice_config_path"] is None for unit in units)
+
+
+def test_controller_read_along_session_generates_local_temp_voice_at_session_start(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text('Narration. "Stop there," the guard said.', encoding="utf-8")
+    write_json_atomic(
+        paths.registry,
+        {
+            "book": {"title": "Demo", "slug": "demo"},
+            "narrator": {
+                "role_id": "narrator",
+                "display_name": "Narrator",
+                "voice_profile": {"description": "male narrator", "qwen_instruct": "male narrator"},
+                "voice_config_path": None,
+            },
+            "characters": {
+                "leigh_adult": {
+                    "role_id": "leigh_adult",
+                    "profile_id": "leigh_adult",
+                    "person_id": "leigh",
+                    "display_name": "Leigh",
+                    "age_stage": "adult",
+                    "aliases": [],
+                    "identity_profile": {"age_stage": "adult", "gender": "female", "personality": ["direct"]},
+                    "voice_identity": {"seed": 2, "differentiators": []},
+                    "voice_profile": {"description": "adult female", "qwen_instruct": "adult female"},
+                    "voice_config_path": None,
+                }
+            },
+        },
+    )
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {
+            "schema": "quote_attribution_v1",
+            "roles": ["Security Guard"],
+            "quotes": [[1, 0]],
+            "local_speakers": [
+                {
+                    "local_id": "tmp_001",
+                    "label": "Security Guard",
+                    "profile": {
+                        "age_stage": "adult",
+                        "gender": "male",
+                        "personality": ["authoritative"],
+                        "occupation": "security guard",
+                    },
+                }
+            ],
+        },
+    )
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+    controller.prepare_read_along_voices()
+    units = controller.read_along_units("chapter_001")
+    temp_path = paths.root / "voices" / "_temp" / "chapter_001" / "tmp_001.qvp"
+    if temp_path.exists():
+        temp_path.unlink()
+
+    session = controller.create_read_along_session(
+        "chapter_001",
+        units,
+        {
+            "playback_speed": 1.0,
+            "generation_mode": "balanced",
+            "buffer_limit": 2,
+            "target_buffer_seconds": 20,
+            "start_buffer_seconds": 20,
+            "max_buffer_seconds": 40,
+            "max_buffer_units": 32,
+            "narrator_voice_type": "male",
+        },
+    )
+
+    assert temp_path.exists()
+    patched_temp = [unit for unit in session.units if unit.role_id == "chapter_001_tmp_001"][0]
+    assert patched_temp.voice_config_path == "voices/_temp/chapter_001/tmp_001.qvp"
+    session.end()
+
+
+def test_controller_annotate_read_along_book_reports_per_chapter_progress(tmp_path):
+    calls = []
+    paths = BookPaths(tmp_path / "book")
+    for chapter in ["chapter_001", "chapter_002"]:
+        paths.chapter_text(chapter).parent.mkdir(parents=True, exist_ok=True)
+        paths.chapter_text(chapter).write_text(f"{chapter} text.", encoding="utf-8")
+        paths.sentence_artifact(chapter).parent.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(
+            paths.sentence_artifact(chapter),
+            {
+                "chapter": chapter,
+                "source_path": f"chapters/{chapter}.txt",
+                "segmenter": {"name": "test"},
+                "sentences": [{"idx": 0, "text": f"{chapter} text."}],
+            },
+        )
+    write_json_atomic(
+        paths.root / "toc.json",
+        {
+            "chapters": [
+                {"index": 1, "chapter": "chapter_001", "title": "One", "source": "chapter_001.txt"},
+                {"index": 2, "chapter": "chapter_002", "title": "Two", "source": "chapter_002.txt"},
+            ]
+        },
+    )
+    write_json_atomic(paths.registry, {"book": {"title": "Demo", "slug": "demo"}, "characters": {}})
+    progress = []
+    controller = PrototypeUiController(
+        book_root=paths.root,
+        pipeline_factory=fake_progress_pipeline_factory(calls),
+        fake_tts=True,
+    )
+
+    result = controller.annotate_read_along_book(progress_callback=progress.append)
+
+    assert result == {"chapters": 2, "annotated": 2, "units_built": 2}
+    assert progress == [
+        {"chapter": "chapter_001", "index": 1, "total": 2, "status": "started"},
+        {"chapter": "chapter_001", "index": 1, "total": 2, "status": "completed"},
+        {"chapter": "chapter_002", "index": 2, "total": 2, "status": "started"},
+        {"chapter": "chapter_002", "index": 2, "total": 2, "status": "completed"},
+    ]
+    progress_file = read_json(paths.root / "read_along" / "annotation_progress.json")
+    assert progress_file["status"] == "completed"
+    assert progress_file["completed"] == 2
+    assert progress_file["total"] == 2
+
+
+def test_controller_annotate_read_along_book_reports_failed_chapter(tmp_path):
+    calls = []
+    paths = BookPaths(tmp_path / "book")
+    for chapter in ["chapter_001", "chapter_002"]:
+        paths.chapter_text(chapter).parent.mkdir(parents=True, exist_ok=True)
+        paths.chapter_text(chapter).write_text(f"{chapter} text.", encoding="utf-8")
+        paths.sentence_artifact(chapter).parent.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(
+            paths.sentence_artifact(chapter),
+            {
+                "chapter": chapter,
+                "source_path": f"chapters/{chapter}.txt",
+                "segmenter": {"name": "test"},
+                "sentences": [{"idx": 0, "text": f"{chapter} text."}],
+            },
+        )
+    write_json_atomic(
+        paths.root / "toc.json",
+        {
+            "chapters": [
+                {"index": 1, "chapter": "chapter_001", "title": "One", "source": "chapter_001.txt"},
+                {"index": 2, "chapter": "chapter_002", "title": "Two", "source": "chapter_002.txt"},
+            ]
+        },
+    )
+    write_json_atomic(paths.registry, {"book": {"title": "Demo", "slug": "demo"}, "characters": {}})
+    progress = []
+    controller = PrototypeUiController(
+        book_root=paths.root,
+        pipeline_factory=failing_chapter_pipeline_factory(calls),
+        fake_tts=True,
+    )
+
+    with pytest.raises(RuntimeError, match="Annotation failed at chapter_002: model timed out"):
+        controller.annotate_read_along_book(progress_callback=progress.append)
+
+    assert progress[-1] == {
+        "chapter": "chapter_002",
+        "index": 2,
+        "total": 2,
+        "status": "failed",
+        "error": "model timed out",
+    }
+    progress_file = read_json(paths.root / "read_along" / "annotation_progress.json")
+    assert progress_file["status"] == "failed"
+    assert progress_file["failed_chapter"] == "chapter_002"
+    assert progress_file["error"] == "model timed out"
+
+
+def test_read_along_session_requires_prepared_voice_paths(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text('Leigh said, "Right."', encoding="utf-8")
+    _write_callie_registry(paths)
+    registry = read_json(paths.registry)
+    registry["narrator"]["voice_profile"] = {
+        "description": "adult male narrator",
+        "qwen_instruct": "adult male narrator",
+    }
+    registry["characters"]["leigh_adult"] = {
+        "role_id": "leigh_adult",
+        "profile_id": "leigh_adult",
+        "person_id": "leigh",
+        "display_name": "Leigh",
+        "age_stage": "adult",
+        "aliases": [],
+        "identity_profile": {"age_stage": "adult", "gender": "female", "personality": []},
+        "voice_identity": {"seed": 3, "differentiators": []},
+        "voice_profile": {"description": "adult female", "qwen_instruct": "adult female"},
+        "voice_config_path": None,
+    }
+    write_json_atomic(paths.registry, registry)
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {"schema": "quote_attribution_v1", "roles": ["leigh_adult"], "quotes": [[1, 0]]},
+    )
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+    units = controller.build_read_along_units("chapter_001")
+
+    with pytest.raises(ValueError, match="Prepare Voices"):
+        controller.create_read_along_session(
+            "chapter_001",
+            units,
+            {
+                "playback_speed": 1.0,
+                "generation_mode": "balanced",
+                "buffer_limit": 2,
+                "target_buffer_seconds": 20,
+                "start_buffer_seconds": 20,
+                "max_buffer_seconds": 40,
+                "max_buffer_units": 32,
+                "narrator_voice_type": "current",
+            },
+        )
+
+
+def test_controller_read_along_session_uses_prepared_voices_before_buffering(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text('Leigh said, "Right."', encoding="utf-8")
+    _write_callie_registry(paths)
+    registry = read_json(paths.registry)
+    registry["narrator"]["voice_profile"] = {
+        "description": "adult male narrator",
+        "qwen_instruct": "adult male narrator",
+    }
+    registry["characters"]["leigh_adult"] = {
+        "role_id": "leigh_adult",
+        "profile_id": "leigh_adult",
+        "person_id": "leigh",
+        "display_name": "Leigh",
+        "age_stage": "adult",
+        "aliases": [],
+        "identity_profile": {"age_stage": "adult", "gender": "female", "personality": []},
+        "voice_identity": {"seed": 3, "differentiators": []},
+        "voice_profile": {"description": "adult female", "qwen_instruct": "adult female"},
+    }
+    write_json_atomic(paths.registry, registry)
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+    controller.save_read_along_settings(
+        {
+            "playback_speed": 1.0,
+            "generation_mode": "balanced",
+            "buffer_limit": 2,
+            "target_buffer_seconds": 20,
+            "start_buffer_seconds": 20,
+            "max_buffer_seconds": 40,
+            "max_buffer_units": 32,
+            "narrator_voice_type": "female",
+        }
+    )
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {"schema": "quote_attribution_v1", "roles": ["leigh_adult"], "quotes": [[1, 0]]},
+    )
+    controller.prepare_read_along_voices()
+    units = controller.read_along_units("chapter_001")
+
+    session = controller.create_read_along_session(
+        "chapter_001",
+        units,
+        {
+            "playback_speed": 1.0,
+            "generation_mode": "balanced",
+            "buffer_limit": 2,
+            "target_buffer_seconds": 20,
+            "start_buffer_seconds": 20,
+            "max_buffer_seconds": 40,
+            "max_buffer_units": 32,
+            "narrator_voice_type": "female",
+        },
+    )
+    buffered = session.fill_buffer(start_unit_id=0)
+
+    reloaded = read_json(paths.registry)
+    assert "adult female" in reloaded["narrator"]["voice_profile"]["description"]
+    assert paths.voice_qvp("narrator").exists()
+    assert paths.voice_qvp("leigh_adult").exists()
+    assert not (paths.root / "voices" / "_session" / session.session_id / "functional_narrator.qvp").exists()
+    assert len(buffered) == 2
+    session.end()
+
+
+def test_controller_regenerates_narrator_voice_when_session_voice_type_changes(tmp_path, monkeypatch):
+    paths = BookPaths(tmp_path / "book")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text("Leigh waited.", encoding="utf-8")
+    male_profile = {"description": "adult male narrator", "qwen_instruct": "adult male narrator"}
+    narrator = {
+        "role_id": "narrator",
+        "display_name": "Narrator",
+        "voice_profile": male_profile,
+        "voice_identity": {"seed": 1, "differentiators": []},
+        "voice_config_path": "voices/narrator.qvp",
+    }
+    narrator["voice_config_hash"] = voice_profile_hash(narrator)
+    write_json_atomic(
+        paths.registry,
+        {
+            "book": {"title": "Demo", "slug": "demo"},
+            "narrator": narrator,
+            "characters": {},
+        },
+    )
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {"schema": "quote_attribution_v1", "roles": [], "quotes": []},
+    )
+    paths.voice_qvp("narrator").parent.mkdir(parents=True, exist_ok=True)
+    paths.voice_qvp("narrator").write_bytes(b"old male narrator qvp")
+    calls = []
+    original_ensure_voice = FakeTtsAdapter.ensure_voice
+
+    def recording_ensure_voice(self, role_id, voice_record, voice_path):
+        calls.append((role_id, dict(voice_record), Path(voice_path)))
+        return original_ensure_voice(self, role_id, voice_record, voice_path)
+
+    monkeypatch.setattr(FakeTtsAdapter, "ensure_voice", recording_ensure_voice)
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+    units = controller.build_read_along_units("chapter_001")
+
+    session = controller.create_read_along_session(
+        "chapter_001",
+        units,
+        {
+            "playback_speed": 1.0,
+            "generation_mode": "balanced",
+            "buffer_limit": 2,
+            "target_buffer_seconds": 20,
+            "start_buffer_seconds": 20,
+            "max_buffer_seconds": 40,
+            "max_buffer_units": 32,
+            "narrator_voice_type": "female",
+        },
+    )
+
+    narrator_calls = [call for call in calls if call[0] == "narrator"]
+    assert narrator_calls
+    assert narrator_calls[-1][1]["_force_regenerate"] is True
+    assert "adult female" in narrator_calls[-1][1]["voice_profile"]["description"]
+    reloaded = read_json(paths.registry)
+    assert "adult female" in reloaded["narrator"]["voice_profile"]["description"]
+    assert reloaded["narrator"]["voice_config_hash"] == voice_profile_hash(reloaded["narrator"])
+    session.end()
+
+
+def test_controller_read_along_session_generates_functional_narrator_voice_at_session_start(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text('The phone said, "Please hang up."', encoding="utf-8")
+    write_json_atomic(
+        paths.registry,
+        {
+            "book": {"title": "Demo", "slug": "demo"},
+            "narrator": {
+                "role_id": "narrator",
+                "display_name": "Narrator",
+                "voice_profile": {"description": "adult male narrator", "qwen_instruct": "adult male narrator"},
+                "voice_config_path": None,
+            },
+            "characters": {
+                "leigh_adult": {
+                    "role_id": "leigh_adult",
+                    "profile_id": "leigh_adult",
+                    "person_id": "leigh",
+                    "display_name": "Leigh",
+                    "age_stage": "adult",
+                    "aliases": [],
+                    "identity_profile": {"age_stage": "adult", "gender": "female", "personality": []},
+                    "voice_identity": {"seed": 3, "differentiators": []},
+                    "voice_profile": {"description": "adult female", "qwen_instruct": "adult female"},
+                    "voice_config_path": "voices/leigh_adult.qvp",
+                }
+            },
+        },
+    )
+    (paths.root / "voices").mkdir(parents=True, exist_ok=True)
+    (paths.root / "voices" / "leigh_adult.qvp").write_bytes(b"voice")
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {"schema": "quote_attribution_v1", "roles": ["leigh_adult"], "quotes": [[1, 0, "narrator_quote"]]},
+    )
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+
+    units = controller.build_read_along_units("chapter_001")
+    quote_unit = [unit for unit in units if unit["quote_id"] == "q001"][0]
+    assert quote_unit["role_id"] == "functional_narrator"
+    assert quote_unit["voice_variant"] == "functional_narrator"
+    assert quote_unit["voice_config_path"] is None
+
+    session = controller.create_read_along_session(
+        "chapter_001",
+        units,
+        {
+            "playback_speed": 1.0,
+            "generation_mode": "balanced",
+            "buffer_limit": 2,
+            "target_buffer_seconds": 20,
+            "start_buffer_seconds": 20,
+            "max_buffer_seconds": 40,
+            "max_buffer_units": 32,
+            "narrator_voice_type": "female",
+        },
+    )
+
+    functional_path = paths.root / "voices" / "_session" / session.session_id / "functional_narrator.qvp"
+    assert paths.voice_qvp("narrator").exists()
+    assert functional_path.exists()
+    patched_quote = [unit for unit in session.units if unit.quote_id == "q001"][0]
+    assert patched_quote.role_id == "functional_narrator"
+    assert patched_quote.voice_config_path == functional_path.relative_to(paths.root).as_posix()
+    reloaded = read_json(paths.registry)
+    assert "adult female" in reloaded["narrator"]["voice_profile"]["description"]
+    session.end()
+
+
+def test_controller_saves_read_along_settings_with_narrator_voice_type(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+
+    controller.save_read_along_settings(
+        {
+            "playback_speed": "1.25",
+            "generation_mode": "fast",
+            "buffer_limit": "2",
+            "narrator_voice_type": "female",
+        }
+    )
+
+    settings = controller.read_along_settings()
+    assert settings["playback_speed"] == 1.25
+    assert settings["generation_mode"] == "fast"
+    assert settings["buffer_limit"] == 2
+    assert settings["narrator_voice_type"] == "female"
+
+
+def test_controller_read_along_defaults_are_safe_for_vllm_omni_profile(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+
+    settings = controller.read_along_settings()
+
+    assert settings["playback_speed"] == 1.0
+    assert settings["generation_mode"] == "balanced"
+    assert settings["buffer_limit"] == 2
+    assert settings["target_buffer_seconds"] == 20.0
+    assert settings["start_buffer_seconds"] == 20.0
+    assert settings["max_buffer_seconds"] == 40.0
+    assert settings["max_buffer_units"] == 32
+
+
+def test_controller_read_along_settings_clamp_speed_to_supported_range(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+
+    controller.save_read_along_settings(
+        {
+            "playback_speed": "5.5",
+            "generation_mode": "fast",
+            "buffer_limit": "2",
+            "target_buffer_seconds": "20",
+            "start_buffer_seconds": "20",
+            "max_buffer_seconds": "40",
+            "max_buffer_units": "32",
+            "narrator_voice_type": "female",
+        }
+    )
+
+    settings = controller.read_along_settings()
+    assert settings["playback_speed"] == 4.0
+
+
+def test_controller_read_along_pipeline_uses_vllm_omni_backend_by_default(tmp_path):
+    calls = []
+    paths = BookPaths(tmp_path / "book")
+    controller = PrototypeUiController(
+        book_root=paths.root,
+        pipeline_factory=fake_pipeline_factory(calls),
+        fake_tts=False,
+    )
+
+    controller._pipeline(needs_llm=False, read_along=True)
+
+    assert any(call[0] == "factory" and call[6] == "wsl-vllm-omni" for call in calls)
+
+
+def test_controller_resolves_default_vllm_omni_model_to_local_qwen_folder(tmp_path):
+    model_root = tmp_path / "models" / "qwen-tts"
+    base_model = model_root / "Qwen3-TTS-12Hz-1.7B-Base"
+    base_model.mkdir(parents=True)
+    config = PipelineConfig(book_root=str(tmp_path / "book"), qwen_model_root=str(model_root))
+
+    resolved = controller_module._resolve_vllm_omni_model(config)
+
+    assert resolved == base_model
+
+
+def test_controller_resolves_relative_vllm_omni_model_to_absolute_local_folder(tmp_path, monkeypatch):
+    model_root = tmp_path / "models" / "qwen-tts"
+    base_model = model_root / "Qwen3-TTS-12Hz-1.7B-Base"
+    base_model.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    config = PipelineConfig(book_root="book", qwen_model_root="models/qwen-tts")
+
+    resolved = controller_module._resolve_vllm_omni_model(config)
+
+    assert resolved == base_model.resolve()
+
+
+def test_controller_wsl_voice_asset_adapter_receives_absolute_model_root(tmp_path, monkeypatch, capsys):
+    captured = {}
+
+    class DummyWslAdapter:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(controller_module, "WslQwenWorkerAdapter", DummyWslAdapter)
+    config = PipelineConfig(
+        book_root=str(tmp_path / "book"),
+        tts_backend="wsl",
+        qwen_model_root="models/qwen-tts",
+    )
+
+    controller_module._build_qwen_adapter(config)
+
+    assert Path(captured["model_root"]).is_absolute()
+    output = capsys.readouterr().out
+    assert "[ebook-tts] build_tts_adapter" in output
+    assert "backend=wsl" in output
+    assert str(captured["model_root"]) in output
+
+
+def test_controller_vllm_adapter_receives_absolute_voice_model_root(tmp_path, monkeypatch, capsys):
+    captured = {}
+
+    class DummyVllmAdapter:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(controller_module, "WslVllmOmniQwenAdapter", DummyVllmAdapter)
+    config = PipelineConfig(
+        book_root=str(tmp_path / "book"),
+        tts_backend="wsl-vllm-omni",
+        qwen_model_root="models/qwen-tts",
+    )
+
+    controller_module._build_qwen_adapter(config)
+
+    assert Path(captured["voice_model_root"]).is_absolute()
+    output = capsys.readouterr().out
+    assert "[ebook-tts] build_tts_adapter" in output
+    assert "backend=wsl-vllm-omni" in output
+    assert str(captured["voice_model_root"]) in output
+
+
+def test_default_pipeline_factory_delays_qwen_adapter_until_tts_use(tmp_path, monkeypatch):
+    calls = []
+
+    class DummyAdapter:
+        def ensure_voice(self, role_id, voice_record, voice_path):
+            calls.append(("ensure_voice", role_id))
+            return voice_path
+
+        def generate_sentence_batches(self, jobs):
+            calls.append(("generate_sentence_batches", len(jobs)))
+            yield []
+
+        def generate_sentences(self, jobs):
+            calls.append(("generate_sentences", len(jobs)))
+            return []
+
+        def close(self):
+            calls.append(("close",))
+
+    def build_adapter(config):
+        calls.append(("build_adapter", config.tts_backend))
+        return DummyAdapter()
+
+    monkeypatch.setattr(controller_module, "_build_qwen_adapter", build_adapter)
+    config = PipelineConfig(book_root=str(tmp_path / "book"))
+
+    pipeline = controller_module._default_pipeline_factory(config, needs_llm=False, fake_tts=False)
+
+    assert calls == []
+    assert pipeline.tts_adapter.generate_sentences([]) == []
+    assert calls == [("build_adapter", "native"), ("generate_sentences", 0)]
+    pipeline.tts_adapter.close()
+    assert calls == [("build_adapter", "native"), ("generate_sentences", 0), ("close",)]
+
+
+def test_controller_saves_read_along_time_buffer_settings(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+
+    controller.save_read_along_settings(
+        {
+            "playback_speed": "1.25",
+            "generation_mode": "fast",
+            "buffer_limit": "2",
+            "target_buffer_seconds": "12.5",
+            "start_buffer_seconds": "4",
+            "max_buffer_seconds": "20",
+            "max_buffer_units": "9",
+            "narrator_voice_type": "female",
+        }
+    )
+
+    settings = controller.read_along_settings()
+    assert settings["playback_speed"] == 1.25
+    assert settings["generation_mode"] == "fast"
+    assert settings["buffer_limit"] == 2
+    assert settings["target_buffer_seconds"] == 12.5
+    assert settings["start_buffer_seconds"] == 4.0
+    assert settings["max_buffer_seconds"] == 20.0
+    assert settings["max_buffer_units"] == 9
+    assert settings["narrator_voice_type"] == "female"

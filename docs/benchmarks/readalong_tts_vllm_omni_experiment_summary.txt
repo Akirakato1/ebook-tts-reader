@@ -1,0 +1,128 @@
+Read-Along TTS Experiment Summary
+Date: 2026-06-23
+
+Goal
+Find a read-along TTS configuration that can generate Qwen3-TTS audio faster than playback while keeping VRAM safely below the 16 GB GPU cap. The read-along app needs stable per-sentence/per-quote highlighting, a short initial buffer, and enough speed headroom for user playback rates above 1.0x.
+
+Important conclusion
+The old assumption that character count alone was the main VRAM bottleneck was wrong. The stable performance lever was the vLLM-Omni runtime profile: stage memory reservation, max sequence concurrency, and CUDA graph capture sizes. Lowering the text/model length by itself barely reduced VRAM.
+
+Stack that worked
+- WSL Ubuntu 24.04
+- Python venv: /opt/ebook-vllm-omni-venv/bin/python
+- Backend: vLLM-Omni
+- Model: Qwen/Qwen3-TTS-12Hz-1.7B-Base
+- Attention path observed in logs: FlashAttention 2
+- Read-along profile: scripts/vllm_omni_qwen3_tts_16gb_len8192_seq2_s0util026.yaml
+- Stage 0: max_num_seqs 2, max_model_len 4096, gpu_memory_utilization 0.26, CUDA graph sizes [1, 2]
+- Stage 1: max_num_seqs 2, max_model_len 8192, gpu_memory_utilization 0.18, CUDA graph sizes [1, 2]
+- Time buffer default: 20 seconds
+- Playback speed UI range: 1.0x to 4.0x
+
+Why this stack works
+vLLM-Omni keeps the two Qwen3-TTS stages resident instead of reloading the model per request. It also uses FlashAttention and CUDA graph capture for the small batch sizes read-along needs. The measured stable profile reduced concurrency from seq4 to seq2, which saved several GB of VRAM while still generating much faster than playback.
+
+Experiment log files
+- test false witness real tts chapter 15/logs/vllm_omni_window_sweep_chapter_015_baseline_len65536_seq4_quick.json
+- test false witness real tts chapter 15/logs/vllm_omni_window_sweep_chapter_015_len32768_seq4_quick.json
+- test false witness real tts chapter 15/logs/vllm_omni_window_sweep_chapter_015_len16384_seq4_quick.json
+- test false witness real tts chapter 15/logs/vllm_omni_window_sweep_chapter_015_len8192_seq4_quick.json
+- test false witness real tts chapter 15/logs/vllm_omni_window_sweep_chapter_015_len8192_seq2_quick.json
+- test false witness real tts chapter 15/logs/vllm_omni_window_sweep_chapter_015_len8192_seq2_s0util026_quick.json
+- test false witness real tts chapter 15/logs/vllm_omni_window_sweep_chapter_015_len8192_seq2_s0util026_confirm.json
+
+Measured VRAM and speed
+All rows below used Chapter 15 read-along units from False Witness. Playback speed for the benchmark was 1.0x. The final row in each sweep was a 764-character, 137-word, 10-unit mixed-role window.
+
+baseline seq4 len65536:
+- Peak VRAM: 14.206 GB
+- Init VRAM: 14.144 GB
+- 764-char generation time: 4.971 s
+- Playback time: 43.440 s
+- RTF: 0.114
+- Smooth speed ceiling: 8.74x
+
+seq4 len32768:
+- Peak VRAM: 14.121 GB
+- Init VRAM: 14.049 GB
+- 764-char generation time: 4.863 s
+- Playback time: 43.440 s
+- RTF: 0.112
+- Smooth speed ceiling: 8.93x
+
+seq4 len16384:
+- Peak VRAM: 14.264 GB
+- Init VRAM: 13.999 GB
+- 764-char generation time: 5.173 s
+- Playback time: 45.440 s
+- RTF: 0.114
+- Smooth speed ceiling: 8.78x
+
+seq4 len8192:
+- Peak VRAM: 14.354 GB
+- Init VRAM: 13.979 GB
+- 764-char generation time: 5.139 s
+- Playback time: 45.440 s
+- RTF: 0.113
+- Smooth speed ceiling: 8.84x
+
+seq2 len8192, Stage 0 util 0.18:
+- Peak VRAM from the quick run: 10.672 GB
+- Init VRAM from the quick run: 10.623 GB
+- 764-char generation time: 7.291 s
+- Playback time: 47.200 s
+- RTF: 0.154
+- Smooth speed ceiling: 6.47x
+- Status: not stable. Repeat confirmation failed during Stage 0 startup with "No available memory for the cache blocks."
+
+seq2 len8192, Stage 0 util 0.20:
+- Status: failed during Stage 0 startup with the same KV-cache error.
+- Reason: Stage 0 model load alone was about 3.89 GiB. On a 16.3 GB GPU, 0.20 only reserves about 3.26 GB, which is below the model-load footprint plus KV cache need.
+
+seq2 len8192, Stage 0 util 0.26:
+- Peak VRAM from quick run: 11.906 GB
+- Init VRAM from quick run: 11.875 GB
+- 764-char generation time from quick run: 7.051 s
+- Playback time from quick run: 48.000 s
+- RTF from quick run: 0.147
+- Smooth speed ceiling from quick run: 6.81x
+- Status: stable enough for default candidate.
+
+seq2 len8192, Stage 0 util 0.26, 3-repeat confirmation:
+- Peak VRAM: 11.937 GB
+- Init VRAM: 11.876 GB
+- 764-char generation time: 6.946 s
+- Playback time: 45.973 s
+- RTF: 0.151
+- Smooth speed ceiling: 6.62x
+- Minimum readiness margin in the 764-char row: 0.974 s
+- Status: selected as the stable read-along default.
+
+Short segment data
+The confirmation sweep did include a short, nearly segment-by-segment case:
+- 122 characters
+- 21 words
+- 1 unit
+- Generation time: 2.097 s
+- Playback time at 1.0x: 8.240 s
+- RTF: 0.254
+- Smooth speed ceiling: 3.93x
+
+This means precise one-unit generation is feasible for normal playback and likely works for many cases, but it has less headroom at 4.0x than small multi-unit windows. The current read-along default stays "balanced", which generates up to 2 units per request while still returning separate audio items for natural per-unit highlighting. The user can choose "precise" when debugging attribution or voice fidelity.
+
+Why the read-along pipeline is structured this way
+1. The app highlights by read-along unit, not by a huge pre-rendered chapter chunk. This keeps sentence/quote sync simple and makes wrong-role/wrong-voice bugs easier to isolate.
+2. The backend is resident vLLM-Omni rather than per-call model reload. Startup is expensive, but once resident, individual and small-batch generations are fast enough for buffered playback.
+3. The buffer is time-based, not a fixed number of sentences. Sentence lengths vary too much; 2 very short sentences are not the same safety margin as 2 long sentences.
+4. The default buffer target is 20 seconds. This gives enough margin for short segments, occasional slow generations, and user playback speed changes up to 4.0x.
+5. The default generation mode is balanced. It keeps highlighting accurate because audio is still returned per unit, but it gives better throughput than forcing every unit into a separate model call.
+6. The old audiobook generator can likely be sped up by mirroring this vLLM-Omni backend, but that should be a separate integration step. Audiobook generation can use larger windows or seq4/offline profiles because it does not need live UI buffer behavior.
+
+Current recommendation
+Use scripts/vllm_omni_qwen3_tts_16gb_len8192_seq2_s0util026.yaml as the default read-along profile on the 16 GB GPU. Treat the lower 10.67 GB seq2/util0.18 result as an experimental lower bound, not a production setting.
+
+Future tests
+- Try Stage 0 util 0.24 to see whether it keeps stability while moving closer to 10 GB.
+- Test the Qwen3-TTS 25Hz model through the same vLLM-Omni harness after the 12Hz read-along backend is stable.
+- Benchmark a full live read-along session at 4.0x with balanced mode and a 20-second buffer.
+- Add an audiobook vLLM-Omni backend profile, likely seq4 for offline speed if VRAM allows.

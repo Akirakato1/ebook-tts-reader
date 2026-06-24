@@ -759,7 +759,7 @@ def test_pipeline_prepares_single_voice_for_local_speaker(tmp_path):
     ]
 
 
-def test_pipeline_synthesizes_tts_windows_separately(tmp_path):
+def test_pipeline_synthesizes_saved_tts_sections_as_generation_checkpoints(tmp_path):
     adapter = WindowRecordingTtsAdapter()
     pipeline = AudiobookPipeline(
         config=PipelineConfig(
@@ -779,5 +779,50 @@ def test_pipeline_synthesizes_tts_windows_separately(tmp_path):
             {"sentence_idx": 1, "role": "Narrator", "type": "narration", "text": "abcdef"},
         ],
     )
+
+    assert adapter.calls == [[0, 1]]
+
+
+def test_pipeline_synthesizes_from_tts_script_sections(tmp_path):
+    adapter = WindowRecordingTtsAdapter()
+    pipeline = AudiobookPipeline(
+        config=PipelineConfig(
+            book_root=str(tmp_path / "demo"),
+            anthropic_api_key="fake",
+            pause_between_sentences_ms=0,
+        ),
+        annotation_service=AnnotationService(QueuedLlmClient([]), repair_retries=0),
+        tts_adapter=adapter,
+    )
+    script_path = pipeline.paths.tts_script("chapter_001")
+    script_path.parent.mkdir(parents=True)
+    write_json_atomic(
+        script_path,
+        {
+            "chapter": "chapter_001",
+            "jobs": [
+                {"sentence_idx": 0, "role": "Narrator", "type": "narration", "text": "One."},
+                {"sentence_idx": 1, "role": "Elena", "type": "dialogue", "text": "Two."},
+            ],
+            "sections": [
+                {
+                    "section_idx": 0,
+                    "char_count": 5,
+                    "jobs": [
+                        {"sentence_idx": 0, "role": "Narrator", "type": "narration", "text": "One."},
+                    ],
+                },
+                {
+                    "section_idx": 1,
+                    "char_count": 5,
+                    "jobs": [
+                        {"sentence_idx": 1, "role": "Elena", "type": "dialogue", "text": "Two."},
+                    ],
+                },
+            ],
+        },
+    )
+
+    pipeline.synthesize_chapter_from_tts_script("chapter_001")
 
     assert adapter.calls == [[0], [1]]

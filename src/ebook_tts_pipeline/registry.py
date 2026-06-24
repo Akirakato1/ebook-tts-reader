@@ -23,6 +23,27 @@ DEPRECATED_CHARACTER_FIELDS = (
     "global_evidence",
 )
 
+LEGACY_NARRATOR_VOICE_PROFILE = {
+    "description": "calm literary narrator, clear pacing",
+    "qwen_instruct": "A calm literary narrator voice with clear pacing.",
+}
+
+DEFAULT_NARRATOR_VOICE_PROFILE = {
+    "description": "adult male audiobook narrator, calm baritone timbre, clear pacing",
+    "qwen_instruct": (
+        "A steady adult male audiobook narrator voice with calm baritone timbre, "
+        "clear audiobook narration, measured pacing, and crisp articulation."
+    ),
+}
+
+FEMALE_NARRATOR_VOICE_PROFILE = {
+    "description": "adult female audiobook narrator, warm alto timbre, clear pacing",
+    "qwen_instruct": (
+        "A steady adult female audiobook narrator voice with warm alto timbre, "
+        "clear audiobook narration, measured pacing, and crisp articulation."
+    ),
+}
+
 
 def slugify_name(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
@@ -44,6 +65,16 @@ def voice_profile_hash(voice_record: Dict[str, Any]) -> str:
         ]
     )
     return hashlib.sha256(signature.encode("utf-8")).hexdigest()
+
+
+def default_narrator_voice_profile() -> Dict[str, str]:
+    return dict(DEFAULT_NARRATOR_VOICE_PROFILE)
+
+
+def narrator_voice_profile_for_type(voice_type: str) -> Dict[str, str]:
+    if str(voice_type).strip().lower() == "female":
+        return dict(FEMALE_NARRATOR_VOICE_PROFILE)
+    return default_narrator_voice_profile()
 
 
 def profile_id_for_character(name: str, profile: Dict[str, Any]) -> str:
@@ -197,11 +228,14 @@ class RegistryManager:
     def __init__(self, paths: BookPaths) -> None:
         self.paths = paths
 
-    def initialize_if_missing(self, book_title: str, book_slug: str) -> None:
+    def initialize_if_missing(self, book_title: str, book_slug: str, book_author: str = "") -> None:
         if self.paths.registry.exists():
             return
+        book: Dict[str, Any] = {"title": book_title, "slug": book_slug}
+        if str(book_author).strip():
+            book["author"] = str(book_author).strip()
         registry: Dict[str, Any] = {
-            "book": {"title": book_title, "slug": book_slug},
+            "book": book,
             "narrator": {
                 "role_id": "narrator",
                 "display_name": "Narrator",
@@ -209,10 +243,7 @@ class RegistryManager:
                     "seed": role_seed(book_slug, "narrator"),
                     "differentiators": ["calm baseline narrator timbre"],
                 },
-                "voice_profile": {
-                    "description": "calm literary narrator, clear pacing",
-                    "qwen_instruct": "A calm literary narrator voice with clear pacing.",
-                },
+                "voice_profile": default_narrator_voice_profile(),
                 "voice_config_path": None,
             },
             "characters": {},
@@ -450,9 +481,32 @@ def prune_deprecated_registry_fields(registry: Dict[str, Any]) -> None:
 
 def migrate_registry_voice_records(registry: Dict[str, Any]) -> None:
     book_slug = str(registry.get("book", {}).get("slug", "book"))
+    ensure_narrator_voice_record(book_slug, registry)
     for character in registry.get("characters", {}).values():
         if isinstance(character, dict):
             ensure_character_voice_record(book_slug, character)
+
+
+def ensure_narrator_voice_record(book_slug: str, registry: Dict[str, Any]) -> None:
+    narrator = registry.setdefault("narrator", {})
+    narrator.setdefault("role_id", "narrator")
+    narrator.setdefault("display_name", "Narrator")
+    identity = dict(narrator.get("voice_identity", {}))
+    narrator["voice_identity"] = {
+        "seed": int(identity.get("seed", role_seed(book_slug, "narrator"))),
+        "differentiators": list(identity.get("differentiators", ["calm baseline narrator timbre"])),
+    }
+    profile = narrator.get("voice_profile")
+    if not isinstance(profile, dict) or _is_legacy_narrator_voice_profile(profile):
+        narrator["voice_profile"] = default_narrator_voice_profile()
+    narrator.setdefault("voice_config_path", None)
+
+
+def _is_legacy_narrator_voice_profile(profile: Dict[str, Any]) -> bool:
+    return (
+        str(profile.get("description", "")) == LEGACY_NARRATOR_VOICE_PROFILE["description"]
+        and str(profile.get("qwen_instruct", "")) == LEGACY_NARRATOR_VOICE_PROFILE["qwen_instruct"]
+    )
 
 
 def _refresh_record_voice_profiles(book_slug: str, record: Dict[str, Any]) -> None:

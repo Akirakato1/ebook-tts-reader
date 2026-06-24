@@ -254,6 +254,46 @@ class StreamingBatchAdapter:
         ]
 
 
+class VoicePathAdapter:
+    def generate_sentences(self, jobs):
+        raise AssertionError("builder should consume streaming batches when available")
+
+    def generate_sentence_batches(self, jobs):
+        yield [
+            GeneratedSentenceAudio(
+                sentence_idx=int(jobs[0]["sentence_idx"]),
+                unit_idx=int(jobs[0]["unit_idx"]),
+                role=str(jobs[0]["role"]),
+                speech_type=str(jobs[0]["type"]),
+                samples=np.ones(10, dtype=np.float32),
+                sample_rate=1000,
+                voice_config_path="voices/narrator.qvp",
+            )
+        ]
+
+
+def test_audio_builder_timeline_records_actual_generated_voice_path(tmp_path):
+    builder = ChapterAudioBuilder(tts_adapter=VoicePathAdapter(), pause_between_sentences_ms=0)
+
+    result = builder.build_chapter_audio(
+        chapter="chapter_001",
+        jobs=[
+            {
+                "sentence_idx": 0,
+                "unit_idx": 0,
+                "role": "Narrator",
+                "type": "narration",
+                "text": "One.",
+                "voice_config_path": "voices/narrator.qvp",
+            }
+        ],
+        audio_path=tmp_path / "chapter_001.wav",
+        timeline_path=tmp_path / "chapter_001.timeline.json",
+    )
+
+    assert result["sentences"][0]["voice_config_path"] == "voices/narrator.qvp"
+
+
 def test_windowed_audio_builder_spools_chunks_and_removes_temporary_files(tmp_path):
     adapter = RecordingWindowAdapter()
     builder = RecordingAudioBuilder(tts_adapter=adapter, pause_between_sentences_ms=0)
