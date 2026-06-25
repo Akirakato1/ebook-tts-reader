@@ -823,9 +823,24 @@ def test_home_page_serves_clean_reader_shell(tmp_path):
         assert 'id="narrator-summary"' in response
         assert 'id="edit-narrator"' in response
         assert 'id="narrator-panel"' in response
+        assert '<select id="narrator-race" data-narrator-field="race_or_ethnicity">' in response
+        assert '<select id="narrator-accent" data-narrator-field="accent">' in response
         assert '<option value="male">male</option>' not in response
         assert "narrator_voice_type" not in response
+        assert 'class="chapter-tab" id="toggle-sidebar"' in response
         assert 'id="toggle-sidebar"' in response
+        assert 'id="show-library"' not in response
+        assert 'id="refresh"' not in response
+        assert 'id="process-book"' not in response
+        assert 'id="build-units"' not in response
+        assert 'id="return-prompt"' in response
+        assert 'id="return-prompt-yes"' in response
+        assert 'id="return-prompt-resume"' in response
+        assert "toggleReturnPrompt" in response
+        assert "returnToLibraryFromPrompt" in response
+        assert "state.sessionPaused" in response
+        assert "button:hover:not(:disabled)" in response
+        assert "button:active:not(:disabled)" in response
         assert 'id="page-prev"' in response
         assert 'id="page-next"' in response
         assert 'id="page-indicator"' in response
@@ -848,6 +863,9 @@ def test_web_api_serves_and_saves_narrator_profile(tmp_path):
         assert profile["ok"] is True
         assert profile["profile"]["role_id"] == "narrator"
         assert "summary" in profile
+        assert "General American" in profile["accent_options"]
+        assert "Tokyo" in profile["accent_options"]
+        assert "Japanese" in profile["race_or_ethnicity_options"]
 
         saved = _post_json(
             base_url + "/api/narrator-profile",
@@ -866,6 +884,59 @@ def test_web_api_serves_and_saves_narrator_profile(tmp_path):
         assert saved["profile"]["identity_profile"]["gender"] == "female"
         assert saved["fields"]["personality"] == "warm, precise"
         assert "female" in saved["profile"]["voice_profile"]["description"]
+    finally:
+        _stop_server(server, thread)
+
+
+def test_web_api_saving_read_along_settings_keeps_voice_readiness(tmp_path):
+    paths = _write_demo_book(tmp_path, name="ready-book", title="Ready Book", ready_for_tts=True)
+    write_json_atomic(
+        paths.root / "readalong_book.json",
+        {
+            "schema": "readalong_book_v1",
+            "title": "Ready Book",
+            "slug": "ready-book",
+            "source_epub_path": "_source/original.epub",
+            "original_filename": "ready.epub",
+            "stages": {
+                "source_added": True,
+                "initialized": True,
+                "global_registry": True,
+                "annotating": False,
+                "annotated": True,
+                "registry_reviewed": True,
+                "voices_ready": True,
+            },
+        },
+    )
+    server, thread, base_url = _start_test_server_for_root(tmp_path)
+    try:
+        before = _get_json(base_url + "/api/library")
+        book = before["books"][0]
+        assert book["status_key"] == "voices_ready"
+        assert book["action_key"] == "review_registry"
+        assert book["open_enabled"] is True
+
+        _post_json(base_url + "/api/library/select", {"slug": "ready-book"})
+        saved = _post_json(
+            base_url + "/api/settings",
+            {
+                "playback_speed": 1.15,
+                "generation_mode": "balanced",
+                "buffer_limit": 2,
+                "target_buffer_seconds": 20,
+                "start_buffer_seconds": 20,
+                "max_buffer_seconds": 40,
+                "max_buffer_units": 32,
+            },
+        )
+        after = _get_json(base_url + "/api/library")
+
+        assert saved["ok"] is True
+        book = after["books"][0]
+        assert book["status_key"] == "voices_ready"
+        assert book["action_key"] == "review_registry"
+        assert book["open_enabled"] is True
     finally:
         _stop_server(server, thread)
 

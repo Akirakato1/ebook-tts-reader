@@ -350,6 +350,7 @@ class PrototypeUiController:
 
     def read_along_narrator_profile_payload(self) -> Dict[str, Any]:
         profile = self.read_along_narrator_profile()
+        registry = read_json(self.paths.registry) if self.paths.registry.exists() else {}
         identity = dict(profile.get("identity_profile") or {})
         return {
             "profile": profile,
@@ -364,6 +365,14 @@ class PrototypeUiController:
                 "accent": str(identity.get("accent") or ""),
                 "occupation": str(identity.get("occupation") or ""),
             },
+            "accent_options": _merged_detected_options(
+                ACCENT_OPTIONS,
+                _detected_identity_values(self.paths, registry, "accent"),
+            ),
+            "race_or_ethnicity_options": _merged_detected_options(
+                RACE_OR_ETHNICITY_OPTIONS,
+                _detected_identity_values(self.paths, registry, "race_or_ethnicity"),
+            ),
         }
 
     def read_along_settings(self) -> Dict[str, Any]:

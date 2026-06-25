@@ -620,7 +620,6 @@ class ReadAlongWebState:
                 raise ValueError("End the active read-along session before changing settings.")
             controller = self._require_controller()
             controller.save_read_along_settings(settings)
-            _update_book_stage(controller.book_root, voices_ready=False)
             return {"ok": True, "settings": controller.read_along_settings()}
 
     def narrator_profile_payload(self) -> Dict[str, Any]:
@@ -1823,8 +1822,29 @@ INDEX_HTML = r"""<!doctype html>
       border-right: 1px solid var(--line);
       background: var(--panel);
       display: grid;
-      grid-template-rows: auto 1fr auto;
+      grid-template-rows: auto 1fr;
       min-height: 100vh;
+    }
+    .chapter-tab {
+      position: fixed;
+      left: 280px;
+      top: 50%;
+      z-index: 30;
+      min-width: 34px;
+      min-height: 92px;
+      padding: 10px 6px;
+      writing-mode: vertical-rl;
+      transform: translateY(-50%);
+      border-radius: 0 8px 8px 0;
+      border-left: 0;
+      background: #fff;
+      box-shadow: 0 8px 22px rgba(32, 33, 36, 0.16);
+    }
+    .app.sidebar-hidden .chapter-tab {
+      left: 0;
+    }
+    .chapter-tab:active:not(:disabled) {
+      transform: translateY(calc(-50% + 1px));
     }
     .brand {
       padding: 16px;
@@ -1849,12 +1869,6 @@ INDEX_HTML = r"""<!doctype html>
     }
     .chapter:hover { background: #e3e7ea; }
     .chapter.active { background: #fff; box-shadow: inset 3px 0 0 var(--accent); }
-    .sidebar-actions {
-      display: grid;
-      gap: 8px;
-      padding: 12px;
-      border-top: 1px solid var(--line);
-    }
     .reader {
       display: grid;
       grid-template-rows: auto auto minmax(0, 1fr) auto auto;
@@ -1910,11 +1924,30 @@ INDEX_HTML = r"""<!doctype html>
       color: var(--ink);
       padding: 5px 10px;
       cursor: pointer;
+      transition: transform 0.08s ease, box-shadow 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+      box-shadow: 0 1px 0 rgba(32, 33, 36, 0.08);
+    }
+    button:hover:not(:disabled) {
+      border-color: #89939c;
+      background: #f8fafb;
+      box-shadow: 0 2px 6px rgba(32, 33, 36, 0.12);
+    }
+    button:active:not(:disabled) {
+      transform: translateY(1px);
+      box-shadow: inset 0 1px 2px rgba(32, 33, 36, 0.12);
+    }
+    button:focus-visible {
+      outline: 2px solid rgba(181, 125, 45, 0.5);
+      outline-offset: 2px;
     }
     button.primary {
       border-color: #936625;
       background: #b57d2d;
       color: white;
+    }
+    button.primary:hover:not(:disabled) {
+      border-color: #7c5118;
+      background: #a56f24;
     }
     button:disabled, input:disabled, select:disabled {
       opacity: 0.55;
@@ -2025,6 +2058,40 @@ INDEX_HTML = r"""<!doctype html>
       overflow-wrap: anywhere;
     }
     .session-error[hidden] { display: none; }
+    .return-prompt {
+      position: absolute;
+      inset: 0;
+      z-index: 25;
+      display: grid;
+      place-items: center;
+      background: rgba(20, 24, 28, 0.28);
+    }
+    .return-prompt[hidden] { display: none; }
+    .return-prompt-panel {
+      width: min(340px, calc(100vw - 40px));
+      padding: 18px;
+      border: 1px solid rgba(124, 91, 48, 0.24);
+      border-radius: 8px;
+      background: #fffaf0;
+      box-shadow: 0 12px 34px rgba(32, 33, 36, 0.2);
+    }
+    .return-prompt-title {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .return-prompt-copy {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .return-prompt-actions {
+      display: flex;
+      justify-content: end;
+      gap: 8px;
+      margin-top: 16px;
+      flex-wrap: wrap;
+    }
     .tts-loading-panel {
       display: inline-flex;
       align-items: center;
@@ -2072,7 +2139,7 @@ INDEX_HTML = r"""<!doctype html>
       .sidebar { min-height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
       .chapters { display: flex; overflow-x: auto; padding: 8px; }
       .chapter { min-width: 190px; }
-      .sidebar-actions { grid-template-columns: 1fr 1fr; }
+      .chapter-tab { left: 0; min-height: 82px; }
       .page-shell { grid-template-columns: minmax(0, 1fr); padding-inline: 10px; }
       .page-nav { display: none; }
       .page { font-size: 18px; box-shadow: none; }
@@ -2112,16 +2179,10 @@ INDEX_HTML = r"""<!doctype html>
     </div>
   </section>
   <main class="app" id="reader-view">
+    <button class="chapter-tab" id="toggle-sidebar" type="button" title="Show or hide chapters">Chapters</button>
     <aside class="sidebar">
       <div class="brand">Read Along</div>
       <nav class="chapters" id="chapters"></nav>
-      <div class="sidebar-actions">
-        <button id="toggle-sidebar" type="button" title="Show or hide chapters">Chapters</button>
-        <button id="show-library">Library</button>
-        <button id="refresh">Refresh</button>
-        <button id="process-book">Process Book</button>
-        <button id="build-units">Build Units</button>
-      </div>
     </aside>
     <section class="reader">
       <div class="toolbar">
@@ -2155,8 +2216,8 @@ INDEX_HTML = r"""<!doctype html>
           <label>Age <input id="narrator-age-stage" data-narrator-field="age_stage" type="text"></label>
           <label>Gender <input id="narrator-gender" data-narrator-field="gender" type="text"></label>
           <label>Personality <input id="narrator-personality" data-narrator-field="personality" type="text"></label>
-          <label>Race / Ethnicity <input id="narrator-race" data-narrator-field="race_or_ethnicity" type="text"></label>
-          <label>Accent <input id="narrator-accent" data-narrator-field="accent" type="text"></label>
+          <label>Race / Ethnicity <select id="narrator-race" data-narrator-field="race_or_ethnicity"></select></label>
+          <label>Accent <select id="narrator-accent" data-narrator-field="accent"></select></label>
           <label>Occupation <input id="narrator-occupation" data-narrator-field="occupation" type="text"></label>
         </div>
         <div class="registry-actions">
@@ -2180,6 +2241,16 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       </div>
       <div class="session-error" id="session-error" hidden></div>
+      <div class="return-prompt" id="return-prompt" hidden role="dialog" aria-modal="true" aria-labelledby="return-prompt-title">
+        <div class="return-prompt-panel">
+          <div class="return-prompt-title" id="return-prompt-title">Return to library?</div>
+          <div class="return-prompt-copy" id="return-prompt-copy">The read-along session will pause while this prompt is open.</div>
+          <div class="return-prompt-actions">
+            <button id="return-prompt-resume" type="button">Resume</button>
+            <button class="primary" id="return-prompt-yes" type="button">Yes, return</button>
+          </div>
+        </div>
+      </div>
       <div class="status" id="status">Ready</div>
       <audio id="audio"></audio>
     </section>
@@ -2205,7 +2276,8 @@ INDEX_HTML = r"""<!doctype html>
       narratorProfile: null,
       activeJobs: {},
       busySlug: "",
-      sessionActive: false
+      sessionActive: false,
+      sessionPaused: false
     };
     const ACTION_LABELS = {
       initialize: "Initialize Book",
@@ -2250,13 +2322,19 @@ INDEX_HTML = r"""<!doctype html>
       editNarrator: document.getElementById("edit-narrator"),
       narratorPanel: document.getElementById("narrator-panel"),
       narratorClose: document.getElementById("narrator-close"),
+      narratorRace: document.getElementById("narrator-race"),
+      narratorAccent: document.getElementById("narrator-accent"),
       saveNarrator: document.getElementById("save-narrator"),
       start: document.getElementById("start"),
       end: document.getElementById("end"),
       audio: document.getElementById("audio"),
       ttsLoading: document.getElementById("tts-loading-overlay"),
       ttsLoadingStage: document.getElementById("tts-loading-stage"),
-      sessionError: document.getElementById("session-error")
+      sessionError: document.getElementById("session-error"),
+      returnPrompt: document.getElementById("return-prompt"),
+      returnPromptYes: document.getElementById("return-prompt-yes"),
+      returnPromptResume: document.getElementById("return-prompt-resume"),
+      returnPromptCopy: document.getElementById("return-prompt-copy")
     };
     let sessionProgressTimer = null;
     function compactStatusText(text, limit = 420) {
@@ -2802,11 +2880,30 @@ INDEX_HTML = r"""<!doctype html>
       els.end.disabled = !locked;
       state.sessionActive = locked;
     }
+    function populateSelect(select, options, value) {
+      const selected = String(value || "");
+      const values = Array.isArray(options) ? options : [""];
+      const seen = new Set();
+      select.textContent = "";
+      for (const item of values.concat([selected])) {
+        const optionValue = String(item || "");
+        if (seen.has(optionValue)) continue;
+        seen.add(optionValue);
+        const option = document.createElement("option");
+        option.value = optionValue;
+        option.textContent = optionValue || "Unspecified";
+        select.appendChild(option);
+      }
+      select.value = selected;
+    }
     async function loadNarratorProfile() {
       const payload = await api("/api/narrator-profile");
       state.narratorProfile = payload;
       els.narratorSummary.textContent = "Narrator: " + payload.summary;
+      populateSelect(els.narratorRace, payload.race_or_ethnicity_options, payload.fields.race_or_ethnicity);
+      populateSelect(els.narratorAccent, payload.accent_options, payload.fields.accent);
       for (const input of document.querySelectorAll("[data-narrator-field]")) {
+        if (input.tagName.toLowerCase() === "select") continue;
         input.value = payload.fields[input.dataset.narratorField] || "";
       }
     }
@@ -3081,6 +3178,11 @@ INDEX_HTML = r"""<!doctype html>
       setStatus("Playing " + (item.unit_id + 1) + "/" + state.units.length);
       els.audio.src = item.audio_url;
       els.audio.playbackRate = Number(els.speed.value || 1);
+      if (!els.returnPrompt.hidden) {
+        state.sessionPaused = true;
+        setStatus("Session paused.");
+        return;
+      }
       await els.audio.play();
     }
     async function advanceSession() {
@@ -3112,13 +3214,57 @@ INDEX_HTML = r"""<!doctype html>
       stopSessionProgressPolling();
       showTtsLoading(false);
       showSessionError("");
+      els.returnPrompt.hidden = true;
+      state.sessionPaused = false;
       state.ready = [];
       state.currentUnitId = null;
       lockControls(false);
       renderPages();
       setStatus(message);
     }
-    document.getElementById("show-library").onclick = () => loadLibrary(true).catch(error => setStatus(error.message));
+    function showReturnPrompt() {
+      if (els.readerView.hidden) return;
+      if (state.sessionActive && !els.audio.paused) {
+        els.audio.pause();
+        state.sessionPaused = true;
+      } else {
+        state.sessionPaused = false;
+      }
+      els.returnPromptCopy.textContent = state.sessionActive
+        ? "The read-along session is paused. Return will end the session."
+        : "Return to the library view.";
+      els.returnPrompt.hidden = false;
+      els.returnPromptResume.focus();
+    }
+    async function resumeFromReturnPrompt() {
+      els.returnPrompt.hidden = true;
+      if (state.sessionActive && state.sessionPaused) {
+        state.sessionPaused = false;
+        try {
+          await els.audio.play();
+          setStatus("Resumed.");
+        } catch (error) {
+          setStatus(error.message);
+        }
+        return;
+      }
+      state.sessionPaused = false;
+    }
+    function toggleReturnPrompt() {
+      if (!els.returnPrompt.hidden) {
+        resumeFromReturnPrompt().catch(error => setStatus(error.message));
+      } else {
+        showReturnPrompt();
+      }
+    }
+    async function returnToLibraryFromPrompt() {
+      els.returnPrompt.hidden = true;
+      state.sessionPaused = false;
+      if (state.sessionActive) {
+        await endSession("Session ended.");
+      }
+      await loadLibrary(true);
+    }
     document.getElementById("library-refresh").onclick = () => loadLibrary(true).catch(error => alert(error.message));
     document.getElementById("add-book").onclick = () => addBook().catch(error => setLibraryStatus(error.message));
     els.registryClose.onclick = () => { els.registryPanel.hidden = true; };
@@ -3132,8 +3278,15 @@ INDEX_HTML = r"""<!doctype html>
     };
     els.pagePrev.onclick = () => turnPage(-1);
     els.pageNext.onclick = () => turnPage(1);
+    els.returnPromptResume.onclick = () => resumeFromReturnPrompt().catch(error => setStatus(error.message));
+    els.returnPromptYes.onclick = () => returnToLibraryFromPrompt().catch(error => setStatus(error.message));
     window.addEventListener("keydown", event => {
       const tag = String(document.activeElement && document.activeElement.tagName || "").toLowerCase();
+      if (event.key === "Escape" && !els.readerView.hidden) {
+        event.preventDefault();
+        toggleReturnPrompt();
+        return;
+      }
       if (state.sessionActive || ["input", "select", "button", "textarea"].includes(tag)) return;
       if (event.key === "ArrowLeft") {
         event.preventDefault();
@@ -3153,30 +3306,6 @@ INDEX_HTML = r"""<!doctype html>
       if (!file) return;
       if (!els.addTitle.value) els.addTitle.value = titleFromFilename(file.name);
       if (!els.addSlug.value) els.addSlug.value = slugFromFilename(file.name);
-    };
-    document.getElementById("refresh").onclick = loadState;
-    document.getElementById("process-book").onclick = async () => {
-      setStatus("Processing book...");
-      try {
-        const payload = await api("/api/process-book", { method: "POST" });
-        setStatus("Processed " + payload.chapters + " chapters.");
-        await loadState();
-      } catch (error) { setStatus(error.message); }
-    };
-    document.getElementById("build-units").onclick = async () => {
-      if (!state.chapter) return;
-      setStatus("Building units...");
-      try {
-        const payload = await api("/api/build-units", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chapter: state.chapter })
-        });
-        state.units = payload.units;
-        renderText();
-        highlight();
-        setStatus("Built " + payload.unit_count + " units.");
-      } catch (error) { setStatus(error.message); }
     };
     document.getElementById("save").onclick = async () => {
       try {
