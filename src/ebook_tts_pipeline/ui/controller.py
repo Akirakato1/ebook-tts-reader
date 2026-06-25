@@ -322,29 +322,38 @@ class PrototypeUiController:
 
     def save_read_along_narrator_profile(self, values: Dict[str, Any]) -> Dict[str, Any]:
         current = self.read_along_narrator_profile()
-        identity = dict(current.get("identity_profile") or {})
+        current_identity = dict(current.get("identity_profile") or {})
+        identity = dict(current_identity)
         identity.update(
             {
-                "age_stage": str(values.get("age_stage", identity.get("age_stage", "adult"))).strip() or "adult",
-                "gender": str(values.get("gender", identity.get("gender", "unknown"))).strip() or "unknown",
-                "personality": _split_csv(values.get("personality", ",".join(identity.get("personality", [])))),
-                "race_or_ethnicity": _blank_to_none(
-                    values.get("race_or_ethnicity", identity.get("race_or_ethnicity", ""))
+                "age_stage": str(values.get("age_stage", current_identity.get("age_stage", "adult"))).strip()
+                or "adult",
+                "gender": str(values.get("gender", current_identity.get("gender", "unknown"))).strip()
+                or "unknown",
+                "personality": _split_csv(
+                    values.get("personality", ",".join(current_identity.get("personality", [])))
                 ),
-                "accent": _blank_to_none(values.get("accent", identity.get("accent", ""))),
-                "occupation": _blank_to_none(values.get("occupation", identity.get("occupation", "audiobook narrator"))),
+                "race_or_ethnicity": _blank_to_none(
+                    values.get("race_or_ethnicity", current_identity.get("race_or_ethnicity", ""))
+                ),
+                "accent": _blank_to_none(values.get("accent", current_identity.get("accent", ""))),
+                "occupation": _blank_to_none(
+                    values.get("occupation", current_identity.get("occupation", "audiobook narrator"))
+                ),
             }
         )
-        profile = normalize_narrator_profile(
-            {
-                "role_id": "narrator",
-                "display_name": str(values.get("display_name", current.get("display_name", "Narrator"))).strip()
-                or "Narrator",
-                "identity_profile": identity,
-                "voice_identity": dict(current.get("voice_identity") or {}),
-            },
-            book_slug=self.book_root.name,
-        )
+        display_name = str(values.get("display_name", current.get("display_name", "Narrator"))).strip() or "Narrator"
+        payload = {
+            "role_id": "narrator",
+            "display_name": display_name,
+            "identity_profile": identity,
+            "voice_identity": dict(current.get("voice_identity") or {}),
+        }
+        if _narrator_visible_fields(current.get("display_name", "Narrator"), current_identity) == _narrator_visible_fields(
+            display_name, identity
+        ):
+            payload["voice_profile"] = dict(current.get("voice_profile") or {})
+        profile = normalize_narrator_profile(payload, book_slug=self.book_root.name)
         write_json_atomic(self.paths.read_along_narrator_profile, profile)
         return profile
 
@@ -1802,7 +1811,9 @@ def _field_text(value: Any) -> str:
     return str(value)
 
 
-def _blank_to_none(value: str) -> Optional[str]:
+def _blank_to_none(value: Any) -> Optional[str]:
+    if value is None:
+        return None
     text = str(value).strip()
     return text or None
 
@@ -1811,6 +1822,18 @@ def _split_csv(value: Any) -> List[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     return [part.strip() for part in str(value).split(",") if part.strip()]
+
+
+def _narrator_visible_fields(display_name: Any, identity: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "display_name": str(display_name or "Narrator").strip() or "Narrator",
+        "age_stage": str(identity.get("age_stage") or "adult").strip() or "adult",
+        "gender": str(identity.get("gender") or "unknown").strip() or "unknown",
+        "personality": _split_csv(identity.get("personality")),
+        "race_or_ethnicity": _blank_to_none(identity.get("race_or_ethnicity")),
+        "accent": _blank_to_none(identity.get("accent")),
+        "occupation": _blank_to_none(identity.get("occupation")),
+    }
 
 
 def _string_list(value: Any) -> List[str]:

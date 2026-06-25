@@ -1632,6 +1632,68 @@ def test_controller_reuses_cached_narrator_voice_when_profile_hash_unchanged(tmp
     session.end()
 
 
+def test_controller_reuses_cached_session_narrator_voices_after_noop_profile_save(tmp_path, monkeypatch):
+    paths = BookPaths(tmp_path / "book")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text('The phone said, "Please hang up."', encoding="utf-8")
+    write_json_atomic(paths.registry, {"book": {"title": "Demo", "slug": "demo"}, "characters": {}})
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {"schema": "quote_attribution_v1", "roles": ["Narrator"], "quotes": [[1, 0, "narrator_quote"]]},
+    )
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+    profile = controller.read_along_narrator_profile()
+    identity = profile["identity_profile"]
+    narrator_hash = narrator_profile_hash(profile)
+    functional_hash = voice_profile_hash(functional_narrator_voice_record(profile))
+    narrator_path = paths.narrator_voice_qvp(narrator_hash, "narrator")
+    functional_path = paths.narrator_voice_qvp(functional_hash, "functional_narrator")
+    narrator_path.parent.mkdir(parents=True, exist_ok=True)
+    functional_path.parent.mkdir(parents=True, exist_ok=True)
+    narrator_path.write_bytes(b"cached narrator")
+    functional_path.write_bytes(b"cached functional narrator")
+
+    saved_profile = controller.save_read_along_narrator_profile(
+        {
+            "display_name": profile["display_name"],
+            "age_stage": identity["age_stage"],
+            "gender": identity["gender"],
+            "personality": ", ".join(identity["personality"]),
+            "accent": identity.get("accent") or "",
+            "race_or_ethnicity": identity.get("race_or_ethnicity") or "",
+            "occupation": identity.get("occupation") or "",
+        }
+    )
+
+    assert narrator_profile_hash(saved_profile) == narrator_hash
+    assert voice_profile_hash(functional_narrator_voice_record(saved_profile)) == functional_hash
+
+    def fail_if_called(self, role_id, voice_record, voice_path):
+        raise AssertionError(f"{role_id} cache should be reused")
+
+    monkeypatch.setattr(FakeTtsAdapter, "ensure_voice", fail_if_called)
+    units = controller.build_read_along_units("chapter_001")
+
+    session = controller.create_read_along_session(
+        "chapter_001",
+        units,
+        {
+            "playback_speed": 1.0,
+            "generation_mode": "balanced",
+            "buffer_limit": 2,
+            "target_buffer_seconds": 20,
+            "start_buffer_seconds": 20,
+            "max_buffer_seconds": 40,
+            "max_buffer_units": 32,
+        },
+    )
+
+    patched_quote = [unit for unit in session.units if unit.quote_id == "q001"][0]
+    assert patched_quote.voice_config_path == functional_path.relative_to(paths.root).as_posix()
+    session.end()
+
+
 def test_controller_regenerates_narrator_voice_when_profile_changes(tmp_path, monkeypatch):
     paths = BookPaths(tmp_path / "book")
     paths.chapter_text("chapter_001").parent.mkdir(parents=True)
