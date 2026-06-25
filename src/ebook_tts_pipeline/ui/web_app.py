@@ -2343,6 +2343,7 @@ INDEX_HTML = r"""<!doctype html>
       pageIndex: 0,
       sidebarOpen: true,
       ready: [],
+      sessionId: null,
       books: [],
       activeBook: null,
       registryBook: null,
@@ -2414,7 +2415,7 @@ INDEX_HTML = r"""<!doctype html>
     };
     let sessionProgressTimer = null;
     let settingsSaveTimer = null;
-    let topUpInFlight = false;
+    let topUpPromise = null;
     function compactStatusText(text, limit = 420) {
       const value = String(text || "");
       if (value.length <= limit) return value;
@@ -3296,6 +3297,7 @@ INDEX_HTML = r"""<!doctype html>
           })
         });
         state.units = payload.units;
+        state.sessionId = payload.session_id;
         state.ready = payload.ready;
         state.currentUnitId = null;
         renderText();
@@ -3375,30 +3377,38 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
     async function topUpBuffer(options = {}) {
-      if (!state.sessionActive || topUpInFlight) return null;
-      topUpInFlight = true;
-      try {
-        const body = {};
-        const excludeUnitId = options.excludeUnitId ?? state.currentUnitId;
-        if (excludeUnitId !== null && excludeUnitId !== undefined) body.exclude_unit_id = excludeUnitId;
-        const payload = await api("/api/session/top-up", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body)
-        });
-        if (!state.sessionActive) return payload;
-        state.ready = payload.ready;
-        applyHighlights();
-        if (typeof payload.ready_playback_seconds === "number" && !options.silent) {
-          setStatus("Buffered " + payload.ready_playback_seconds.toFixed(1) + "s");
+      if (!state.sessionActive) return null;
+      if (topUpPromise) return topUpPromise;
+      const sessionId = state.sessionId;
+      let promise;
+      promise = (async () => {
+        try {
+          const body = {};
+          const excludeUnitId = options.excludeUnitId ?? state.currentUnitId;
+          if (excludeUnitId !== null && excludeUnitId !== undefined) body.exclude_unit_id = excludeUnitId;
+          const payload = await api("/api/session/top-up", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body)
+          });
+          if (!state.sessionActive || state.sessionId !== sessionId) return payload;
+          state.ready = payload.ready;
+          applyHighlights();
+          if (typeof payload.ready_playback_seconds === "number" && !options.silent) {
+            setStatus("Buffered " + payload.ready_playback_seconds.toFixed(1) + "s");
+          }
+          return payload;
+        } catch (error) {
+          if (state.sessionActive && state.sessionId === sessionId && !options.silent) {
+            setStatus("Buffer top-up failed: " + error.message);
+          }
+          return null;
+        } finally {
+          if (topUpPromise === promise) topUpPromise = null;
         }
-        return payload;
-      } catch (error) {
-        if (state.sessionActive && !options.silent) setStatus("Buffer top-up failed: " + error.message);
-        return null;
-      } finally {
-        topUpInFlight = false;
-      }
+      })();
+      topUpPromise = promise;
+      return promise;
     }
     async function advanceSession() {
       if (!state.sessionActive) return;
@@ -3442,7 +3452,8 @@ INDEX_HTML = r"""<!doctype html>
       showSessionError("");
       els.returnPrompt.hidden = true;
       state.sessionPaused = false;
-      topUpInFlight = false;
+      state.sessionId = null;
+      topUpPromise = null;
       state.ready = [];
       state.currentUnitId = null;
       lockControls(false);

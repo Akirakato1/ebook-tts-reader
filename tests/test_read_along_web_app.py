@@ -1130,6 +1130,8 @@ def test_web_interface_uses_time_buffer_controls_and_pause_button(tmp_path):
         assert "Resume Session" in response
         assert "togglePauseSession" in response
         assert "/api/session/top-up" in response
+        assert "let topUpPromise = null;" in response
+        assert "if (topUpPromise) return topUpPromise;" in response
         assert "Units <input" not in response
         assert "Max units <input" not in response
     finally:
