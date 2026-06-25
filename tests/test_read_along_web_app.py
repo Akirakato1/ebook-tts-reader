@@ -825,6 +825,15 @@ def test_home_page_serves_clean_reader_shell(tmp_path):
         assert 'id="narrator-panel"' in response
         assert '<option value="male">male</option>' not in response
         assert "narrator_voice_type" not in response
+        assert 'id="toggle-sidebar"' in response
+        assert 'id="page-prev"' in response
+        assert 'id="page-next"' in response
+        assert 'id="page-indicator"' in response
+        assert 'id="page-measurer"' in response
+        assert "renderPages()" in response
+        assert "ensureAnchorPage" in response
+        assert "state.sidebarOpen" in response
+        assert "keydown" in response
         assert "lockControls(Boolean(payload.session_active));" in response
         assert "window.readAlongApp" in response
     finally:

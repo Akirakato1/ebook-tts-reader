@@ -1770,6 +1770,15 @@ INDEX_HTML = r"""<!doctype html>
       grid-template-columns: minmax(220px, 280px) 1fr;
       min-height: 100vh;
     }
+    .app.sidebar-hidden {
+      grid-template-columns: 0 minmax(0, 1fr);
+    }
+    .app.sidebar-hidden .sidebar {
+      width: 0;
+      min-width: 0;
+      overflow: hidden;
+      border-right: 0;
+    }
     .sidebar {
       border-right: 1px solid var(--line);
       background: var(--panel);
@@ -1808,7 +1817,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .reader {
       display: grid;
-      grid-template-rows: auto 1fr auto;
+      grid-template-rows: auto auto minmax(0, 1fr) auto auto;
       min-width: 0;
       min-height: 100vh;
       position: relative;
@@ -1871,13 +1880,40 @@ INDEX_HTML = r"""<!doctype html>
       opacity: 0.55;
       cursor: not-allowed;
     }
+    .page-shell {
+      position: relative;
+      min-height: calc(100vh - 190px);
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 12px;
+      padding: 24px clamp(12px, 3vw, 42px);
+    }
     .page-wrap {
-      overflow: auto;
-      padding: 32px clamp(18px, 5vw, 72px);
+      overflow: hidden;
+      padding: 0;
+    }
+    .page-spread {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 18px;
+      max-width: 920px;
+      margin: 0 auto;
+    }
+    .app.sidebar-hidden .page-spread {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      max-width: 1320px;
+    }
+    .page-nav {
+      width: 38px;
+      min-height: 56px;
+      font-size: 26px;
+      line-height: 1;
     }
     .page {
       max-width: 820px;
-      min-height: calc(100vh - 180px);
+      height: calc(100vh - 230px);
+      min-height: 520px;
       margin: 0 auto;
       padding: clamp(26px, 4vw, 54px);
       background: var(--paper);
@@ -1887,6 +1923,26 @@ INDEX_HTML = r"""<!doctype html>
       font-size: 20px;
       line-height: 1.72;
       white-space: pre-wrap;
+      overflow: hidden;
+      box-sizing: border-box;
+    }
+    .page-indicator {
+      min-height: 26px;
+      padding: 0 16px 8px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+    .page-measurer {
+      position: fixed;
+      left: -10000px;
+      top: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    .page-measurer .page {
+      width: 100%;
+      margin: 0;
     }
     .narrator-panel {
       margin: 10px 16px 0;
@@ -1962,6 +2018,8 @@ INDEX_HTML = r"""<!doctype html>
       .chapters { display: flex; overflow-x: auto; padding: 8px; }
       .chapter { min-width: 190px; }
       .sidebar-actions { grid-template-columns: 1fr 1fr; }
+      .page-shell { grid-template-columns: minmax(0, 1fr); padding-inline: 10px; }
+      .page-nav { display: none; }
       .page { font-size: 18px; box-shadow: none; }
     }
   </style>
@@ -2003,6 +2061,7 @@ INDEX_HTML = r"""<!doctype html>
       <div class="brand">Read Along</div>
       <nav class="chapters" id="chapters"></nav>
       <div class="sidebar-actions">
+        <button id="toggle-sidebar" type="button" title="Show or hide chapters">Chapters</button>
         <button id="show-library">Library</button>
         <button id="refresh">Refresh</button>
         <button id="process-book">Process Book</button>
@@ -2049,9 +2108,16 @@ INDEX_HTML = r"""<!doctype html>
           <button id="save-narrator" type="button">Save Narrator</button>
         </div>
       </section>
-      <div class="page-wrap" id="page-wrap">
-        <article class="page" id="reader-text"></article>
+      <div class="page-shell" id="page-shell">
+        <button class="page-nav page-nav-prev" id="page-prev" type="button" aria-label="Previous page">&lt;</button>
+        <div class="page-wrap" id="page-wrap">
+          <div class="page-spread" id="page-spread"></div>
+          <div id="reader-text" hidden></div>
+        </div>
+        <button class="page-nav page-nav-next" id="page-next" type="button" aria-label="Next page">&gt;</button>
       </div>
+      <div class="page-indicator" id="page-indicator">Page 1</div>
+      <div class="page-measurer" id="page-measurer" aria-hidden="true"></div>
       <div class="tts-loading" id="tts-loading-overlay" hidden aria-live="polite" aria-busy="true">
         <div class="tts-loading-panel">
           <span class="tts-spinner" aria-hidden="true"></span>
@@ -2070,6 +2136,11 @@ INDEX_HTML = r"""<!doctype html>
       text: "",
       units: [],
       selectedUnitId: 0,
+      currentUnitId: null,
+      pages: [],
+      unitPage: {},
+      pageIndex: 0,
+      sidebarOpen: true,
       ready: [],
       books: [],
       activeBook: null,
@@ -2104,7 +2175,14 @@ INDEX_HTML = r"""<!doctype html>
       registryList: document.getElementById("registry-list"),
       registryClose: document.getElementById("registry-close"),
       chapters: document.getElementById("chapters"),
-      reader: document.getElementById("reader-text"),
+      reader: document.getElementById("page-spread"),
+      pageWrap: document.getElementById("page-wrap"),
+      pageSpread: document.getElementById("page-spread"),
+      pageIndicator: document.getElementById("page-indicator"),
+      pageMeasurer: document.getElementById("page-measurer"),
+      toggleSidebar: document.getElementById("toggle-sidebar"),
+      pagePrev: document.getElementById("page-prev"),
+      pageNext: document.getElementById("page-next"),
       status: document.getElementById("status"),
       speed: document.getElementById("speed"),
       generation: document.getElementById("generation"),
@@ -2692,48 +2770,149 @@ INDEX_HTML = r"""<!doctype html>
       state.text = payload.text;
       state.units = payload.units;
       state.selectedUnitId = payload.selected_unit_id ?? (state.units.length ? state.units[0].unit_id : 0);
+      state.currentUnitId = null;
+      state.pageIndex = 0;
       renderChapters();
       renderText();
       highlight();
       if (!state.sessionActive) els.start.disabled = !payload.units_ready;
       setStatus(payload.message || (payload.chapter + ": " + state.units.length + " units"));
     }
+    function visiblePageCount() {
+      return state.sidebarOpen ? 1 : 2;
+    }
+    function ensureAnchorPage(unitId = null) {
+      const anchor = unitId ?? state.currentUnitId ?? state.selectedUnitId;
+      const page = state.unitPage[String(anchor)];
+      if (Number.isFinite(Number(page))) {
+        state.pageIndex = Math.max(0, Math.min(Number(page), Math.max(0, state.pages.length - 1)));
+        if (!state.sidebarOpen && state.pageIndex % 2 === 1) state.pageIndex -= 1;
+      }
+    }
+    function turnPage(delta) {
+      if (state.sessionActive) return;
+      const step = visiblePageCount();
+      state.pageIndex = Math.max(0, Math.min(Math.max(0, state.pages.length - 1), state.pageIndex + delta * step));
+      if (!state.sidebarOpen && state.pageIndex % 2 === 1) state.pageIndex -= 1;
+      renderPages();
+    }
     function renderText() {
-      els.reader.textContent = "";
+      paginateChapter();
+      ensureAnchorPage();
+      renderPages();
+    }
+    function paginateChapter() {
+      const pageCount = visiblePageCount();
+      const wrapWidth = els.pageWrap.clientWidth || 920;
+      const pageWidth = Math.max(320, Math.floor(wrapWidth / pageCount) - 24);
+      els.pageMeasurer.style.width = pageWidth + "px";
+      state.pages = [];
+      state.unitPage = {};
+      els.pageMeasurer.textContent = "";
+      let current = [];
+      let page = createPageArticle();
+      els.pageMeasurer.appendChild(page);
       let cursor = 0;
       const units = [...state.units].sort((a, b) => a.source_start - b.source_start);
+      if (!units.length) {
+        state.pages = [[{ before: state.text, unit: null }]];
+        state.pageIndex = 0;
+        return;
+      }
       for (const unit of units) {
-        if (unit.source_start > cursor) {
-          els.reader.append(document.createTextNode(state.text.slice(cursor, unit.source_start)));
+        const fragment = {
+          before: state.text.slice(cursor, unit.source_start),
+          unit
+        };
+        appendMeasuredFragment(page, fragment);
+        const overflowed = page.clientHeight && page.scrollHeight > page.clientHeight + 1;
+        if (overflowed && current.length) {
+          state.pages.push(current);
+          current = [];
+          page = createPageArticle();
+          els.pageMeasurer.textContent = "";
+          els.pageMeasurer.appendChild(page);
+          appendMeasuredFragment(page, fragment);
         }
+        state.unitPage[String(unit.unit_id)] = state.pages.length;
+        current.push(fragment);
+        cursor = unit.source_end;
+      }
+      const tail = state.text.slice(cursor);
+      if (tail || !current.length) current.push({ before: tail, unit: null });
+      state.pages.push(current);
+      state.pageIndex = Math.max(0, Math.min(state.pageIndex, Math.max(0, state.pages.length - 1)));
+    }
+    function createPageArticle() {
+      const page = document.createElement("article");
+      page.className = "page";
+      return page;
+    }
+    function appendMeasuredFragment(page, fragment) {
+      if (fragment.before) page.append(document.createTextNode(fragment.before));
+      if (!fragment.unit) return;
+      const span = document.createElement("span");
+      span.className = "unit";
+      span.textContent = unitText(fragment.unit);
+      page.appendChild(span);
+    }
+    function unitText(unit) {
+      return state.text.slice(unit.source_start, unit.source_end);
+    }
+    function renderPages() {
+      els.pageSpread.textContent = "";
+      const count = visiblePageCount();
+      const total = Math.max(1, state.pages.length);
+      state.pageIndex = Math.max(0, Math.min(state.pageIndex, total - 1));
+      if (!state.sidebarOpen && state.pageIndex % 2 === 1) state.pageIndex -= 1;
+      const end = Math.min(total, state.pageIndex + count);
+      for (let index = state.pageIndex; index < end; index += 1) {
+        els.pageSpread.appendChild(renderPageArticle(state.pages[index] || []));
+      }
+      if (count === 2 && end > state.pageIndex + 1) {
+        els.pageIndicator.textContent = "Pages " + (state.pageIndex + 1) + "-" + end + " of " + total;
+      } else {
+        els.pageIndicator.textContent = "Page " + (state.pageIndex + 1) + " of " + total;
+      }
+      els.pagePrev.disabled = state.sessionActive || state.pageIndex <= 0;
+      els.pageNext.disabled = state.sessionActive || end >= total;
+      applyHighlights();
+    }
+    function renderPageArticle(fragments) {
+      const page = createPageArticle();
+      for (const fragment of fragments) {
+        if (fragment.before) page.append(document.createTextNode(fragment.before));
+        const unit = fragment.unit;
+        if (!unit) continue;
         const span = document.createElement("span");
         span.className = "unit";
         span.dataset.unitId = unit.unit_id;
-        span.textContent = state.text.slice(unit.source_start, unit.source_end);
+        span.textContent = unitText(unit);
         span.onclick = async () => {
           if (state.sessionActive) return;
           state.selectedUnitId = unit.unit_id;
-          highlight();
+          state.currentUnitId = null;
+          ensureAnchorPage(unit.unit_id);
+          renderPages();
           setStatus("Selected " + (unit.unit_id + 1) + "/" + state.units.length + ": " + unit.role);
           await saveReadingPosition(unit);
         };
-        els.reader.appendChild(span);
-        cursor = unit.source_end;
+        page.appendChild(span);
       }
-      if (cursor < state.text.length) {
-        els.reader.append(document.createTextNode(state.text.slice(cursor)));
-      }
+      return page;
     }
-    function highlight(current = null) {
+    function applyHighlights() {
       const buffered = new Set(state.ready.map(item => item.unit_id));
-      for (const span of els.reader.querySelectorAll(".unit")) {
+      for (const span of els.pageSpread.querySelectorAll(".unit")) {
         const unitId = Number(span.dataset.unitId);
         span.classList.toggle("selected", !state.sessionActive && unitId === state.selectedUnitId);
         span.classList.toggle("buffered", buffered.has(unitId));
-        span.classList.toggle("current", current !== null && unitId === current);
+        span.classList.toggle("current", state.currentUnitId !== null && unitId === state.currentUnitId);
       }
-      const active = els.reader.querySelector(".unit.current, .unit.selected");
-      if (active) active.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+    function highlight(current = null) {
+      if (current !== null) state.currentUnitId = current;
+      applyHighlights();
     }
     async function saveReadingPosition(unit) {
       if (!state.activeBook || !state.chapter) return;
@@ -2777,6 +2956,7 @@ INDEX_HTML = r"""<!doctype html>
         });
         state.units = payload.units;
         state.ready = payload.ready;
+        state.currentUnitId = null;
         renderText();
         showTtsLoading(false);
         setStatus("Buffered " + payload.ready_playback_seconds.toFixed(1) + "s. Starting playback...");
@@ -2800,6 +2980,9 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
       state.selectedUnitId = item.unit_id;
+      state.currentUnitId = item.unit_id;
+      ensureAnchorPage(item.unit_id);
+      renderPages();
       highlight(item.unit_id);
       setStatus("Playing " + (item.unit_id + 1) + "/" + state.units.length);
       els.audio.src = item.audio_url;
@@ -2834,8 +3017,9 @@ INDEX_HTML = r"""<!doctype html>
       els.audio.removeAttribute("src");
       showTtsLoading(false);
       state.ready = [];
+      state.currentUnitId = null;
       lockControls(false);
-      highlight();
+      renderPages();
       setStatus(message);
     }
     document.getElementById("show-library").onclick = () => loadLibrary(true).catch(error => setStatus(error.message));
@@ -2845,6 +3029,29 @@ INDEX_HTML = r"""<!doctype html>
     els.editNarrator.onclick = () => { els.narratorPanel.hidden = false; };
     els.narratorClose.onclick = () => { els.narratorPanel.hidden = true; };
     els.saveNarrator.onclick = () => saveNarratorProfile().catch(error => setStatus(error.message));
+    els.toggleSidebar.onclick = () => {
+      state.sidebarOpen = !state.sidebarOpen;
+      els.readerView.classList.toggle("sidebar-hidden", !state.sidebarOpen);
+      renderText();
+    };
+    els.pagePrev.onclick = () => turnPage(-1);
+    els.pageNext.onclick = () => turnPage(1);
+    window.addEventListener("keydown", event => {
+      const tag = String(document.activeElement && document.activeElement.tagName || "").toLowerCase();
+      if (state.sessionActive || ["input", "select", "button", "textarea"].includes(tag)) return;
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        turnPage(-1);
+      }
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        turnPage(1);
+      }
+    });
+    window.addEventListener("resize", () => {
+      if (!state.chapter) return;
+      renderText();
+    });
     els.addEpubFile.onchange = () => {
       const file = els.addEpubFile.files && els.addEpubFile.files[0];
       if (!file) return;
