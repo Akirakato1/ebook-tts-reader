@@ -139,8 +139,15 @@ class ReadAlongWebState:
     def __post_init__(self) -> None:
         self.library_root = Path(self.library_root).resolve()
         self.lock = threading.RLock()
+        self.progress_lock = threading.Lock()
         self.jobs: Dict[str, LibraryJob] = {}
         self.jobs_by_slug: Dict[str, str] = {}
+        self.session_start_progress: Dict[str, Any] = {
+            "status": "idle",
+            "stage": "idle",
+            "message": "Idle.",
+            "updated_at": time.time(),
+        }
 
     def library_payload(self) -> Dict[str, Any]:
         with self.lock:
@@ -177,6 +184,10 @@ class ReadAlongWebState:
                 "session_active": self.session is not None,
                 "session_chapter": self.session_chapter,
             }
+
+    def session_start_progress_payload(self) -> Dict[str, Any]:
+        with self.progress_lock:
+            return {"ok": True, **dict(self.session_start_progress)}
 
     def chapter_payload(self, chapter: str) -> Dict[str, Any]:
         with self.lock:
@@ -645,56 +656,73 @@ class ReadAlongWebState:
         start_unit_id: int,
         settings: Dict[str, Any],
     ) -> Dict[str, Any]:
-        if not chapter.strip():
-            raise ValueError("chapter is required")
-        with self.lock:
-            self.end_session()
-            controller = self._require_controller()
-            if not controller.paths.annotation(chapter).exists() and not controller.paths.read_along_units(chapter).exists():
-                raise ValueError("Process Book before starting read-along for this chapter.")
-            controller.save_read_along_settings(settings)
-            resolved_settings = controller.read_along_settings()
-            units = controller.read_along_units(chapter)
-            if not units:
-                raise ValueError("Process Book before starting read-along for this chapter.")
-            log_runtime_step(
-                "web_readalong_session_start",
-                chapter=chapter,
-                start_unit_id=start_unit_id,
-                playback_speed=resolved_settings.get("playback_speed"),
-                start_buffer_seconds=resolved_settings.get("start_buffer_seconds"),
-                target_buffer_seconds=resolved_settings.get("target_buffer_seconds"),
-                generation_mode=resolved_settings.get("generation_mode"),
-            )
-            self.session = controller.create_read_along_session(
-                chapter,
-                units,
-                resolved_settings,
-                store_audio_files=False,
-            )
-            self.session_chapter = chapter
-            self.session.fill_buffer(
-                start_unit_id=start_unit_id,
-                min_buffer_seconds=self.session.start_buffer_seconds,
-            )
-            self._record_last_read(chapter, start_unit_id)
-            log_runtime_step(
-                "web_readalong_buffer_ready",
-                session_id=self.session.session_id,
-                ready_units=len(self.session.ready_items),
-                ready_playback_seconds=f"{self.session.ready_playback_seconds:.2f}",
-            )
-            return {
-                "ok": True,
-                "chapter": chapter,
-                "settings": resolved_settings,
-                "session_id": self.session.session_id,
-                "units": [unit.to_dict() for unit in self.session.units],
-                "ready": self._ready_payload(),
-                "ready_playback_seconds": self.session.ready_playback_seconds,
-                "target_buffer_seconds": self.session.target_buffer_seconds,
-                "max_buffer_seconds": self.session.max_buffer_seconds,
-            }
+        self._set_session_start_progress("validating_chapter", "Validating chapter and read-along units.")
+        try:
+            if not chapter.strip():
+                raise ValueError("chapter is required")
+            with self.lock:
+                self.end_session()
+                controller = self._require_controller()
+                if not controller.paths.annotation(chapter).exists() and not controller.paths.read_along_units(chapter).exists():
+                    raise ValueError("Process Book before starting read-along for this chapter.")
+                self._set_session_start_progress("saving_settings", "Saving read-along session settings.")
+                controller.save_read_along_settings(settings)
+                resolved_settings = controller.read_along_settings()
+                units = controller.read_along_units(chapter)
+                if not units:
+                    raise ValueError("Process Book before starting read-along for this chapter.")
+                log_runtime_step(
+                    "web_readalong_session_start",
+                    chapter=chapter,
+                    start_unit_id=start_unit_id,
+                    playback_speed=resolved_settings.get("playback_speed"),
+                    start_buffer_seconds=resolved_settings.get("start_buffer_seconds"),
+                    target_buffer_seconds=resolved_settings.get("target_buffer_seconds"),
+                    generation_mode=resolved_settings.get("generation_mode"),
+                )
+                self._set_session_start_progress("loading_tts_stack", "Loading TTS stack and narrator voices.")
+                self.session = controller.create_read_along_session(
+                    chapter,
+                    units,
+                    resolved_settings,
+                    store_audio_files=False,
+                )
+                self.session_chapter = chapter
+                self._set_session_start_progress(
+                    "building_initial_buffer",
+                    f"Building initial {self.session.start_buffer_seconds:.1f}s audio buffer.",
+                )
+                self.session.fill_buffer(
+                    start_unit_id=start_unit_id,
+                    min_buffer_seconds=self.session.start_buffer_seconds,
+                )
+                self._record_last_read(chapter, start_unit_id)
+                ready_seconds = self.session.ready_playback_seconds
+                self._set_session_start_progress(
+                    "buffer_ready",
+                    f"Buffer ready: {ready_seconds:.1f}s of generated audio.",
+                    status="completed",
+                )
+                log_runtime_step(
+                    "web_readalong_buffer_ready",
+                    session_id=self.session.session_id,
+                    ready_units=len(self.session.ready_items),
+                    ready_playback_seconds=f"{ready_seconds:.2f}",
+                )
+                return {
+                    "ok": True,
+                    "chapter": chapter,
+                    "settings": resolved_settings,
+                    "session_id": self.session.session_id,
+                    "units": [unit.to_dict() for unit in self.session.units],
+                    "ready": self._ready_payload(),
+                    "ready_playback_seconds": ready_seconds,
+                    "target_buffer_seconds": self.session.target_buffer_seconds,
+                    "max_buffer_seconds": self.session.max_buffer_seconds,
+                }
+        except Exception as exc:
+            self._set_session_start_progress("failed", str(exc), status="failed")
+            raise
 
     def advance_session(self) -> Dict[str, Any]:
         with self.lock:
@@ -803,6 +831,15 @@ class ReadAlongWebState:
         controller = self._require_controller()
         _update_book_last_read(controller.book_root, chapter=chapter, unit_id=int(unit_id))
 
+    def _set_session_start_progress(self, stage: str, message: str, status: str = "running") -> None:
+        with self.progress_lock:
+            self.session_start_progress = {
+                "status": status,
+                "stage": str(stage),
+                "message": str(message),
+                "updated_at": time.time(),
+            }
+
 
 class ReadAlongHttpServer(ThreadingHTTPServer):
     def __init__(self, server_address, request_handler_class, app_state: ReadAlongWebState):
@@ -872,6 +909,9 @@ def build_handler(app_state: ReadAlongWebState):
                     return
                 if path == "/api/state":
                     self._send_json(app_state.state_payload())
+                    return
+                if path == "/api/session/start-progress":
+                    self._send_json(app_state.session_start_progress_payload())
                     return
                 if path == "/api/narrator-profile":
                     self._send_json(app_state.narrator_profile_payload())
@@ -1971,7 +2011,7 @@ INDEX_HTML = r"""<!doctype html>
       z-index: 20;
       display: grid;
       place-items: center;
-      background: rgba(255, 255, 255, 0.2);
+      background: rgba(20, 24, 28, 0.24);
     }
     .tts-loading[hidden] { display: none; }
     .session-error {
@@ -1998,6 +2038,10 @@ INDEX_HTML = r"""<!doctype html>
       box-shadow: 0 8px 28px rgba(42, 36, 28, 0.16);
       font-size: 14px;
       font-weight: 600;
+    }
+    #tts-loading-stage {
+      max-width: min(520px, calc(100vw - 72px));
+      overflow-wrap: anywhere;
     }
     .tts-spinner {
       width: 18px;
@@ -2132,7 +2176,7 @@ INDEX_HTML = r"""<!doctype html>
       <div class="tts-loading" id="tts-loading-overlay" hidden aria-live="polite" aria-busy="true">
         <div class="tts-loading-panel">
           <span class="tts-spinner" aria-hidden="true"></span>
-          <span>TTS stack loading</span>
+          <span id="tts-loading-stage">TTS stack loading</span>
         </div>
       </div>
       <div class="session-error" id="session-error" hidden></div>
@@ -2211,8 +2255,10 @@ INDEX_HTML = r"""<!doctype html>
       end: document.getElementById("end"),
       audio: document.getElementById("audio"),
       ttsLoading: document.getElementById("tts-loading-overlay"),
+      ttsLoadingStage: document.getElementById("tts-loading-stage"),
       sessionError: document.getElementById("session-error")
     };
+    let sessionProgressTimer = null;
     function compactStatusText(text, limit = 420) {
       const value = String(text || "");
       if (value.length <= limit) return value;
@@ -2221,6 +2267,29 @@ INDEX_HTML = r"""<!doctype html>
     function setStatus(text) { els.status.textContent = text; }
     function showTtsLoading(visible) {
       els.ttsLoading.hidden = !visible;
+    }
+    function setTtsLoadingStage(message) {
+      els.ttsLoadingStage.textContent = String(message || "TTS stack loading");
+    }
+    function nextFrame() {
+      return new Promise(resolve => requestAnimationFrame(() => resolve()));
+    }
+    function startSessionProgressPolling() {
+      stopSessionProgressPolling();
+      const poll = async () => {
+        try {
+          const payload = await api("/api/session/start-progress");
+          if (payload.message) setTtsLoadingStage(payload.message);
+        } catch (_error) {}
+      };
+      poll();
+      sessionProgressTimer = window.setInterval(poll, 450);
+    }
+    function stopSessionProgressPolling() {
+      if (sessionProgressTimer !== null) {
+        window.clearInterval(sessionProgressTimer);
+        sessionProgressTimer = null;
+      }
     }
     function showSessionError(message) {
       const text = String(message || "");
@@ -2961,8 +3030,11 @@ INDEX_HTML = r"""<!doctype html>
       }
       lockControls(true);
       showTtsLoading(true);
+      setTtsLoadingStage("Starting read-along session...");
       showSessionError("");
+      startSessionProgressPolling();
       setStatus("TTS stack loading...");
+      await nextFrame();
       try {
         const payload = await api("/api/session/start", {
           method: "POST",
@@ -2977,6 +3049,7 @@ INDEX_HTML = r"""<!doctype html>
         state.ready = payload.ready;
         state.currentUnitId = null;
         renderText();
+        stopSessionProgressPolling();
         showTtsLoading(false);
         setStatus("Buffered " + payload.ready_playback_seconds.toFixed(1) + "s. Starting playback...");
         await playReady();
@@ -2984,6 +3057,7 @@ INDEX_HTML = r"""<!doctype html>
         try {
           await api("/api/session/end", { method: "POST" });
         } catch (_cleanupError) {}
+        stopSessionProgressPolling();
         showTtsLoading(false);
         state.ready = [];
         lockControls(false);
@@ -3035,6 +3109,7 @@ INDEX_HTML = r"""<!doctype html>
       }
       els.audio.pause();
       els.audio.removeAttribute("src");
+      stopSessionProgressPolling();
       showTtsLoading(false);
       showSessionError("");
       state.ready = [];

@@ -977,6 +977,47 @@ def test_web_interface_exposes_tts_loading_overlay_and_selection_outline(tmp_pat
         assert "showTtsLoading(false)" in response
         assert 'id="session-error"' in response
         assert "showSessionError" in response
+        assert 'id="tts-loading-stage"' in response
+        assert "startSessionProgressPolling" in response
+        assert "await nextFrame()" in response
+        assert "rgba(20, 24, 28, 0.24)" in response
+    finally:
+        _stop_server(server, thread)
+
+
+def test_web_api_reports_session_start_progress(tmp_path):
+    _write_demo_book(tmp_path, ready_for_tts=True)
+    server, thread, base_url = _start_test_server(tmp_path)
+    try:
+        initial = _get_json(base_url + "/api/session/start-progress")
+
+        assert initial["ok"] is True
+        assert initial["status"] == "idle"
+        assert initial["stage"] == "idle"
+
+        started = _post_json(
+            base_url + "/api/session/start",
+            {
+                "chapter": "chapter_001",
+                "start_unit_id": 0,
+                "settings": {
+                    "playback_speed": 1.0,
+                    "generation_mode": "balanced",
+                    "buffer_limit": 2,
+                    "target_buffer_seconds": 0.1,
+                    "start_buffer_seconds": 0.1,
+                    "max_buffer_seconds": 0.2,
+                    "max_buffer_units": 4,
+                },
+            },
+        )
+        progress = _get_json(base_url + "/api/session/start-progress")
+
+        assert started["ok"] is True
+        assert progress["ok"] is True
+        assert progress["status"] == "completed"
+        assert progress["stage"] == "buffer_ready"
+        assert "Buffer ready" in progress["message"]
     finally:
         _stop_server(server, thread)
 
