@@ -612,6 +612,19 @@ class ReadAlongWebState:
             _update_book_stage(controller.book_root, voices_ready=False)
             return {"ok": True, "settings": controller.read_along_settings()}
 
+    def narrator_profile_payload(self) -> Dict[str, Any]:
+        with self.lock:
+            controller = self._require_controller()
+            return {"ok": True, **controller.read_along_narrator_profile_payload()}
+
+    def save_narrator_profile(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        with self.lock:
+            if self.session is not None:
+                raise ValueError("End the active read-along session before editing narrator.")
+            controller = self._require_controller()
+            controller.save_read_along_narrator_profile(payload)
+            return {"ok": True, **controller.read_along_narrator_profile_payload()}
+
     def save_reading_position(self, slug: str, chapter: str, unit_id: int) -> Dict[str, Any]:
         with self.lock:
             summary = self._require_book_summary(slug)
@@ -860,6 +873,9 @@ def build_handler(app_state: ReadAlongWebState):
                 if path == "/api/state":
                     self._send_json(app_state.state_payload())
                     return
+                if path == "/api/narrator-profile":
+                    self._send_json(app_state.narrator_profile_payload())
+                    return
                 if path.startswith("/api/chapter/"):
                     chapter = path.rsplit("/", 1)[-1]
                     self._send_json(app_state.chapter_payload(chapter))
@@ -920,6 +936,9 @@ def build_handler(app_state: ReadAlongWebState):
                     return
                 if path == "/api/settings":
                     self._send_json(app_state.save_settings(payload))
+                    return
+                if path == "/api/narrator-profile":
+                    self._send_json(app_state.save_narrator_profile(payload))
                     return
                 if path == "/api/reading-position":
                     self._send_json(
@@ -1810,6 +1829,20 @@ INDEX_HTML = r"""<!doctype html>
       color: var(--muted);
       font-size: 13px;
     }
+    .narrator-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      min-width: 0;
+    }
+    #narrator-summary {
+      max-width: 260px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     input, select, button {
       font: inherit;
       min-height: 32px;
@@ -1855,6 +1888,14 @@ INDEX_HTML = r"""<!doctype html>
       line-height: 1.72;
       white-space: pre-wrap;
     }
+    .narrator-panel {
+      margin: 10px 16px 0;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .narrator-panel[hidden] { display: none; }
     .unit {
       border-radius: 4px;
       outline: 1px dashed transparent;
@@ -1982,17 +2023,32 @@ INDEX_HTML = r"""<!doctype html>
         <label>Buffer s <input id="target-buffer" type="number" min="1" max="120" step="0.5"></label>
         <label>Start s <input id="start-buffer" type="number" min="1" max="120" step="0.5"></label>
         <label>Max units <input id="max-units" type="number" min="1" max="32" step="1"></label>
-        <label>Narrator
-          <select id="narrator">
-            <option value="male">male</option>
-            <option value="female">female</option>
-            <option value="current">current</option>
-          </select>
-        </label>
+        <div class="narrator-control">
+          <span id="narrator-summary">Narrator: loading</span>
+          <button id="edit-narrator" type="button">Edit Narrator</button>
+        </div>
         <button id="save">Save</button>
         <button class="primary" id="start">Start Session</button>
         <button id="end" disabled>End Session</button>
       </div>
+      <section class="narrator-panel" id="narrator-panel" hidden>
+        <div class="registry-head">
+          <h2>Narrator Voice</h2>
+          <button id="narrator-close" type="button">Close</button>
+        </div>
+        <div class="registry-grid">
+          <label>Name <input id="narrator-display-name" data-narrator-field="display_name" type="text"></label>
+          <label>Age <input id="narrator-age-stage" data-narrator-field="age_stage" type="text"></label>
+          <label>Gender <input id="narrator-gender" data-narrator-field="gender" type="text"></label>
+          <label>Personality <input id="narrator-personality" data-narrator-field="personality" type="text"></label>
+          <label>Race / Ethnicity <input id="narrator-race" data-narrator-field="race_or_ethnicity" type="text"></label>
+          <label>Accent <input id="narrator-accent" data-narrator-field="accent" type="text"></label>
+          <label>Occupation <input id="narrator-occupation" data-narrator-field="occupation" type="text"></label>
+        </div>
+        <div class="registry-actions">
+          <button id="save-narrator" type="button">Save Narrator</button>
+        </div>
+      </section>
       <div class="page-wrap" id="page-wrap">
         <article class="page" id="reader-text"></article>
       </div>
@@ -2019,6 +2075,7 @@ INDEX_HTML = r"""<!doctype html>
       activeBook: null,
       registryBook: null,
       registryReview: null,
+      narratorProfile: null,
       activeJobs: {},
       busySlug: "",
       sessionActive: false
@@ -2055,7 +2112,11 @@ INDEX_HTML = r"""<!doctype html>
       targetBuffer: document.getElementById("target-buffer"),
       startBuffer: document.getElementById("start-buffer"),
       maxUnits: document.getElementById("max-units"),
-      narrator: document.getElementById("narrator"),
+      narratorSummary: document.getElementById("narrator-summary"),
+      editNarrator: document.getElementById("edit-narrator"),
+      narratorPanel: document.getElementById("narrator-panel"),
+      narratorClose: document.getElementById("narrator-close"),
+      saveNarrator: document.getElementById("save-narrator"),
       start: document.getElementById("start"),
       end: document.getElementById("end"),
       audio: document.getElementById("audio"),
@@ -2093,8 +2154,7 @@ INDEX_HTML = r"""<!doctype html>
         target_buffer_seconds: Number(els.targetBuffer.value || 20),
         start_buffer_seconds: Number(els.startBuffer.value || 20),
         max_buffer_seconds: Math.max(Number(els.targetBuffer.value || 20), Number(els.targetBuffer.value || 20) * 2),
-        max_buffer_units: Number(els.maxUnits.value || 32),
-        narrator_voice_type: els.narrator.value
+        max_buffer_units: Number(els.maxUnits.value || 32)
       };
     }
     async function loadLibrary(forceLibrary = false) {
@@ -2571,11 +2631,33 @@ INDEX_HTML = r"""<!doctype html>
       return (stem.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120).trim()) || "Untitled Book";
     }
     function lockControls(locked) {
-      for (const el of [els.speed, els.generation, els.buffer, els.targetBuffer, els.startBuffer, els.maxUnits, els.narrator, els.start]) {
+      for (const el of [els.speed, els.generation, els.buffer, els.targetBuffer, els.startBuffer, els.maxUnits, els.editNarrator, els.start]) {
         el.disabled = locked;
       }
       els.end.disabled = !locked;
       state.sessionActive = locked;
+    }
+    async function loadNarratorProfile() {
+      const payload = await api("/api/narrator-profile");
+      state.narratorProfile = payload;
+      els.narratorSummary.textContent = "Narrator: " + payload.summary;
+      for (const input of document.querySelectorAll("[data-narrator-field]")) {
+        input.value = payload.fields[input.dataset.narratorField] || "";
+      }
+    }
+    async function saveNarratorProfile() {
+      const fields = {};
+      for (const input of document.querySelectorAll("[data-narrator-field]")) {
+        fields[input.dataset.narratorField] = input.value;
+      }
+      const payload = await api("/api/narrator-profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(fields)
+      });
+      state.narratorProfile = payload;
+      els.narratorSummary.textContent = "Narrator: " + payload.summary;
+      setStatus("Narrator profile saved. It will be used when the next session starts.");
     }
     async function loadState() {
       const payload = await api("/api/state");
@@ -2587,8 +2669,8 @@ INDEX_HTML = r"""<!doctype html>
       els.targetBuffer.value = payload.settings.target_buffer_seconds;
       els.startBuffer.value = payload.settings.start_buffer_seconds;
       els.maxUnits.value = payload.settings.max_buffer_units;
-      els.narrator.value = payload.settings.narrator_voice_type;
       lockControls(Boolean(payload.session_active));
+      await loadNarratorProfile();
       renderChapters();
       if (!state.chapter && state.chapters.length) await loadChapter(state.chapters[0].chapter);
     }
@@ -2760,6 +2842,9 @@ INDEX_HTML = r"""<!doctype html>
     document.getElementById("library-refresh").onclick = () => loadLibrary(true).catch(error => alert(error.message));
     document.getElementById("add-book").onclick = () => addBook().catch(error => setLibraryStatus(error.message));
     els.registryClose.onclick = () => { els.registryPanel.hidden = true; };
+    els.editNarrator.onclick = () => { els.narratorPanel.hidden = false; };
+    els.narratorClose.onclick = () => { els.narratorPanel.hidden = true; };
+    els.saveNarrator.onclick = () => saveNarratorProfile().catch(error => setStatus(error.message));
     els.addEpubFile.onchange = () => {
       const file = els.addEpubFile.files && els.addEpubFile.files[0];
       if (!file) return;
@@ -2803,7 +2888,6 @@ INDEX_HTML = r"""<!doctype html>
         els.targetBuffer.value = payload.settings.target_buffer_seconds;
         els.startBuffer.value = payload.settings.start_buffer_seconds;
         els.maxUnits.value = payload.settings.max_buffer_units;
-        els.narrator.value = payload.settings.narrator_voice_type;
         setStatus("Settings saved.");
       } catch (error) { setStatus(error.message); }
     };
