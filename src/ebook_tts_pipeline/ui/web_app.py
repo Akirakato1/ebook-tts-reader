@@ -140,6 +140,7 @@ class ReadAlongWebState:
     def __post_init__(self) -> None:
         self.library_root = Path(self.library_root).resolve()
         self.lock = threading.RLock()
+        self.session_fill_lock = threading.Lock()
         self.progress_lock = threading.Lock()
         self.jobs: Dict[str, LibraryJob] = {}
         self.jobs_by_slug: Dict[str, str] = {}
@@ -692,10 +693,11 @@ class ReadAlongWebState:
                     "building_initial_buffer",
                     f"Building initial {self.session.start_buffer_seconds:.1f}s audio buffer.",
                 )
-                self.session.fill_buffer(
-                    start_unit_id=start_unit_id,
-                    min_buffer_seconds=self.session.start_buffer_seconds,
-                )
+                with self.session_fill_lock:
+                    self.session.fill_buffer(
+                        start_unit_id=start_unit_id,
+                        min_buffer_seconds=self.session.start_buffer_seconds,
+                    )
                 self._record_last_read(chapter, start_unit_id)
                 ready_seconds = self.session.ready_playback_seconds
                 self._set_session_start_progress(
@@ -719,6 +721,7 @@ class ReadAlongWebState:
                     "ready_playback_seconds": ready_seconds,
                     "target_buffer_seconds": self.session.target_buffer_seconds,
                     "max_buffer_seconds": self.session.max_buffer_seconds,
+                    "has_more_units": self.session.has_more_units,
                 }
         except Exception as exc:
             self._set_session_start_progress("failed", str(exc), status="failed")
@@ -728,7 +731,6 @@ class ReadAlongWebState:
         with self.lock:
             session = self._require_session()
             consumed = session.consume_ready()
-            session.fill_buffer()
             if session.ready_items:
                 self._record_last_read(self.session_chapter, session.ready_items[0].unit_id)
             elif consumed is not None:
@@ -741,6 +743,50 @@ class ReadAlongWebState:
                 "ready_playback_seconds": session.ready_playback_seconds,
                 "target_buffer_seconds": session.target_buffer_seconds,
                 "max_buffer_seconds": session.max_buffer_seconds,
+                "has_more_units": session.has_more_units,
+                "ended": not session.ready_items and not session.has_more_units,
+            }
+
+    def top_up_session(self, exclude_unit_id: Optional[int] = None) -> Dict[str, Any]:
+        with self.lock:
+            session = self._require_session()
+            session_id = session.session_id
+        if not self.session_fill_lock.acquire(blocking=False):
+            with self.lock:
+                current = self._require_session()
+                if current.session_id != session_id:
+                    raise ValueError("Read-along session changed while topping up buffer.")
+                return {
+                    "ok": True,
+                    "chapter": self.session_chapter,
+                    "session_id": current.session_id,
+                    "ready": self._ready_payload(),
+                    "ready_playback_seconds": current.ready_playback_seconds,
+                    "target_buffer_seconds": current.target_buffer_seconds,
+                    "max_buffer_seconds": current.max_buffer_seconds,
+                    "has_more_units": current.has_more_units,
+                    "generated_count": 0,
+                    "top_up_running": True,
+                }
+        try:
+            generated = session.fill_buffer(exclude_unit_id=exclude_unit_id)
+        finally:
+            self.session_fill_lock.release()
+        with self.lock:
+            current = self._require_session()
+            if current.session_id != session_id:
+                raise ValueError("Read-along session changed while topping up buffer.")
+            return {
+                "ok": True,
+                "chapter": self.session_chapter,
+                "session_id": current.session_id,
+                "ready": self._ready_payload(),
+                "ready_playback_seconds": current.ready_playback_seconds,
+                "target_buffer_seconds": current.target_buffer_seconds,
+                "max_buffer_seconds": current.max_buffer_seconds,
+                "has_more_units": current.has_more_units,
+                "generated_count": len(generated),
+                "top_up_running": False,
             }
 
     def end_session(self) -> Dict[str, Any]:
@@ -1002,6 +1048,14 @@ def build_handler(app_state: ReadAlongWebState):
                     return
                 if path == "/api/session/advance":
                     self._send_json(app_state.advance_session())
+                    return
+                if path == "/api/session/top-up":
+                    exclude_unit_id = payload.get("exclude_unit_id")
+                    self._send_json(
+                        app_state.top_up_session(
+                            None if exclude_unit_id is None else int(exclude_unit_id)
+                        )
+                    )
                     return
                 if path == "/api/session/end":
                     self._send_json(app_state.end_session())
@@ -1882,13 +1936,22 @@ INDEX_HTML = r"""<!doctype html>
       position: relative;
     }
     .toolbar {
+      display: grid;
+      gap: 8px;
+      align-items: start;
+      padding: 12px 16px;
+      background: #fff;
+      border-bottom: 1px solid var(--line);
+    }
+    .session-settings-row,
+    .session-controls-row {
       display: flex;
       gap: 10px;
       align-items: center;
       flex-wrap: wrap;
-      padding: 12px 16px;
-      background: #fff;
-      border-bottom: 1px solid var(--line);
+    }
+    .session-controls-row {
+      padding-top: 2px;
     }
     label {
       display: inline-flex;
@@ -2052,6 +2115,7 @@ INDEX_HTML = r"""<!doctype html>
       background: rgba(20, 24, 28, 0.24);
     }
     .tts-loading[hidden] { display: none; }
+    .tts-loading.paused .tts-spinner { display: none; }
     .session-error {
       margin: 8px 16px;
       padding: 10px 12px;
@@ -2191,24 +2255,29 @@ INDEX_HTML = r"""<!doctype html>
     </aside>
     <section class="reader">
       <div class="toolbar">
-        <label>Speed <input id="speed" type="number" min="1" max="4" step="0.05"></label>
-        <label>Generation
-          <select id="generation">
-            <option value="balanced">balanced</option>
-            <option value="fast">fast</option>
-            <option value="precise">precise</option>
-          </select>
-        </label>
-        <label>Units <input id="buffer" type="number" min="1" max="8" step="1"></label>
-        <label>Buffer s <input id="target-buffer" type="number" min="1" max="120" step="0.5"></label>
-        <label>Start s <input id="start-buffer" type="number" min="1" max="120" step="0.5"></label>
-        <label>Max units <input id="max-units" type="number" min="1" max="32" step="1"></label>
-        <div class="narrator-control">
-          <span id="narrator-summary">Narrator: loading</span>
-          <button id="edit-narrator" type="button">Edit Narrator</button>
+        <div class="session-settings-row">
+          <label>Speed <input id="speed" type="number" min="1" max="4" step="0.05"></label>
+          <label>Generation
+            <select id="generation">
+              <option value="balanced">balanced</option>
+              <option value="fast">fast</option>
+              <option value="precise">precise</option>
+            </select>
+          </label>
+          <input id="buffer" type="hidden" value="2">
+          <label>Buffer s <input id="target-buffer" type="number" min="1" max="120" step="0.5"></label>
+          <label>Start s <input id="start-buffer" type="number" min="1" max="120" step="0.5"></label>
+          <input id="max-units" type="hidden" value="32">
+          <div class="narrator-control">
+            <span id="narrator-summary">Narrator: loading</span>
+            <button id="edit-narrator" type="button">Edit Narrator</button>
+          </div>
         </div>
-        <button class="primary" id="start">Start Session</button>
-        <button id="end" disabled>End Session</button>
+        <div class="session-controls-row">
+          <button class="primary" id="start">Start Session</button>
+          <button id="pause-session" type="button" disabled>Pause Session</button>
+          <button id="end" disabled>End Session</button>
+        </div>
       </div>
       <section class="narrator-panel" id="narrator-panel" hidden>
         <div class="registry-head">
@@ -2242,6 +2311,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="tts-loading-panel">
           <span class="tts-spinner" aria-hidden="true"></span>
           <span id="tts-loading-stage">TTS stack loading</span>
+          <button id="tts-loading-resume" type="button" hidden>Resume Session</button>
         </div>
       </div>
       <div class="session-error" id="session-error" hidden></div>
@@ -2330,10 +2400,12 @@ INDEX_HTML = r"""<!doctype html>
       narratorAccent: document.getElementById("narrator-accent"),
       saveNarrator: document.getElementById("save-narrator"),
       start: document.getElementById("start"),
+      pause: document.getElementById("pause-session"),
       end: document.getElementById("end"),
       audio: document.getElementById("audio"),
       ttsLoading: document.getElementById("tts-loading-overlay"),
       ttsLoadingStage: document.getElementById("tts-loading-stage"),
+      ttsLoadingResume: document.getElementById("tts-loading-resume"),
       sessionError: document.getElementById("session-error"),
       returnPrompt: document.getElementById("return-prompt"),
       returnPromptYes: document.getElementById("return-prompt-yes"),
@@ -2342,14 +2414,18 @@ INDEX_HTML = r"""<!doctype html>
     };
     let sessionProgressTimer = null;
     let settingsSaveTimer = null;
+    let topUpInFlight = false;
     function compactStatusText(text, limit = 420) {
       const value = String(text || "");
       if (value.length <= limit) return value;
       return value.slice(0, Math.max(0, limit - 1)) + "...";
     }
     function setStatus(text) { els.status.textContent = text; }
-    function showTtsLoading(visible) {
+    function showTtsLoading(visible, mode = "loading") {
       els.ttsLoading.hidden = !visible;
+      els.ttsLoading.classList.toggle("paused", visible && mode === "paused");
+      els.ttsLoadingResume.hidden = !(visible && mode === "paused");
+      els.ttsLoading.setAttribute("aria-busy", visible && mode !== "paused" ? "true" : "false");
     }
     function setTtsLoadingStage(message) {
       els.ttsLoadingStage.textContent = String(message || "TTS stack loading");
@@ -2908,8 +2984,11 @@ INDEX_HTML = r"""<!doctype html>
       for (const el of [els.speed, els.generation, els.buffer, els.targetBuffer, els.startBuffer, els.maxUnits, els.editNarrator, els.start]) {
         el.disabled = locked;
       }
+      els.pause.disabled = !locked;
+      els.pause.textContent = "Pause Session";
       els.end.disabled = !locked;
       state.sessionActive = locked;
+      if (!locked) state.sessionPaused = false;
     }
     function populateSelect(select, options, value) {
       const selected = String(value || "");
@@ -3224,6 +3303,7 @@ INDEX_HTML = r"""<!doctype html>
         showTtsLoading(false);
         setStatus("Buffered " + payload.ready_playback_seconds.toFixed(1) + "s. Starting playback...");
         await playReady();
+        topUpBuffer();
       } catch (error) {
         try {
           await api("/api/session/end", { method: "POST" });
@@ -3259,6 +3339,66 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
       await els.audio.play();
+      topUpBuffer();
+    }
+    async function pauseSession() {
+      if (!state.sessionActive || state.sessionPaused) return;
+      els.audio.pause();
+      state.sessionPaused = true;
+      els.pause.textContent = "Resume Session";
+      setTtsLoadingStage("Paused");
+      showTtsLoading(true, "paused");
+      setStatus("Session paused.");
+    }
+    async function resumeSession() {
+      if (!state.sessionActive || !state.sessionPaused) return;
+      state.sessionPaused = false;
+      els.pause.textContent = "Pause Session";
+      showTtsLoading(false);
+      if (state.ready.length && !els.audio.src) {
+        await playReady();
+        return;
+      }
+      try {
+        await els.audio.play();
+        topUpBuffer();
+        setStatus("Resumed.");
+      } catch (error) {
+        setStatus(error.message);
+      }
+    }
+    async function togglePauseSession() {
+      if (state.sessionPaused) {
+        await resumeSession();
+      } else {
+        await pauseSession();
+      }
+    }
+    async function topUpBuffer(options = {}) {
+      if (!state.sessionActive || topUpInFlight) return null;
+      topUpInFlight = true;
+      try {
+        const body = {};
+        const excludeUnitId = options.excludeUnitId ?? state.currentUnitId;
+        if (excludeUnitId !== null && excludeUnitId !== undefined) body.exclude_unit_id = excludeUnitId;
+        const payload = await api("/api/session/top-up", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        if (!state.sessionActive) return payload;
+        state.ready = payload.ready;
+        applyHighlights();
+        if (typeof payload.ready_playback_seconds === "number" && !options.silent) {
+          setStatus("Buffered " + payload.ready_playback_seconds.toFixed(1) + "s");
+        }
+        return payload;
+      } catch (error) {
+        if (state.sessionActive && !options.silent) setStatus("Buffer top-up failed: " + error.message);
+        return null;
+      } finally {
+        topUpInFlight = false;
+      }
     }
     async function advanceSession() {
       if (!state.sessionActive) return;
@@ -3269,7 +3409,18 @@ INDEX_HTML = r"""<!doctype html>
           setStatus("Buffered " + payload.ready_playback_seconds.toFixed(1) + "s");
         }
         if (!state.ready.length) {
-          await endSession("Reached the end of the chapter.");
+          if (payload.has_more_units) {
+            showTtsLoading(true);
+            setTtsLoadingStage("Building next audio buffer...");
+            const toppedUp = await topUpBuffer({ silent: true });
+            showTtsLoading(false);
+            if (toppedUp && toppedUp.ready && toppedUp.ready.length) {
+              state.ready = toppedUp.ready;
+              await playReady();
+              return;
+            }
+          }
+          await endSession(payload.ended ? "Reached the end of the chapter." : "Buffer unavailable.");
           return;
         }
         await playReady();
@@ -3291,6 +3442,7 @@ INDEX_HTML = r"""<!doctype html>
       showSessionError("");
       els.returnPrompt.hidden = true;
       state.sessionPaused = false;
+      topUpInFlight = false;
       state.ready = [];
       state.currentUnitId = null;
       lockControls(false);
@@ -3315,8 +3467,10 @@ INDEX_HTML = r"""<!doctype html>
       els.returnPrompt.hidden = true;
       if (state.sessionActive && state.sessionPaused) {
         state.sessionPaused = false;
+        els.pause.textContent = "Pause Session";
         try {
           await els.audio.play();
+          topUpBuffer();
           setStatus("Resumed.");
         } catch (error) {
           setStatus(error.message);
@@ -3386,6 +3540,8 @@ INDEX_HTML = r"""<!doctype html>
       el.addEventListener("change", scheduleSettingsSave);
     }
     els.start.onclick = startSession;
+    els.pause.onclick = () => togglePauseSession().catch(error => setStatus(error.message));
+    els.ttsLoadingResume.onclick = () => resumeSession().catch(error => setStatus(error.message));
     els.end.onclick = () => endSession();
     els.audio.onended = advanceSession;
     loadLibrary().catch(error => {

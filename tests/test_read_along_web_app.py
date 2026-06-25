@@ -1024,6 +1024,52 @@ def test_web_api_serves_chapter_and_bounded_session_audio(tmp_path):
         _stop_server(server, thread)
 
 
+def test_web_api_advances_immediately_and_tops_up_buffer_separately(tmp_path):
+    paths = _write_demo_book(tmp_path, ready_for_tts=True)
+    paths.chapter_text("chapter_001").write_text(
+        'Leigh said something quite lengthy, "Right, absolutely yes." Then she left.',
+        encoding="utf-8",
+    )
+    server = create_server(book_root=paths.root, host="127.0.0.1", port=0, fake_tts=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    base_url = f"http://{host}:{port}"
+    try:
+        started = _post_json(
+            base_url + "/api/session/start",
+            {
+                "chapter": "chapter_001",
+                "start_unit_id": 0,
+                "settings": {
+                    "playback_speed": 1.0,
+                    "generation_mode": "balanced",
+                    "buffer_limit": 2,
+                    "target_buffer_seconds": 0.12,
+                    "start_buffer_seconds": 0.12,
+                    "max_buffer_seconds": 0.3,
+                    "max_buffer_units": 4,
+                },
+            },
+        )
+
+        assert [item["unit_id"] for item in started["ready"]] == [0, 1]
+
+        topped_up = _post_json(base_url + "/api/session/top-up", {"exclude_unit_id": 0})
+
+        assert topped_up["ok"] is True
+        assert topped_up["generated_count"] == 1
+        assert [item["unit_id"] for item in topped_up["ready"]] == [0, 1, 2]
+
+        advanced = _post_json(base_url + "/api/session/advance", {})
+
+        assert advanced["ok"] is True
+        assert [item["unit_id"] for item in advanced["ready"]] == [1, 2]
+        assert advanced["has_more_units"] is False
+    finally:
+        _stop_server(server, thread)
+
+
 def test_web_api_persists_manual_reading_position_and_preselects_it(tmp_path):
     paths = _write_demo_book(tmp_path, ready_for_tts=True)
     server, thread, base_url = _start_test_server_for_root(tmp_path)
@@ -1068,6 +1114,24 @@ def test_web_interface_exposes_tts_loading_overlay_and_selection_outline(tmp_pat
         assert ".tts-loading {\n      position: fixed;" in response
         assert "z-index: 80;" in response
         assert "rgba(20, 24, 28, 0.24)" in response
+    finally:
+        _stop_server(server, thread)
+
+
+def test_web_interface_uses_time_buffer_controls_and_pause_button(tmp_path):
+    server, thread, base_url = _start_test_server(tmp_path)
+    try:
+        response = urllib.request.urlopen(base_url, timeout=20).read().decode("utf-8")
+
+        assert 'class="session-settings-row"' in response
+        assert 'class="session-controls-row"' in response
+        assert 'id="pause-session"' in response
+        assert "Pause Session" in response
+        assert "Resume Session" in response
+        assert "togglePauseSession" in response
+        assert "/api/session/top-up" in response
+        assert "Units <input" not in response
+        assert "Max units <input" not in response
     finally:
         _stop_server(server, thread)
 

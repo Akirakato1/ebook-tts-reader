@@ -74,6 +74,10 @@ class ReadAlongSession:
     def ready_items(self) -> List[BufferedAudio]:
         return list(self._ready)
 
+    @property
+    def has_more_units(self) -> bool:
+        return self._next_unit_id < len(self.units)
+
     def peek_ready(self) -> Optional[BufferedAudio]:
         if not self._ready:
             return None
@@ -83,6 +87,7 @@ class ReadAlongSession:
         self,
         start_unit_id: Optional[int] = None,
         min_buffer_seconds: Optional[float] = None,
+        exclude_unit_id: Optional[int] = None,
     ) -> List[BufferedAudio]:
         if self._ended:
             return []
@@ -92,21 +97,31 @@ class ReadAlongSession:
         target_seconds = min(self.max_buffer_seconds, max(0.1, target_seconds))
         generated: List[BufferedAudio] = []
         while (
-            self.ready_playback_seconds < target_seconds
+            self._ready_playback_seconds(exclude_unit_id=exclude_unit_id) < target_seconds
             and len(self._ready) < self.max_buffer_units
             and self._next_unit_id < len(self.units)
         ):
             open_unit_slots = max(1, min(self.max_buffer_units - len(self._ready), self.buffer_limit))
-            batch_size = self._next_batch_size(open_unit_slots, target_seconds)
+            batch_size = self._next_batch_size(
+                open_unit_slots,
+                target_seconds,
+                self._ready_playback_seconds(exclude_unit_id=exclude_unit_id),
+            )
             batch_units = self.units[self._next_unit_id:self._next_unit_id + batch_size]
             if not batch_units:
                 break
             generated.extend(self._generate_units(batch_units))
-            if self.ready_playback_seconds >= self.max_buffer_seconds:
+            if self._ready_playback_seconds(exclude_unit_id=exclude_unit_id) >= self.max_buffer_seconds:
                 break
         return generated
 
-    def _next_batch_size(self, open_unit_slots: int, target_seconds: float) -> int:
+    def _ready_playback_seconds(self, exclude_unit_id: Optional[int] = None) -> float:
+        if exclude_unit_id is None:
+            return self.ready_playback_seconds
+        excluded = int(exclude_unit_id)
+        return sum(item.playback_seconds for item in self._ready if item.unit_id != excluded)
+
+    def _next_batch_size(self, open_unit_slots: int, target_seconds: float, ready_seconds: float) -> int:
         if self.generation_mode == "precise":
             return 1
         if self.generation_mode == "balanced":
@@ -116,7 +131,7 @@ class ReadAlongSession:
         estimated_unit_seconds = self._estimated_ready_unit_seconds()
         if estimated_unit_seconds <= 0:
             return max_batch
-        remaining_seconds = max(0.1, target_seconds - self.ready_playback_seconds)
+        remaining_seconds = max(0.1, target_seconds - ready_seconds)
         seconds_limited_batch = max(1, math.ceil(remaining_seconds / estimated_unit_seconds))
         return max(1, min(max_batch, seconds_limited_batch))
 
