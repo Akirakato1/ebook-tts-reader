@@ -1822,6 +1822,61 @@ def test_controller_read_along_session_generates_functional_narrator_voice_at_se
     session.end()
 
 
+def test_controller_reports_read_along_session_start_setup_progress(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text('The phone said, "Please hang up."', encoding="utf-8")
+    write_json_atomic(
+        paths.registry,
+        {
+            "book": {"title": "Demo", "slug": "demo"},
+            "narrator": {
+                "role_id": "narrator",
+                "display_name": "Narrator",
+                "voice_profile": {"description": "adult male narrator", "qwen_instruct": "adult male narrator"},
+                "voice_config_path": None,
+            },
+            "characters": {},
+        },
+    )
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {"schema": "quote_attribution_v1", "roles": ["Narrator"], "quotes": [[1, 0, "narrator_quote"]]},
+    )
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+    progress = []
+    units = controller.build_read_along_units("chapter_001")
+
+    session = controller.create_read_along_session(
+        "chapter_001",
+        units,
+        {
+            "playback_speed": 1.0,
+            "generation_mode": "balanced",
+            "buffer_limit": 2,
+            "target_buffer_seconds": 20,
+            "start_buffer_seconds": 20,
+            "max_buffer_seconds": 40,
+            "max_buffer_units": 32,
+        },
+        progress_callback=progress.append,
+    )
+
+    assert [event["stage"] for event in progress] == [
+        "loading_tts_model",
+        "building_read_along_units",
+        "preparing_narrator_voice",
+        "preparing_functional_narrator_voice",
+        "checking_local_chapter_voices",
+        "validating_voice_paths",
+    ]
+    assert progress[0]["message"] == "Loading read-along TTS model."
+    assert progress[2]["message"] == "Preparing narrator voice."
+    assert progress[3]["message"] == "Preparing functional narrator voice."
+    session.end()
+
+
 def test_controller_saves_read_along_settings_without_narrator_voice_type(tmp_path):
     paths = BookPaths(tmp_path / "book")
     controller = PrototypeUiController(book_root=paths.root, fake_tts=True)

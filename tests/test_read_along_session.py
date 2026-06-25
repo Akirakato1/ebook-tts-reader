@@ -54,6 +54,15 @@ class VariableDurationAdapter(RecordingAdapter):
         return result
 
 
+class ClosableAdapter(RecordingAdapter):
+    def __init__(self):
+        super().__init__()
+        self.close_calls = 0
+
+    def close(self):
+        self.close_calls += 1
+
+
 def test_session_never_generates_more_than_buffer_limit(tmp_path):
     adapter = RecordingAdapter()
     session = ReadAlongSession(
@@ -106,6 +115,22 @@ def test_session_logs_realtime_factor_and_cleans_temp_audio(tmp_path):
     session.end()
 
     assert not (tmp_path / "session").exists()
+
+
+def test_session_end_closes_tts_adapter(tmp_path):
+    adapter = ClosableAdapter()
+    session = ReadAlongSession(
+        session_id="s1",
+        units=[_unit(0)],
+        tts_adapter=adapter,
+        session_dir=tmp_path / "session",
+        timing_log_path=tmp_path / "session" / "timings.jsonl",
+    )
+
+    session.end()
+    session.end()
+
+    assert adapter.close_calls == 1
 
 
 def test_session_can_buffer_audio_without_writing_wav_files(tmp_path):

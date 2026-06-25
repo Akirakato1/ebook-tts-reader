@@ -152,9 +152,18 @@ class ReadAlongSession:
         return item
 
     def end(self) -> None:
+        if self._ended:
+            return
         self._ended = True
-        shutil.rmtree(self.session_dir, ignore_errors=True)
-        self._ready.clear()
+        try:
+            close = getattr(self.tts_adapter, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            pass
+        finally:
+            shutil.rmtree(self.session_dir, ignore_errors=True)
+            self._ready.clear()
 
     def _generate_units(self, units: List[ReadAlongUnit]) -> List[BufferedAudio]:
         self.session_dir.mkdir(parents=True, exist_ok=True)

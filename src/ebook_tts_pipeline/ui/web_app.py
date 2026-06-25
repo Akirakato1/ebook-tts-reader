@@ -681,17 +681,21 @@ class ReadAlongWebState:
                     target_buffer_seconds=resolved_settings.get("target_buffer_seconds"),
                     generation_mode=resolved_settings.get("generation_mode"),
                 )
-                self._set_session_start_progress("loading_tts_stack", "Loading TTS stack and narrator voices.")
+                self._set_session_start_progress("loading_tts_model", "Loading read-along TTS model.")
                 self.session = controller.create_read_along_session(
                     chapter,
                     units,
                     resolved_settings,
                     store_audio_files=False,
+                    progress_callback=lambda event: self._set_session_start_progress(
+                        str(event.get("stage") or "starting_session"),
+                        str(event.get("message") or "Starting read-along session."),
+                    ),
                 )
                 self.session_chapter = chapter
                 self._set_session_start_progress(
                     "building_initial_buffer",
-                    f"Building initial {self.session.start_buffer_seconds:.1f}s audio buffer.",
+                    f"Building initial audio buffer: 0.0 / {self.session.start_buffer_seconds:.1f}s.",
                 )
                 with self.session_fill_lock:
                     self.session.fill_buffer(

@@ -822,19 +822,25 @@ class PrototypeUiController:
         units: List[Dict[str, Any]],
         settings: Dict[str, Any],
         store_audio_files: bool = True,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> ReadAlongSession:
         session_id = f"{chapter}-{int(time.time())}"
+        _emit_session_progress(progress_callback, "loading_tts_model", "Loading read-along TTS model.")
         pipeline = self._pipeline(needs_llm=False, read_along=True)
+        _emit_session_progress(progress_callback, "building_read_along_units", "Building read-along unit map.")
         units = pipeline.build_read_along_units(chapter)
         session_voice_paths = self._ensure_read_along_session_narrator_voices(
             pipeline,
             settings,
             session_id,
             units,
+            progress_callback=progress_callback,
         )
         units = self._apply_session_narrator_voice_paths(units, session_voice_paths)
+        _emit_session_progress(progress_callback, "checking_local_chapter_voices", "Checking local chapter voices.")
         units = self._ensure_read_along_session_temp_voices(pipeline, chapter, units)
         write_json_atomic(self.paths.read_along_units(chapter), {"chapter": chapter, "units": units})
+        _emit_session_progress(progress_callback, "validating_voice_paths", "Validating prepared read-along voices.")
         missing = self._missing_read_along_voice_paths([chapter])
         if missing:
             raise ValueError("Prepare Voices before starting a read-along session.")
@@ -1166,12 +1172,14 @@ class PrototypeUiController:
         _settings: Dict[str, Any],
         _session_id: str,
         units: List[Dict[str, Any]],
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, str]:
         profile = self.read_along_narrator_profile()
         narrator_record = narrator_voice_record(profile)
         profile_hash = voice_profile_hash(narrator_record)
         narrator_record["voice_config_hash"] = profile_hash
         narrator_path = self.paths.narrator_voice_qvp(profile_hash, "narrator")
+        _emit_session_progress(progress_callback, "preparing_narrator_voice", "Preparing narrator voice.")
         narrator_rel = self._ensure_voice_asset(
             pipeline.tts_adapter,
             "narrator",
@@ -1185,6 +1193,11 @@ class PrototypeUiController:
             functional_hash = voice_profile_hash(functional_record)
             functional_record["voice_config_hash"] = functional_hash
             functional_path = self.paths.narrator_voice_qvp(functional_hash, FUNCTIONAL_NARRATOR_ROLE_ID)
+            _emit_session_progress(
+                progress_callback,
+                "preparing_functional_narrator_voice",
+                "Preparing functional narrator voice.",
+            )
             voice_paths[FUNCTIONAL_NARRATOR_ROLE_ID] = self._ensure_voice_asset(
                 pipeline.tts_adapter,
                 FUNCTIONAL_NARRATOR_ROLE_ID,
@@ -1809,6 +1822,15 @@ def _field_text(value: Any) -> str:
     if value is None:
         return ""
     return str(value)
+
+
+def _emit_session_progress(
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]],
+    stage: str,
+    message: str,
+) -> None:
+    if progress_callback is not None:
+        progress_callback({"stage": stage, "message": message})
 
 
 def _blank_to_none(value: Any) -> Optional[str]:
