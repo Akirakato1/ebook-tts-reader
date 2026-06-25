@@ -1065,6 +1065,8 @@ def test_web_interface_exposes_tts_loading_overlay_and_selection_outline(tmp_pat
         assert 'id="tts-loading-stage"' in response
         assert "startSessionProgressPolling" in response
         assert "await nextFrame()" in response
+        assert ".tts-loading {\n      position: fixed;" in response
+        assert "z-index: 80;" in response
         assert "rgba(20, 24, 28, 0.24)" in response
     finally:
         _stop_server(server, thread)

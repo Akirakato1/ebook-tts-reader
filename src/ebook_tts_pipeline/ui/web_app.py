@@ -2044,9 +2044,9 @@ INDEX_HTML = r"""<!doctype html>
     .unit.buffered { background: var(--buffered); }
     .unit.current { background: var(--current); }
     .tts-loading {
-      position: absolute;
+      position: fixed;
       inset: 0;
-      z-index: 20;
+      z-index: 80;
       display: grid;
       place-items: center;
       background: rgba(20, 24, 28, 0.24);
