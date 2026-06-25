@@ -6,6 +6,7 @@ import io
 import json
 import re
 import shutil
+import sys
 import threading
 import time
 import uuid
@@ -22,7 +23,9 @@ from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.read_along.session import BufferedAudio, ReadAlongSession
 from ebook_tts_pipeline.registry import voice_profile_hash
 from ebook_tts_pipeline.runtime_logging import log_runtime_step
+from ebook_tts_pipeline.ui.book_package import build_readalong_package, import_readalong_package
 from ebook_tts_pipeline.ui.controller import ChapterExtractor, PipelineFactory, PrototypeUiController
+from ebook_tts_pipeline.ui.errors import write_readalong_error_event
 
 
 BOOK_MANIFEST = "readalong_book.json"
@@ -92,6 +95,13 @@ class UploadedBook:
     content: bytes
     title: str
     author: str
+    slug: str
+
+
+@dataclass(frozen=True)
+class UploadedReadAlongPackage:
+    filename: str
+    content: bytes
     slug: str
 
 
@@ -190,6 +200,25 @@ class ReadAlongWebState:
     def session_start_progress_payload(self) -> Dict[str, Any]:
         with self.progress_lock:
             return {"ok": True, **dict(self.session_start_progress)}
+
+    def log_event(
+        self,
+        event_type: str,
+        details: Optional[Dict[str, Any]] = None,
+        exc: Optional[BaseException] = None,
+        book_root: Optional[Path] = None,
+    ) -> Optional[Path]:
+        try:
+            with self.lock:
+                root = Path(book_root) if book_root is not None else (
+                    self.controller.book_root if self.controller is not None else self.library_root
+                )
+            log_path = write_readalong_error_event(root, event_type, details or {}, exc=exc)
+            log_runtime_step("web_readalong_event_logged", event_type=event_type, log_path=log_path)
+            return log_path
+        except Exception as log_exc:
+            print(f"[ebook-tts] failed_to_write_readalong_log event_type={event_type} error={log_exc}", flush=True)
+            return None
 
     def chapter_payload(self, chapter: str) -> Dict[str, Any]:
         with self.lock:
@@ -369,6 +398,17 @@ class ReadAlongWebState:
                 job.finished_at = time.time()
                 summary = self._require_book_summary(job.slug)
                 _update_book_stage(summary.book_root, annotating=False, annotated=False)
+                self.log_event(
+                    "library_annotate_job_error",
+                    {
+                        "job_id": job_id,
+                        "slug": job.slug,
+                        "current_chapter": job.current_chapter,
+                        "failed_chapter": job.failed_chapter,
+                    },
+                    exc=exc,
+                    book_root=summary.book_root,
+                )
             return
 
         with self.lock:
@@ -561,6 +601,17 @@ class ReadAlongWebState:
                 job.finished_at = time.time()
                 summary = self._require_book_summary(job.slug)
                 _update_book_stage(summary.book_root, voices_ready=False)
+                self.log_event(
+                    "library_prepare_voices_job_error",
+                    {
+                        "job_id": job_id,
+                        "slug": job.slug,
+                        "current_chapter": job.current_chapter,
+                        "current_item": job.current_item,
+                    },
+                    exc=exc,
+                    book_root=summary.book_root,
+                )
             return
 
         with self.lock:
@@ -602,6 +653,31 @@ class ReadAlongWebState:
             return {
                 "ok": True,
                 "deleted_slug": summary.slug,
+                "active_book": self._active_book_payload(),
+                "library": self.library_payload(),
+            }
+
+    def export_book_package(self, slug: str) -> Tuple[str, bytes]:
+        with self.lock:
+            summary = self._require_book_summary(slug)
+            if not summary.open_enabled:
+                raise ValueError("Generate Voices before sharing this book.")
+            archive = build_readalong_package(summary.book_root)
+            return f"{summary.slug}.readalong.zip", archive
+
+    def import_book_package(self, upload: UploadedReadAlongPackage) -> Dict[str, Any]:
+        with self.lock:
+            if not upload.content:
+                raise ValueError("ReadAlong package upload is required.")
+            target_root = import_readalong_package(
+                self.library_root,
+                upload.content,
+                requested_slug=upload.slug,
+            )
+            summary = summarize_book(target_root)
+            return {
+                "ok": True,
+                "book": summary.to_payload(),
                 "active_book": self._active_book_payload(),
                 "library": self.library_payload(),
             }
@@ -656,13 +732,21 @@ class ReadAlongWebState:
         chapter: str,
         start_unit_id: int,
         settings: Dict[str, Any],
+        reuse_active_tts: bool = False,
     ) -> Dict[str, Any]:
         self._set_session_start_progress("validating_chapter", "Validating chapter and read-along units.")
         try:
             if not chapter.strip():
                 raise ValueError("chapter is required")
             with self.lock:
-                self.end_session()
+                tts_adapter = None
+                if reuse_active_tts and self.session is not None:
+                    tts_adapter = self.session.tts_adapter
+                    self.session.end(close_adapter=False)
+                    self.session = None
+                    self.session_chapter = ""
+                else:
+                    self.end_session()
                 controller = self._require_controller()
                 if not controller.paths.annotation(chapter).exists() and not controller.paths.read_along_units(chapter).exists():
                     raise ValueError("Process Book before starting read-along for this chapter.")
@@ -676,12 +760,16 @@ class ReadAlongWebState:
                     "web_readalong_session_start",
                     chapter=chapter,
                     start_unit_id=start_unit_id,
+                    reuse_active_tts=reuse_active_tts and tts_adapter is not None,
                     playback_speed=resolved_settings.get("playback_speed"),
-                    start_buffer_seconds=resolved_settings.get("start_buffer_seconds"),
+                    start_buffer_seconds=resolved_settings.get("target_buffer_seconds"),
                     target_buffer_seconds=resolved_settings.get("target_buffer_seconds"),
                     generation_mode=resolved_settings.get("generation_mode"),
                 )
-                self._set_session_start_progress("loading_tts_model", "Loading read-along TTS model.")
+                if tts_adapter is None:
+                    self._set_session_start_progress("loading_tts_model", "Loading read-along TTS model.")
+                else:
+                    self._set_session_start_progress("reusing_tts_model", "Reusing warm read-along TTS model.")
                 self.session = controller.create_read_along_session(
                     chapter,
                     units,
@@ -691,16 +779,29 @@ class ReadAlongWebState:
                         str(event.get("stage") or "starting_session"),
                         str(event.get("message") or "Starting read-along session."),
                     ),
+                    tts_adapter=tts_adapter,
                 )
                 self.session_chapter = chapter
                 self._set_session_start_progress(
-                    "building_initial_buffer",
-                    f"Building initial audio buffer: 0.0 / {self.session.start_buffer_seconds:.1f}s.",
+                    "loading_tts_stack",
+                    (
+                        "Loading TTS stack and generating the first audio buffer: "
+                        f"0.0 / {self.session.start_buffer_seconds:.1f}s."
+                    ),
                 )
                 with self.session_fill_lock:
                     self.session.fill_buffer(
                         start_unit_id=start_unit_id,
                         min_buffer_seconds=self.session.start_buffer_seconds,
+                        progress_callback=lambda event: self._set_session_start_progress(
+                            str(event.get("stage") or "building_initial_buffer"),
+                            (
+                                "Building initial audio buffer: "
+                                f"{float(event.get('ready_playback_seconds') or 0.0):.1f} / "
+                                f"{float(event.get('target_buffer_seconds') or self.session.start_buffer_seconds):.1f}s."
+                            ),
+                        ),
+                        progress_stage="building_initial_buffer",
                     )
                 self._record_last_read(chapter, start_unit_id)
                 ready_seconds = self.session.ready_playback_seconds
@@ -729,6 +830,15 @@ class ReadAlongWebState:
                 }
         except Exception as exc:
             self._set_session_start_progress("failed", str(exc), status="failed")
+            self.log_event(
+                "readalong_session_start_error",
+                {
+                    "chapter": chapter,
+                    "start_unit_id": start_unit_id,
+                    "reuse_active_tts": reuse_active_tts,
+                },
+                exc=exc,
+            )
             raise
 
     def advance_session(self) -> Dict[str, Any]:
@@ -755,11 +865,30 @@ class ReadAlongWebState:
         with self.lock:
             session = self._require_session()
             session_id = session.session_id
+            start_details = {
+                "chapter": self.session_chapter,
+                "session_id": session_id,
+                "exclude_unit_id": exclude_unit_id,
+                "ready_unit_ids": session.ready_unit_ids,
+                "ready_playback_seconds": session.ready_playback_seconds,
+                "has_more_units": session.has_more_units,
+                "next_unit_id": getattr(session, "_next_unit_id", None),
+            }
+        self.log_event("readalong_top_up_start", start_details)
         if not self.session_fill_lock.acquire(blocking=False):
             with self.lock:
                 current = self._require_session()
                 if current.session_id != session_id:
                     raise ValueError("Read-along session changed while topping up buffer.")
+                self.log_event(
+                    "readalong_top_up_already_running",
+                    {
+                        "chapter": self.session_chapter,
+                        "session_id": current.session_id,
+                        "ready_unit_ids": current.ready_unit_ids,
+                        "ready_playback_seconds": current.ready_playback_seconds,
+                    },
+                )
                 return {
                     "ok": True,
                     "chapter": self.session_chapter,
@@ -774,12 +903,28 @@ class ReadAlongWebState:
                 }
         try:
             generated = session.fill_buffer(exclude_unit_id=exclude_unit_id)
+        except Exception as exc:
+            self.log_event("readalong_top_up_error", start_details, exc=exc)
+            raise
         finally:
             self.session_fill_lock.release()
         with self.lock:
             current = self._require_session()
             if current.session_id != session_id:
                 raise ValueError("Read-along session changed while topping up buffer.")
+            self.log_event(
+                "readalong_top_up_done",
+                {
+                    "chapter": self.session_chapter,
+                    "session_id": current.session_id,
+                    "generated_count": len(generated),
+                    "generated_unit_ids": [item.unit_id for item in generated],
+                    "ready_unit_ids": current.ready_unit_ids,
+                    "ready_playback_seconds": current.ready_playback_seconds,
+                    "has_more_units": current.has_more_units,
+                    "next_unit_id": getattr(current, "_next_unit_id", None),
+                },
+            )
             return {
                 "ok": True,
                 "chapter": self.session_chapter,
@@ -948,6 +1093,15 @@ def build_handler(app_state: ReadAlongWebState):
                     job_id = parse_qs(parsed.query).get("job_id", [""])[0]
                     self._send_json(app_state.job_status(job_id))
                     return
+                if path == "/api/library/export":
+                    slug = parse_qs(parsed.query).get("slug", [""])[0]
+                    filename, archive = app_state.export_book_package(slug)
+                    self._send_bytes(
+                        archive,
+                        content_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                    )
+                    return
                 if path == "/api/registry":
                     slug = parse_qs(parsed.query).get("slug", [""])[0]
                     self._send_json(app_state.registry_review(slug))
@@ -980,6 +1134,11 @@ def build_handler(app_state: ReadAlongWebState):
                     return
                 self._send_json_error(HTTPStatus.NOT_FOUND, "Not found.")
             except Exception as exc:
+                app_state.log_event(
+                    "http_get_error",
+                    {"path": path, "query": parsed.query},
+                    exc=exc,
+                )
                 self._send_json_error(_status_for_exception(exc), str(exc))
 
         def do_POST(self) -> None:
@@ -988,6 +1147,9 @@ def build_handler(app_state: ReadAlongWebState):
             try:
                 if path == "/api/library/add-book" and self._is_multipart_request():
                     self._send_json(app_state.add_uploaded_book(self._read_upload_body()))
+                    return
+                if path == "/api/library/import-package" and self._is_multipart_request():
+                    self._send_json(app_state.import_book_package(self._read_package_upload_body()))
                     return
                 payload = self._read_json_body()
                 if path == "/api/library/select":
@@ -1047,6 +1209,7 @@ def build_handler(app_state: ReadAlongWebState):
                             chapter=str(payload.get("chapter", "")),
                             start_unit_id=int(payload.get("start_unit_id", 0) or 0),
                             settings=dict(payload.get("settings", {})),
+                            reuse_active_tts=bool(payload.get("reuse_active_tts")),
                         )
                     )
                     return
@@ -1066,6 +1229,14 @@ def build_handler(app_state: ReadAlongWebState):
                     return
                 self._send_json_error(HTTPStatus.NOT_FOUND, "Not found.")
             except Exception as exc:
+                app_state.log_event(
+                    "http_post_error",
+                    {
+                        "path": path,
+                        "payload_keys": sorted(str(key) for key in payload.keys()) if "payload" in locals() else [],
+                    },
+                    exc=exc,
+                )
                 self._send_json_error(_status_for_exception(exc), str(exc))
 
         def log_message(self, format: str, *args) -> None:
@@ -1085,20 +1256,7 @@ def build_handler(app_state: ReadAlongWebState):
             return content_type.lower().startswith("multipart/form-data")
 
         def _read_upload_body(self) -> UploadedBook:
-            length = int(self.headers.get("Content-Length", "0") or 0)
-            if length <= 0:
-                raise ValueError("epub upload is required")
-            body = self.rfile.read(length)
-            form = cgi.FieldStorage(
-                fp=io.BytesIO(body),
-                headers=self.headers,
-                environ={
-                    "REQUEST_METHOD": "POST",
-                    "CONTENT_TYPE": self.headers.get("Content-Type", ""),
-                    "CONTENT_LENGTH": str(length),
-                },
-                keep_blank_values=True,
-            )
+            form = self._read_multipart_form("epub upload is required")
             epub_field = form["epub"] if "epub" in form else None
             if epub_field is None or not getattr(epub_field, "filename", ""):
                 raise ValueError("epub upload is required")
@@ -1109,6 +1267,33 @@ def build_handler(app_state: ReadAlongWebState):
                 title=_multipart_value(form, "title"),
                 author=_multipart_value(form, "author"),
                 slug=_multipart_value(form, "slug"),
+            )
+
+        def _read_package_upload_body(self) -> UploadedReadAlongPackage:
+            form = self._read_multipart_form("ReadAlong package upload is required")
+            package_field = form["package"] if "package" in form else None
+            if package_field is None or not getattr(package_field, "filename", ""):
+                raise ValueError("ReadAlong package upload is required")
+            return UploadedReadAlongPackage(
+                filename=str(package_field.filename),
+                content=package_field.file.read(),
+                slug=_multipart_value(form, "slug"),
+            )
+
+        def _read_multipart_form(self, empty_message: str) -> cgi.FieldStorage:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            if length <= 0:
+                raise ValueError(empty_message)
+            body = self.rfile.read(length)
+            return cgi.FieldStorage(
+                fp=io.BytesIO(body),
+                headers=self.headers,
+                environ={
+                    "REQUEST_METHOD": "POST",
+                    "CONTENT_TYPE": self.headers.get("Content-Type", ""),
+                    "CONTENT_LENGTH": str(length),
+                },
+                keep_blank_values=True,
             )
 
         def _send_json(self, payload: Dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
@@ -1125,9 +1310,16 @@ def build_handler(app_state: ReadAlongWebState):
         def _send_text(self, text: str, content_type: str) -> None:
             self._send_bytes(text.encode("utf-8"), content_type=content_type)
 
-        def _send_bytes(self, body: bytes, content_type: str) -> None:
+        def _send_bytes(
+            self,
+            body: bytes,
+            content_type: str,
+            headers: Optional[Dict[str, str]] = None,
+        ) -> None:
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1177,16 +1369,45 @@ def run_server(
     resolved_host, resolved_port = server.server_address
     url = f"http://{resolved_host}:{resolved_port}/"
     print(f"Read-along web UI: {url}", flush=True)
+    _install_process_crash_logging(server.app_state)
     if open_browser:
         webbrowser.open(url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    except BaseException as exc:
+        server.app_state.log_event("readalong_web_server_crash", {"url": url}, exc=exc)
+        raise
     finally:
         server.app_state.end_session()
         server.server_close()
     return 0
+
+
+def _install_process_crash_logging(app_state: ReadAlongWebState) -> None:
+    previous_excepthook = sys.excepthook
+    previous_threading_excepthook = getattr(threading, "excepthook", None)
+
+    def excepthook(exc_type, exc, tb):
+        app_state.log_event("process_uncaught_exception", {"exception_type": getattr(exc_type, "__name__", str(exc_type))}, exc=exc)
+        previous_excepthook(exc_type, exc, tb)
+
+    def threading_excepthook(args):
+        app_state.log_event(
+            "thread_uncaught_exception",
+            {
+                "thread_name": getattr(args.thread, "name", ""),
+                "exception_type": getattr(args.exc_type, "__name__", str(args.exc_type)),
+            },
+            exc=args.exc_value,
+        )
+        if previous_threading_excepthook is not None:
+            previous_threading_excepthook(args)
+
+    sys.excepthook = excepthook
+    if previous_threading_excepthook is not None:
+        threading.excepthook = threading_excepthook
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -1798,6 +2019,26 @@ INDEX_HTML = r"""<!doctype html>
     .add-book button {
       white-space: nowrap;
     }
+    .import-package {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.7fr) max-content;
+      gap: 10px;
+      align-items: end;
+      margin-top: 10px;
+    }
+    .import-package label {
+      display: grid;
+      min-width: 0;
+    }
+    .import-package input {
+      width: 100%;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .import-package button {
+      white-space: nowrap;
+    }
     .registry-panel {
       display: grid;
       gap: 12px;
@@ -1956,6 +2197,12 @@ INDEX_HTML = r"""<!doctype html>
     }
     .session-controls-row {
       padding-top: 2px;
+    }
+    .generation-hint {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      max-width: 360px;
     }
     label {
       display: inline-flex;
@@ -2208,6 +2455,7 @@ INDEX_HTML = r"""<!doctype html>
       .book-row { grid-template-columns: auto minmax(0, 1fr); }
       .book-action-cell { grid-column: 1 / -1; }
       .add-book { grid-template-columns: 1fr; }
+      .import-package { grid-template-columns: 1fr; }
       .app { grid-template-columns: 1fr; }
       .sidebar { min-height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
       .chapters { display: flex; overflow-x: auto; padding: 8px; }
@@ -2237,6 +2485,11 @@ INDEX_HTML = r"""<!doctype html>
           <label>Folder <input id="add-slug" type="text" maxlength="80" placeholder="book-folder"></label>
           <button class="primary" id="add-book">Add Book</button>
         </div>
+        <div class="import-package">
+          <label>ReadAlong Zip <input id="import-package-file" type="file" accept=".zip,.readalong.zip,application/zip"></label>
+          <label>Folder <input id="import-package-slug" type="text" maxlength="80" placeholder="optional-folder"></label>
+          <button id="import-package" type="button">Import Zip</button>
+        </div>
       </section>
       <div class="library-status" id="library-status">Ready</div>
       <section>
@@ -2263,21 +2516,20 @@ INDEX_HTML = r"""<!doctype html>
           <label>Speed <input id="speed" type="number" min="1" max="4" step="0.05"></label>
           <label>Generation
             <select id="generation">
-              <option value="balanced">balanced</option>
-              <option value="fast">fast</option>
-              <option value="precise">precise</option>
+              <option value="balanced">Balanced (12-14 GB, RTF ~0.15)</option>
+              <option value="fast">Burst (12-14 GB, fastest fill)</option>
+              <option value="precise">Precise (12-14 GB, RTF ~0.25)</option>
             </select>
           </label>
+          <div class="generation-hint" id="generation-hint">16 GB NVIDIA CUDA GPU recommended. Balanced uses the measured vLLM 12Hz seq2 profile. Smooth ceiling ~6.6x at 1.0x benchmark playback.</div>
           <input id="buffer" type="hidden" value="2">
           <label>Buffer s <input id="target-buffer" type="number" min="1" max="120" step="0.5"></label>
-          <label>Start s <input id="start-buffer" type="number" min="1" max="120" step="0.5"></label>
           <label>Chapter End
             <select id="chapter-end-behavior">
               <option value="stop">Stop at chapter end</option>
               <option value="continue">Continue to next chapter</option>
             </select>
           </label>
-          <input id="max-units" type="hidden" value="32">
           <div class="narrator-control">
             <span id="narrator-summary">Narrator: loading</span>
             <button id="edit-narrator" type="button">Edit Narrator</button>
@@ -2384,6 +2636,9 @@ INDEX_HTML = r"""<!doctype html>
       addAuthor: document.getElementById("add-author"),
       addSlug: document.getElementById("add-slug"),
       addButton: document.getElementById("add-book"),
+      importPackageFile: document.getElementById("import-package-file"),
+      importPackageSlug: document.getElementById("import-package-slug"),
+      importPackageButton: document.getElementById("import-package"),
       registryPanel: document.getElementById("registry-panel"),
       registryTitle: document.getElementById("registry-title"),
       registryList: document.getElementById("registry-list"),
@@ -2400,11 +2655,10 @@ INDEX_HTML = r"""<!doctype html>
       status: document.getElementById("status"),
       speed: document.getElementById("speed"),
       generation: document.getElementById("generation"),
+      generationHint: document.getElementById("generation-hint"),
       buffer: document.getElementById("buffer"),
       targetBuffer: document.getElementById("target-buffer"),
-      startBuffer: document.getElementById("start-buffer"),
       chapterEndBehavior: document.getElementById("chapter-end-behavior"),
-      maxUnits: document.getElementById("max-units"),
       narratorSummary: document.getElementById("narrator-summary"),
       editNarrator: document.getElementById("edit-narrator"),
       narratorPanel: document.getElementById("narrator-panel"),
@@ -2500,11 +2754,28 @@ INDEX_HTML = r"""<!doctype html>
       state.pageIndex = 0;
       state.ready = [];
     }
-    async function api(path, options = {}) {
-      const response = await fetch(path, options);
-      const payload = await response.json();
-      if (!payload.ok) throw new Error(payload.error || "Request failed");
-      return payload;
+    async function api(path, options = {}, requestOptions = {}) {
+      const timeoutMs = Number(requestOptions.timeoutMs || 0);
+      let timeoutId = null;
+      let request = options;
+      if (timeoutMs > 0) {
+        const controller = new AbortController();
+        timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+        request = { ...options, signal: controller.signal };
+      }
+      try {
+        const response = await fetch(path, request);
+        const payload = await response.json();
+        if (!payload.ok) throw new Error(payload.error || "Request failed");
+        return payload;
+      } catch (error) {
+        if (error && error.name === "AbortError") {
+          throw new Error("Request timed out after " + Math.round(timeoutMs / 1000) + "s.");
+        }
+        throw error;
+      } finally {
+        if (timeoutId !== null) window.clearTimeout(timeoutId);
+      }
     }
     function settings() {
       return {
@@ -2512,9 +2783,7 @@ INDEX_HTML = r"""<!doctype html>
         generation_mode: els.generation.value,
         buffer_limit: Number(els.buffer.value || 2),
         target_buffer_seconds: Number(els.targetBuffer.value || 20),
-        start_buffer_seconds: Number(els.startBuffer.value || 20),
         max_buffer_seconds: Math.max(Number(els.targetBuffer.value || 20), Number(els.targetBuffer.value || 20) * 2),
-        max_buffer_units: Number(els.maxUnits.value || 32),
         chapter_end_behavior: els.chapterEndBehavior.value
       };
     }
@@ -2619,6 +2888,16 @@ INDEX_HTML = r"""<!doctype html>
           review.disabled = Boolean(state.busySlug) || Boolean(activeJob);
           review.onclick = () => openRegistryReview(book);
           actions.appendChild(review);
+        }
+        if (book.open_enabled) {
+          const share = document.createElement("button");
+          share.className = "book-secondary-action";
+          share.type = "button";
+          share.textContent = "Share Zip";
+          share.title = "Share Zip";
+          share.disabled = Boolean(state.busySlug) || Boolean(activeJob);
+          share.onclick = () => shareBookPackage(book);
+          actions.appendChild(share);
         }
         if (book.resume_annotation_enabled && book.action_key !== "annotate") {
           const resume = document.createElement("button");
@@ -2986,6 +3265,40 @@ INDEX_HTML = r"""<!doctype html>
         els.addButton.disabled = false;
       }
     }
+    async function importPackage() {
+      const file = els.importPackageFile.files && els.importPackageFile.files[0];
+      if (!file) throw new Error("Choose a ReadAlong zip first.");
+      const data = new FormData();
+      data.append("package", file, file.name);
+      data.append("slug", els.importPackageSlug.value);
+      els.importPackageButton.disabled = true;
+      setLibraryStatus("Importing ReadAlong package...");
+      try {
+        const imported = await api("/api/library/import-package", {
+          method: "POST",
+          body: data
+        });
+        state.activeBook = imported.active_book;
+        state.books = imported.library.books;
+        renderLibrary(imported.library);
+        setLibraryMode(true);
+        setLibraryStatus("Imported " + imported.book.title + ". Ready for read-along.");
+      } finally {
+        els.importPackageButton.disabled = false;
+      }
+    }
+    function shareBookPackage(book) {
+      setLibraryStatus("Preparing share zip for " + book.title + "...");
+      window.location.href = "/api/library/export?slug=" + encodeURIComponent(book.slug);
+    }
+    function updateGenerationHint() {
+      const hints = {
+        balanced: "16 GB NVIDIA CUDA GPU recommended. Balanced uses the measured vLLM 12Hz seq2 profile. Smooth ceiling ~6.6x at 1.0x benchmark playback.",
+        fast: "16 GB NVIDIA CUDA GPU recommended. Burst keeps the same resident VRAM profile but requests larger queue fills when buffer time allows.",
+        precise: "16 GB NVIDIA CUDA GPU recommended. Precise generates one unit per call for debugging/fidelity; short-unit RTF was ~0.25 with ~3.9x smooth ceiling."
+      };
+      els.generationHint.textContent = hints[els.generation.value] || hints.balanced;
+    }
     function slugFromFilename(name) {
       const stem = name.replace(/\.[^.]+$/, "");
       return (stem.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80).replace(/^-+|-+$/g, "")) || "book";
@@ -2995,7 +3308,7 @@ INDEX_HTML = r"""<!doctype html>
       return (stem.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120).trim()) || "Untitled Book";
     }
     function lockControls(locked) {
-      for (const el of [els.speed, els.generation, els.buffer, els.targetBuffer, els.startBuffer, els.chapterEndBehavior, els.maxUnits, els.editNarrator, els.start]) {
+      for (const el of [els.speed, els.generation, els.buffer, els.targetBuffer, els.chapterEndBehavior, els.editNarrator, els.start]) {
         el.disabled = locked;
       }
       els.pause.disabled = !locked;
@@ -3053,9 +3366,8 @@ INDEX_HTML = r"""<!doctype html>
       els.generation.value = payload.settings.generation_mode;
       els.buffer.value = payload.settings.buffer_limit;
       els.targetBuffer.value = payload.settings.target_buffer_seconds;
-      els.startBuffer.value = payload.settings.start_buffer_seconds;
       els.chapterEndBehavior.value = payload.settings.chapter_end_behavior || "stop";
-      els.maxUnits.value = payload.settings.max_buffer_units;
+      updateGenerationHint();
       lockControls(Boolean(payload.session_active));
       await loadNarratorProfile();
       renderChapters();
@@ -3279,9 +3591,8 @@ INDEX_HTML = r"""<!doctype html>
         els.generation.value = payload.settings.generation_mode;
         els.buffer.value = payload.settings.buffer_limit;
         els.targetBuffer.value = payload.settings.target_buffer_seconds;
-        els.startBuffer.value = payload.settings.start_buffer_seconds;
         els.chapterEndBehavior.value = payload.settings.chapter_end_behavior || "stop";
-        els.maxUnits.value = payload.settings.max_buffer_units;
+        updateGenerationHint();
         setStatus("Settings saved.");
       } catch (error) {
         setStatus(error.message);
@@ -3413,6 +3724,8 @@ INDEX_HTML = r"""<!doctype html>
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body)
+          }, {
+            timeoutMs: Number(options.timeoutMs || 120000)
           });
           if (!state.sessionActive || state.sessionId !== sessionId) return payload;
           state.ready = payload.ready;
@@ -3448,21 +3761,21 @@ INDEX_HTML = r"""<!doctype html>
           setTtsLoadingStage("Finishing current chapter buffer work.");
           await topUpPromise;
         }
-        await api("/api/session/end", { method: "POST" });
         topUpPromise = null;
         state.sessionId = null;
         state.ready = [];
         state.currentUnitId = null;
         setTtsLoadingStage("Loading next chapter text and read-along units.");
         await loadChapter(nextChapter.chapter, { allowDuringSession: true, selectFirstUnit: true });
-        setTtsLoadingStage("Loading TTS stack and narrator voices.");
+        setTtsLoadingStage("Reusing TTS stack, preparing next chapter voices.");
         const startRequest = api("/api/session/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             chapter: state.chapter,
             start_unit_id: state.selectedUnitId,
-            settings: settings()
+            settings: settings(),
+            reuse_active_tts: true
           })
         });
         startSessionProgressPolling();
@@ -3498,11 +3811,15 @@ INDEX_HTML = r"""<!doctype html>
           if (payload.has_more_units) {
             showTtsLoading(true);
             setTtsLoadingStage("Building next audio buffer...");
-            const toppedUp = await topUpBuffer({ silent: true });
+            const toppedUp = await topUpBuffer({ silent: true, timeoutMs: 120000 });
             showTtsLoading(false);
             if (toppedUp && toppedUp.ready && toppedUp.ready.length) {
               state.ready = toppedUp.ready;
               await playReady();
+              return;
+            }
+            if (!toppedUp) {
+              await endSession("Buffer top-up failed or timed out.");
               return;
             }
           }
@@ -3587,6 +3904,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     document.getElementById("library-refresh").onclick = () => loadLibrary(true).catch(error => alert(error.message));
     document.getElementById("add-book").onclick = () => addBook().catch(error => setLibraryStatus(error.message));
+    document.getElementById("import-package").onclick = () => importPackage().catch(error => setLibraryStatus(error.message));
     els.registryClose.onclick = () => { els.registryPanel.hidden = true; };
     els.editNarrator.onclick = () => { els.narratorPanel.hidden = false; };
     els.narratorClose.onclick = () => { els.narratorPanel.hidden = true; };
@@ -3627,9 +3945,16 @@ INDEX_HTML = r"""<!doctype html>
       if (!els.addTitle.value) els.addTitle.value = titleFromFilename(file.name);
       if (!els.addSlug.value) els.addSlug.value = slugFromFilename(file.name);
     };
-    for (const el of [els.speed, els.generation, els.buffer, els.targetBuffer, els.startBuffer, els.chapterEndBehavior, els.maxUnits]) {
+    els.importPackageFile.onchange = () => {
+      const file = els.importPackageFile.files && els.importPackageFile.files[0];
+      if (!file) return;
+      if (!els.importPackageSlug.value) els.importPackageSlug.value = slugFromFilename(file.name.replace(/\.readalong$/i, ""));
+    };
+    for (const el of [els.speed, els.generation, els.buffer, els.targetBuffer, els.chapterEndBehavior]) {
       el.addEventListener("change", scheduleSettingsSave);
     }
+    els.generation.addEventListener("change", updateGenerationHint);
+    updateGenerationHint();
     els.start.onclick = startSession;
     els.pause.onclick = () => togglePauseSession().catch(error => setStatus(error.message));
     els.ttsLoadingResume.onclick = () => resumeSession().catch(error => setStatus(error.message));

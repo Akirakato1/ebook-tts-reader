@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 import json
+import io
 import re
 import threading
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 
 from ebook_tts_pipeline.epub_ingestion import EpubExtractResult
 from ebook_tts_pipeline.ingestion import SentenceSegmenter
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
+from ebook_tts_pipeline.pipeline import AudiobookPipeline
 from ebook_tts_pipeline.registry import RegistryManager, voice_profile_hash
+from ebook_tts_pipeline.annotation.service import AnnotationService
 from ebook_tts_pipeline.tts.fake import FakeTtsAdapter
-from ebook_tts_pipeline.ui.web_app import build_parser, create_server
+from ebook_tts_pipeline.ui.web_app import ReadAlongWebState, build_parser, create_server
 
 
 def test_web_app_parser_accepts_notebook_style_options():
@@ -187,6 +191,66 @@ def test_library_delete_removes_book_and_clears_active_selection(tmp_path):
 
         assert error["ok"] is False
         assert "Book not found" in error["error"]
+    finally:
+        _stop_server(server, thread)
+
+
+def test_library_export_downloads_portable_readalong_package(tmp_path):
+    paths = _write_demo_book(tmp_path, name="shareable", title="Shareable", ready_for_tts=True)
+    (paths.root / "_source").mkdir(parents=True, exist_ok=True)
+    (paths.root / "_source" / "original.epub").write_bytes(b"epub bytes")
+    (paths.root / "logs").mkdir(parents=True, exist_ok=True)
+    (paths.root / "logs" / "readalong_web_errors.jsonl").write_text("debug", encoding="utf-8")
+    server, thread, base_url = _start_test_server_for_root(tmp_path)
+    try:
+        with urllib.request.urlopen(base_url + "/api/library/export?slug=shareable", timeout=20) as response:
+            assert response.status == 200
+            assert response.headers["Content-Type"] == "application/zip"
+            assert "shareable.readalong.zip" in response.headers["Content-Disposition"]
+            archive = response.read()
+
+        with zipfile.ZipFile(io.BytesIO(archive)) as package:
+            names = set(package.namelist())
+
+        assert "readalong_package.json" in names
+        assert "registry.json" in names
+        assert "chapters/chapter_001.txt" in names
+        assert "read_along/chapter_001.units.json" in names
+        assert "voices/leigh_adult.qvp" in names
+        assert "voices/_samples/leigh_adult.wav" in names
+        assert "_source/original.epub" not in names
+        assert "logs/readalong_web_errors.jsonl" not in names
+        assert "voices/narrator.qvp" not in names
+    finally:
+        _stop_server(server, thread)
+
+
+def test_library_import_package_creates_ready_book_entry(tmp_path):
+    source_paths = _write_demo_book(tmp_path / "source", name="book", title="Shared Source", ready_for_tts=True)
+    source_server, source_thread, source_url = _start_test_server_for_root(source_paths.root.parent)
+    try:
+        with urllib.request.urlopen(source_url + "/api/library/export?slug=book", timeout=20) as response:
+            archive = response.read()
+    finally:
+        _stop_server(source_server, source_thread)
+
+    library_root = tmp_path / "target"
+    server, thread, base_url = _start_test_server_for_root(library_root)
+    try:
+        imported = _post_multipart(
+            base_url + "/api/library/import-package",
+            fields={"slug": "Friend Copy"},
+            files={"package": ("friend.readalong.zip", "application/zip", archive)},
+        )
+
+        assert imported["ok"] is True
+        assert imported["book"]["slug"] == "friend-copy"
+        assert imported["book"]["title"] == "Shared Source"
+        assert imported["book"]["open_enabled"] is True
+        assert imported["book"]["status_label"] == "Voices ready"
+        assert (library_root / "friend-copy" / "read_along" / "chapter_001.units.json").exists()
+        assert not (library_root / "friend-copy" / "_source").exists()
+        assert imported["library"]["books"][0]["slug"] == "friend-copy"
     finally:
         _stop_server(server, thread)
 
@@ -747,6 +811,8 @@ def test_home_page_serves_clean_reader_shell(tmp_path):
         assert "Start Session" in response
         assert 'id="speed" type="number" min="1" max="4"' in response
         assert 'id="target-buffer" type="number" min="1" max="120"' in response
+        assert 'id="start-buffer"' not in response
+        assert "Start s" not in response
         assert 'id="add-epub-file" type="file"' in response
         assert 'accept=".epub,application/epub+zip"' in response
         assert 'id="add-title" type="text" maxlength="120"' in response
@@ -1024,12 +1090,45 @@ def test_web_api_serves_chapter_and_bounded_session_audio(tmp_path):
         _stop_server(server, thread)
 
 
+def test_web_state_continue_session_reuses_warm_tts_adapter(tmp_path):
+    paths = _write_two_chapter_demo_book(tmp_path, ready_for_tts=True)
+    pipeline_factory = _TrackingReadAlongPipelineFactory()
+    state = ReadAlongWebState(library_root=tmp_path, pipeline_factory=pipeline_factory)
+    state.controller = state._make_controller(paths.root)
+    settings = {
+        "playback_speed": 1.0,
+        "generation_mode": "balanced",
+        "buffer_limit": 2,
+        "target_buffer_seconds": 0.1,
+        "start_buffer_seconds": 0.1,
+        "max_buffer_seconds": 0.2,
+        "chapter_end_behavior": "continue",
+    }
+
+    state.start_session("chapter_001", 0, settings)
+    first_adapter = state.session.tts_adapter
+    assert isinstance(first_adapter, _CloseTrackingFakeTtsAdapter)
+
+    state.start_session("chapter_002", 0, settings, reuse_active_tts=True)
+
+    assert state.session_chapter == "chapter_002"
+    assert state.session.tts_adapter is first_adapter
+    assert first_adapter.close_calls == 0
+
+    state.end_session()
+
+    assert first_adapter.close_calls == 1
+
+
 def test_web_api_advances_immediately_and_tops_up_buffer_separately(tmp_path):
     paths = _write_demo_book(tmp_path, ready_for_tts=True)
     paths.chapter_text("chapter_001").write_text(
         'Leigh said something quite lengthy, "Right, absolutely yes." Then she left.',
         encoding="utf-8",
     )
+    units_payload = read_json(paths.read_along_units("chapter_001"))
+    units_payload["units"][1]["text"] = '"Right, absolutely."'
+    write_json_atomic(paths.read_along_units("chapter_001"), units_payload)
     server = create_server(book_root=paths.root, host="127.0.0.1", port=0, fake_tts=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -1045,8 +1144,8 @@ def test_web_api_advances_immediately_and_tops_up_buffer_separately(tmp_path):
                     "playback_speed": 1.0,
                     "generation_mode": "balanced",
                     "buffer_limit": 2,
-                    "target_buffer_seconds": 0.12,
-                    "start_buffer_seconds": 0.12,
+                    "target_buffer_seconds": 0.1,
+                    "start_buffer_seconds": 0.1,
                     "max_buffer_seconds": 0.3,
                     "max_buffer_units": 4,
                 },
@@ -1139,6 +1238,42 @@ def test_web_interface_uses_time_buffer_controls_and_pause_button(tmp_path):
         assert "Continuing to next chapter" in response
         assert "Units <input" not in response
         assert "Max units <input" not in response
+        assert "Start s" not in response
+        assert "start_buffer_seconds" not in response
+        assert "els.startBuffer" not in response
+    finally:
+        _stop_server(server, thread)
+
+
+def test_web_interface_exposes_package_sharing_and_measured_generation_labels(tmp_path):
+    server, thread, base_url = _start_test_server(tmp_path)
+    try:
+        response = urllib.request.urlopen(base_url, timeout=20).read().decode("utf-8")
+
+        assert 'id="import-package-file"' in response
+        assert 'id="import-package"' in response
+        assert "/api/library/import-package" in response
+        assert "/api/library/export?slug=" in response
+        assert "Share Zip" in response
+        assert "Balanced (12-14 GB, RTF ~0.15)" in response
+        assert "Precise (12-14 GB, RTF ~0.25)" in response
+        assert "Burst (12-14 GB, fastest fill)" in response
+        assert "16 GB NVIDIA CUDA GPU recommended" in response
+        assert "Smooth ceiling ~6.6x" in response
+    finally:
+        _stop_server(server, thread)
+
+
+def test_web_interface_times_out_stalled_buffer_top_up(tmp_path):
+    server, thread, base_url = _start_test_server(tmp_path)
+    try:
+        response = urllib.request.urlopen(base_url, timeout=20).read().decode("utf-8")
+
+        assert "AbortController" in response
+        assert "Request timed out" in response
+        assert "timeoutMs" in response
+        assert 'api("/api/session/top-up"' in response
+        assert "Buffer top-up failed or timed out." in response
     finally:
         _stop_server(server, thread)
 
@@ -1178,6 +1313,67 @@ def test_web_api_reports_session_start_progress(tmp_path):
         assert "Buffer ready" in progress["message"]
     finally:
         _stop_server(server, thread)
+
+
+def test_web_api_reports_tts_stack_work_during_initial_generation(tmp_path):
+    paths = _write_demo_book(tmp_path, ready_for_tts=True)
+    adapter = _BlockingTtsAdapter()
+
+    def factory(config, needs_llm, fake_tts):
+        return AudiobookPipeline(
+            config=config,
+            annotation_service=AnnotationService(client=None, repair_retries=0),
+            tts_adapter=adapter,
+        )
+
+    server = create_server(
+        book_root=paths.root,
+        host="127.0.0.1",
+        port=0,
+        fake_tts=False,
+        pipeline_factory=factory,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    base_url = f"http://{host}:{port}"
+    start_error = []
+
+    def start_request():
+        try:
+            _post_json(
+                base_url + "/api/session/start",
+                {
+                    "chapter": "chapter_001",
+                    "start_unit_id": 0,
+                    "settings": {
+                        "playback_speed": 1.0,
+                        "generation_mode": "balanced",
+                        "buffer_limit": 2,
+                        "target_buffer_seconds": 0.1,
+                        "start_buffer_seconds": 0.1,
+                        "max_buffer_seconds": 0.2,
+                    },
+                },
+            )
+        except Exception as exc:  # pragma: no cover - surfaced below for clearer failure
+            start_error.append(exc)
+
+    request_thread = threading.Thread(target=start_request, daemon=True)
+    request_thread.start()
+    try:
+        assert adapter.entered_generate.wait(timeout=5)
+        progress = _get_json(base_url + "/api/session/start-progress")
+
+        assert progress["status"] == "running"
+        assert progress["stage"] == "loading_tts_stack"
+        assert "TTS stack" in progress["message"]
+    finally:
+        adapter.release_generate.set()
+        request_thread.join(timeout=5)
+        _stop_server(server, thread)
+
+    assert start_error == []
 
 
 def test_chapter_payload_does_not_build_units_or_tts_on_reader_open(tmp_path):
@@ -1233,9 +1429,7 @@ def test_web_api_saves_read_along_settings(tmp_path):
             "generation_mode": "fast",
             "buffer_limit": 3,
             "target_buffer_seconds": 20.0,
-            "start_buffer_seconds": 20.0,
             "max_buffer_seconds": 40.0,
-            "max_buffer_units": 32,
             "chapter_end_behavior": "continue",
         }
         assert _get_json(base_url + "/api/state")["settings"] == saved["settings"]
@@ -1250,6 +1444,68 @@ def test_web_api_returns_json_errors(tmp_path):
 
         assert error["ok"] is False
         assert "chapter" in error["error"].lower()
+    finally:
+        _stop_server(server, thread)
+
+
+def test_web_api_persists_http_exception_log(tmp_path):
+    paths = _write_demo_book(tmp_path, ready_for_tts=True)
+    server = create_server(book_root=paths.root, host="127.0.0.1", port=0, fake_tts=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    base_url = f"http://{host}:{port}"
+    try:
+        _post_json(base_url + "/api/session/start", {"chapter": ""}, expect_status=400)
+
+        log_path = paths.root / "logs" / "readalong_web_errors.jsonl"
+        rows = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+
+        assert any(row["event_type"] == "readalong_session_start_error" for row in rows)
+        http_rows = [row for row in rows if row["event_type"] == "http_post_error"]
+        assert http_rows
+        assert http_rows[-1]["details"]["path"] == "/api/session/start"
+        assert "chapter is required" in http_rows[-1]["exception"]["message"]
+        assert "traceback" in http_rows[-1]["exception"]
+    finally:
+        _stop_server(server, thread)
+
+
+def test_web_api_persists_top_up_breadcrumbs(tmp_path):
+    paths = _write_demo_book(tmp_path, ready_for_tts=True)
+    server = create_server(book_root=paths.root, host="127.0.0.1", port=0, fake_tts=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    base_url = f"http://{host}:{port}"
+    try:
+        _post_json(
+            base_url + "/api/session/start",
+            {
+                "chapter": "chapter_001",
+                "start_unit_id": 0,
+                "settings": {
+                    "playback_speed": 1.0,
+                    "generation_mode": "balanced",
+                    "buffer_limit": 2,
+                    "target_buffer_seconds": 0.1,
+                    "start_buffer_seconds": 0.1,
+                    "max_buffer_seconds": 0.2,
+                },
+            },
+        )
+        _post_json(base_url + "/api/session/advance", {})
+        _post_json(base_url + "/api/session/top-up", {})
+
+        log_path = paths.root / "logs" / "readalong_web_errors.jsonl"
+        rows = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+        event_types = [row["event_type"] for row in rows]
+
+        assert "readalong_top_up_start" in event_types
+        assert "readalong_top_up_done" in event_types
+        done = [row for row in rows if row["event_type"] == "readalong_top_up_done"][-1]
+        assert done["details"]["chapter"] == "chapter_001"
+        assert "generated_count" in done["details"]
     finally:
         _stop_server(server, thread)
 
@@ -1399,6 +1655,40 @@ def _write_demo_book(
     return paths
 
 
+def _write_two_chapter_demo_book(
+    tmp_path,
+    name: str = "book",
+    title: str = "Demo",
+    ready_for_tts: bool = False,
+) -> BookPaths:
+    paths = _write_demo_book(tmp_path, name=name, title=title, ready_for_tts=ready_for_tts)
+    paths.chapter_text("chapter_002").write_text('Leigh said, "Again." Then she waited.', encoding="utf-8")
+    write_json_atomic(
+        paths.root / "toc.json",
+        {
+            "chapters": [
+                {
+                    "index": 1,
+                    "chapter": "chapter_001",
+                    "title": "Chapter One",
+                    "source": "chapter_001.txt",
+                },
+                {
+                    "index": 2,
+                    "chapter": "chapter_002",
+                    "title": "Chapter Two",
+                    "source": "chapter_002.txt",
+                },
+            ]
+        },
+    )
+    write_json_atomic(
+        paths.annotation("chapter_002"),
+        {"schema": "quote_attribution_v1", "roles": ["leigh_adult"], "quotes": [[1, 0]]},
+    )
+    return paths
+
+
 class _FakeExtractor:
     def extract(self, epub_path, paths: BookPaths) -> EpubExtractResult:
         paths.chapter_text("chapter_001").parent.mkdir(parents=True, exist_ok=True)
@@ -1416,6 +1706,39 @@ class _TwoChapterExtractor:
 
 def _fake_lifecycle_pipeline_factory(config, needs_llm, fake_tts):
     return _FakeLifecyclePipeline(config)
+
+
+class _CloseTrackingFakeTtsAdapter(FakeTtsAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class _BlockingTtsAdapter(FakeTtsAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered_generate = threading.Event()
+        self.release_generate = threading.Event()
+
+    def generate_sentences(self, jobs):
+        self.entered_generate.set()
+        assert self.release_generate.wait(timeout=10)
+        return super().generate_sentences(jobs)
+
+
+class _TrackingReadAlongPipelineFactory:
+    def __init__(self) -> None:
+        self.adapters = []
+
+    def __call__(self, config, needs_llm, fake_tts):
+        pipeline = _FakeLifecyclePipeline(config)
+        adapter = _CloseTrackingFakeTtsAdapter()
+        self.adapters.append(adapter)
+        pipeline.tts_adapter = adapter
+        return pipeline
 
 
 class _FakeLifecyclePipeline:

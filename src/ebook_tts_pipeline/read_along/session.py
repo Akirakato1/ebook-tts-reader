@@ -8,7 +8,7 @@ import wave
 from io import BytesIO
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
@@ -50,7 +50,8 @@ class ReadAlongSession:
         self.target_buffer_seconds = max(0.1, float(target_buffer_seconds))
         self.start_buffer_seconds = max(0.1, min(float(start_buffer_seconds), self.target_buffer_seconds))
         self.max_buffer_seconds = max(self.target_buffer_seconds, float(max_buffer_seconds))
-        self.max_buffer_units = max(1, int(max_buffer_units))
+        # Legacy callers may still pass this; the active buffer target is time based.
+        _ = max_buffer_units
         self.playback_speed = max(0.1, float(playback_speed))
         self.generation_mode = str(generation_mode)
         self.store_audio_files = bool(store_audio_files)
@@ -88,6 +89,8 @@ class ReadAlongSession:
         start_unit_id: Optional[int] = None,
         min_buffer_seconds: Optional[float] = None,
         exclude_unit_id: Optional[int] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        progress_stage: str = "building_audio_buffer",
     ) -> List[BufferedAudio]:
         if self._ended:
             return []
@@ -98,10 +101,9 @@ class ReadAlongSession:
         generated: List[BufferedAudio] = []
         while (
             self._ready_playback_seconds(exclude_unit_id=exclude_unit_id) < target_seconds
-            and len(self._ready) < self.max_buffer_units
             and self._next_unit_id < len(self.units)
         ):
-            open_unit_slots = max(1, min(self.max_buffer_units - len(self._ready), self.buffer_limit))
+            open_unit_slots = self.buffer_limit
             batch_size = self._next_batch_size(
                 open_unit_slots,
                 target_seconds,
@@ -111,6 +113,14 @@ class ReadAlongSession:
             if not batch_units:
                 break
             generated.extend(self._generate_units(batch_units))
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "stage": progress_stage,
+                        "ready_playback_seconds": self._ready_playback_seconds(exclude_unit_id=exclude_unit_id),
+                        "target_buffer_seconds": target_seconds,
+                    }
+                )
             if self._ready_playback_seconds(exclude_unit_id=exclude_unit_id) >= self.max_buffer_seconds:
                 break
         return generated
@@ -151,16 +161,18 @@ class ReadAlongSession:
                 pass
         return item
 
-    def end(self) -> None:
+    def end(self, close_adapter: bool = True) -> None:
         if self._ended:
             return
         self._ended = True
         try:
-            close = getattr(self.tts_adapter, "close", None)
-            if callable(close):
-                close()
-        except Exception:
-            pass
+            if close_adapter:
+                try:
+                    close = getattr(self.tts_adapter, "close", None)
+                    if callable(close):
+                        close()
+                except Exception:
+                    pass
         finally:
             shutil.rmtree(self.session_dir, ignore_errors=True)
             self._ready.clear()
@@ -209,7 +221,6 @@ class ReadAlongSession:
                 "target_buffer_seconds": self.target_buffer_seconds,
                 "start_buffer_seconds": self.start_buffer_seconds,
                 "max_buffer_seconds": self.max_buffer_seconds,
-                "max_buffer_units": self.max_buffer_units,
                 "buffer_seconds_before_generation": buffer_seconds_before,
                 "buffer_seconds_after_generation": buffer_seconds_before + playback_seconds,
                 "unit_audio_seconds": [

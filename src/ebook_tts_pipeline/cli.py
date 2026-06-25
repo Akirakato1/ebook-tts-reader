@@ -176,7 +176,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             target_buffer_seconds=float(args.target_buffer_seconds),
             start_buffer_seconds=float(args.target_buffer_seconds),
             max_buffer_seconds=float(args.target_buffer_seconds) * 2,
-            max_buffer_units=max(1, int(args.unit_count)),
             store_audio_files=False,
         )
         try:

@@ -133,6 +133,22 @@ def test_session_end_closes_tts_adapter(tmp_path):
     assert adapter.close_calls == 1
 
 
+def test_session_end_can_preserve_tts_adapter_for_chapter_continuation(tmp_path):
+    adapter = ClosableAdapter()
+    session = ReadAlongSession(
+        session_id="s1",
+        units=[_unit(0)],
+        tts_adapter=adapter,
+        session_dir=tmp_path / "session",
+        timing_log_path=tmp_path / "session" / "timings.jsonl",
+    )
+
+    session.end(close_adapter=False)
+
+    assert adapter.close_calls == 0
+    assert not (tmp_path / "session").exists()
+
+
 def test_session_can_buffer_audio_without_writing_wav_files(tmp_path):
     adapter = RecordingAdapter()
     session = ReadAlongSession(
@@ -177,6 +193,31 @@ def test_session_fills_until_target_buffer_seconds(tmp_path):
     assert session.ready_playback_seconds == 3.0
     assert len(adapter.calls) == 2
     assert [len(call) for call in adapter.calls] == [2, 1]
+
+
+def test_session_time_buffer_is_not_capped_by_unit_count(tmp_path):
+    adapter = VariableDurationAdapter([2400] * 10)
+    session = ReadAlongSession(
+        session_id="s1",
+        units=[_unit(unit_id) for unit_id in range(10)],
+        tts_adapter=adapter,
+        session_dir=tmp_path / "session",
+        timing_log_path=tmp_path / "session" / "timings.jsonl",
+        buffer_limit=2,
+        playback_speed=1.0,
+        generation_mode="fast",
+        target_buffer_seconds=0.6,
+        start_buffer_seconds=0.6,
+        max_buffer_seconds=1.0,
+        max_buffer_units=4,
+    )
+
+    generated = session.fill_buffer(start_unit_id=0, min_buffer_seconds=0.6)
+
+    assert [item.unit_id for item in generated] == [0, 1, 2, 3, 4, 5]
+    assert session.ready_playback_seconds == 0.6
+    assert session.ready_unit_ids == [0, 1, 2, 3, 4, 5]
+    assert [len(call) for call in adapter.calls] == [2, 2, 2]
 
 
 def test_session_does_not_generate_when_buffer_seconds_are_full(tmp_path):

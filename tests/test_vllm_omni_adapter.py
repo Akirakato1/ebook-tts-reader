@@ -1,5 +1,7 @@
+import threading
 from pathlib import Path
 
+from ebook_tts_pipeline.tts import vllm_omni_adapter as vllm_module
 from ebook_tts_pipeline.tts.vllm_omni_adapter import WslVllmOmniQwenAdapter
 from ebook_tts_pipeline.tts.vllm_omni_worker import _force_clean_linux_path
 
@@ -121,6 +123,27 @@ def test_vllm_omni_adapter_skips_stdout_log_lines_before_json_response():
     assert adapter._request("init", {}) == {"ready": True}
 
 
+def test_vllm_omni_adapter_drains_worker_stderr_while_process_runs(monkeypatch):
+    fake_process = _FakeProcess(
+        ['{"id": 0, "ok": true, "payload": {"ready": true}}\n'],
+        stderr_lines=["vllm noisy stderr log\n"],
+    )
+    monkeypatch.setattr(
+        vllm_module.subprocess,
+        "Popen",
+        lambda *args, **kwargs: fake_process,
+    )
+
+    WslVllmOmniQwenAdapter(
+        book_root=Path(r"C:\book"),
+        stage_configs_path=Path(r"C:\repo\scripts\stable.yaml"),
+        voice_model_root=Path(r"C:\book\models\qwen-tts"),
+        start_process=True,
+    )
+
+    assert fake_process.stderr.drained.wait(timeout=1.0)
+
+
 class _FakeStdin:
     def __init__(self):
         self.writes = []
@@ -143,12 +166,26 @@ class _FakeStdout:
 
 
 class _FakeStderr:
+    def __init__(self, lines=None):
+        self.lines = list(lines or [])
+        self.drained = threading.Event()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if not self.lines:
+            raise StopIteration
+        self.drained.set()
+        return self.lines.pop(0)
+
     def read(self):
+        self.drained.set()
         return ""
 
 
 class _FakeProcess:
-    def __init__(self, stdout_lines):
+    def __init__(self, stdout_lines, stderr_lines=None):
         self.stdin = _FakeStdin()
         self.stdout = _FakeStdout(stdout_lines)
-        self.stderr = _FakeStderr()
+        self.stderr = _FakeStderr(stderr_lines)

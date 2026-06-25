@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from ebook_tts_pipeline.runtime_logging import log_runtime_step
 from ebook_tts_pipeline.tts.base import GeneratedSentenceAudio
+from ebook_tts_pipeline.tts.subprocess_stderr import SubprocessStderrTail
 from ebook_tts_pipeline.tts.wsl_paths import to_wsl_path, translate_job_paths
 from ebook_tts_pipeline.tts.wsl_worker import decode_audio_item
 
@@ -42,6 +43,7 @@ class WslQwenWorkerAdapter:
         self._lock = threading.RLock()
         self._next_id = 0
         self._process: Optional[subprocess.Popen[str]] = None
+        self._stderr_tail = SubprocessStderrTail("qwen-wsl-worker")
         self.worker_command = [
             "wsl.exe",
             "-d",
@@ -98,6 +100,7 @@ class WslQwenWorkerAdapter:
                 text=True,
                 encoding="utf-8",
             )
+            self._stderr_tail.start(self._process.stderr)
             self._request("init", self._init_payload)
 
     def close(self) -> None:
@@ -142,7 +145,7 @@ class WslQwenWorkerAdapter:
         self._process.stdin.flush()
         line = self._process.stdout.readline()
         if not line:
-            stderr = self._process.stderr.read() if self._process.stderr is not None else ""
+            stderr = self._stderr_tail.tail()
             raise RuntimeError(f"WSL worker stopped before responding. stderr={stderr}")
         response = json.loads(line)
         if response.get("id") != request_id:

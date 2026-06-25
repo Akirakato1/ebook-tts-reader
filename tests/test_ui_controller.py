@@ -1979,10 +1979,9 @@ def test_controller_read_along_defaults_are_safe_for_vllm_omni_profile(tmp_path)
     assert settings["generation_mode"] == "balanced"
     assert settings["buffer_limit"] == 2
     assert settings["target_buffer_seconds"] == 20.0
-    assert settings["start_buffer_seconds"] == 20.0
     assert settings["max_buffer_seconds"] == 40.0
-    assert settings["max_buffer_units"] == 32
     assert settings["chapter_end_behavior"] == "stop"
+    assert "start_buffer_seconds" not in settings
 
 
 def test_controller_read_along_settings_clamp_speed_to_supported_range(tmp_path):
@@ -1997,7 +1996,6 @@ def test_controller_read_along_settings_clamp_speed_to_supported_range(tmp_path)
             "target_buffer_seconds": "20",
             "start_buffer_seconds": "20",
             "max_buffer_seconds": "40",
-            "max_buffer_units": "32",
         }
     )
 
@@ -2135,7 +2133,6 @@ def test_controller_saves_read_along_time_buffer_settings(tmp_path):
             "target_buffer_seconds": "12.5",
             "start_buffer_seconds": "4",
             "max_buffer_seconds": "20",
-            "max_buffer_units": "9",
             "chapter_end_behavior": "continue",
         }
     )
@@ -2145,8 +2142,55 @@ def test_controller_saves_read_along_time_buffer_settings(tmp_path):
     assert settings["generation_mode"] == "fast"
     assert settings["buffer_limit"] == 2
     assert settings["target_buffer_seconds"] == 12.5
-    assert settings["start_buffer_seconds"] == 4.0
     assert settings["max_buffer_seconds"] == 20.0
-    assert settings["max_buffer_units"] == 9
     assert settings["chapter_end_behavior"] == "continue"
+    assert "start_buffer_seconds" not in settings
     assert "narrator_voice_type" not in settings
+
+
+def test_controller_uses_target_buffer_seconds_as_initial_session_buffer(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text('Leigh said, "Right."', encoding="utf-8")
+    _write_callie_registry(paths)
+    registry = read_json(paths.registry)
+    registry["narrator"]["voice_profile"] = {
+        "description": "adult male narrator",
+        "qwen_instruct": "adult male narrator",
+    }
+    registry["characters"]["leigh_adult"] = {
+        "role_id": "leigh_adult",
+        "profile_id": "leigh_adult",
+        "person_id": "leigh",
+        "display_name": "Leigh",
+        "age_stage": "adult",
+        "aliases": [],
+        "identity_profile": {"age_stage": "adult", "gender": "female", "personality": []},
+        "voice_identity": {"seed": 3, "differentiators": []},
+        "voice_profile": {"description": "adult female", "qwen_instruct": "adult female"},
+    }
+    write_json_atomic(paths.registry, registry)
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {"schema": "quote_attribution_v1", "roles": ["leigh_adult"], "quotes": [[1, 0]]},
+    )
+    controller.prepare_read_along_voices()
+    settings = {
+        "playback_speed": 1.0,
+        "generation_mode": "balanced",
+        "buffer_limit": 2,
+        "target_buffer_seconds": 12.5,
+        "max_buffer_seconds": 25.0,
+    }
+
+    session = controller.create_read_along_session(
+        "chapter_001",
+        controller.read_along_units("chapter_001"),
+        settings,
+    )
+
+    assert session.start_buffer_seconds == 12.5
+    assert session.target_buffer_seconds == 12.5
+    session.end()

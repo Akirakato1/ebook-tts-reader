@@ -386,9 +386,7 @@ class PrototypeUiController:
             "generation_mode": "balanced",
             "buffer_limit": 2,
             "target_buffer_seconds": 20.0,
-            "start_buffer_seconds": 20.0,
             "max_buffer_seconds": 40.0,
-            "max_buffer_units": 32,
             "chapter_end_behavior": "stop",
         }
         if not self.paths.read_along_settings.exists():
@@ -416,21 +414,11 @@ class PrototypeUiController:
                 0.1,
                 120.0,
             ),
-            "start_buffer_seconds": _bounded_positive_float(
-                payload.get("start_buffer_seconds"),
-                defaults["start_buffer_seconds"],
-                0.1,
-                120.0,
-            ),
             "max_buffer_seconds": _bounded_positive_float(
                 payload.get("max_buffer_seconds"),
                 defaults["max_buffer_seconds"],
                 0.1,
                 240.0,
-            ),
-            "max_buffer_units": min(
-                32,
-                max(1, _positive_int(payload.get("max_buffer_units"), defaults["max_buffer_units"])),
             ),
             "chapter_end_behavior": _choice(
                 payload.get("chapter_end_behavior"),
@@ -441,10 +429,7 @@ class PrototypeUiController:
 
     def save_read_along_settings(self, values: Dict[str, Any]) -> None:
         target_buffer_seconds = _bounded_positive_float(values.get("target_buffer_seconds"), 20.0, 0.1, 120.0)
-        start_buffer_seconds = _bounded_positive_float(values.get("start_buffer_seconds"), 20.0, 0.1, 120.0)
         max_buffer_seconds = _bounded_positive_float(values.get("max_buffer_seconds"), 40.0, 0.1, 240.0)
-        if start_buffer_seconds > target_buffer_seconds:
-            start_buffer_seconds = target_buffer_seconds
         if target_buffer_seconds > max_buffer_seconds:
             max_buffer_seconds = target_buffer_seconds
         settings = {
@@ -452,9 +437,7 @@ class PrototypeUiController:
             "generation_mode": _choice(values.get("generation_mode"), {"precise", "balanced", "fast"}, "balanced"),
             "buffer_limit": min(8, max(1, _positive_int(values.get("buffer_limit"), 2))),
             "target_buffer_seconds": target_buffer_seconds,
-            "start_buffer_seconds": start_buffer_seconds,
             "max_buffer_seconds": max_buffer_seconds,
-            "max_buffer_units": min(32, max(1, _positive_int(values.get("max_buffer_units"), 32))),
             "chapter_end_behavior": _choice(values.get("chapter_end_behavior"), {"stop", "continue"}, "stop"),
         }
         write_json_atomic(self.paths.read_along_settings, settings)
@@ -826,12 +809,18 @@ class PrototypeUiController:
         settings: Dict[str, Any],
         store_audio_files: bool = True,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        tts_adapter: Optional[TtsAdapter] = None,
     ) -> ReadAlongSession:
         session_id = f"{chapter}-{int(time.time())}"
-        _emit_session_progress(progress_callback, "loading_tts_model", "Loading read-along TTS model.")
+        if tts_adapter is None:
+            _emit_session_progress(progress_callback, "loading_tts_model", "Loading read-along TTS model.")
+        else:
+            _emit_session_progress(progress_callback, "reusing_tts_model", "Reusing warm read-along TTS model.")
         pipeline = self._pipeline(needs_llm=False, read_along=True)
+        if tts_adapter is not None:
+            pipeline.tts_adapter = tts_adapter
         _emit_session_progress(progress_callback, "building_read_along_units", "Building read-along unit map.")
-        units = pipeline.build_read_along_units(chapter)
+        units = [dict(unit) for unit in units] or pipeline.build_read_along_units(chapter)
         session_voice_paths = self._ensure_read_along_session_narrator_voices(
             pipeline,
             settings,
@@ -858,9 +847,8 @@ class PrototypeUiController:
             playback_speed=float(settings["playback_speed"]),
             generation_mode=str(settings["generation_mode"]),
             target_buffer_seconds=float(settings.get("target_buffer_seconds", 20.0)),
-            start_buffer_seconds=float(settings.get("start_buffer_seconds", 20.0)),
+            start_buffer_seconds=float(settings.get("target_buffer_seconds", 20.0)),
             max_buffer_seconds=float(settings.get("max_buffer_seconds", 40.0)),
-            max_buffer_units=int(settings.get("max_buffer_units", 32)),
             store_audio_files=store_audio_files,
         )
 

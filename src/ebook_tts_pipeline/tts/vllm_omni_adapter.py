@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterator, List, Optional
 from ebook_tts_pipeline.config import DEFAULT_VLLM_OMNI_MODEL, DEFAULT_VLLM_OMNI_STAGE_CONFIG
 from ebook_tts_pipeline.runtime_logging import log_runtime_step
 from ebook_tts_pipeline.tts.base import GeneratedSentenceAudio
+from ebook_tts_pipeline.tts.subprocess_stderr import SubprocessStderrTail
 from ebook_tts_pipeline.tts.wsl_adapter import WslQwenWorkerAdapter
 from ebook_tts_pipeline.tts.wsl_paths import to_wsl_path, translate_job_paths
 from ebook_tts_pipeline.tts.wsl_worker import decode_audio_item
@@ -43,6 +44,7 @@ class WslVllmOmniQwenAdapter:
         self._lock = threading.RLock()
         self._next_id = 0
         self._process: Optional[subprocess.Popen[str]] = None
+        self._stderr_tail = SubprocessStderrTail("vllm-omni-wsl-worker")
         self.worker_command = [
             "wsl.exe",
             "-d",
@@ -107,6 +109,7 @@ class WslVllmOmniQwenAdapter:
                 text=True,
                 encoding="utf-8",
             )
+            self._stderr_tail.start(self._process.stderr)
             self._request("init", self.init_payload)
 
     def close(self) -> None:
@@ -151,7 +154,7 @@ class WslVllmOmniQwenAdapter:
         while True:
             line = self._process.stdout.readline()
             if not line:
-                stderr = self._process.stderr.read() if self._process.stderr is not None else ""
+                stderr = self._stderr_tail.tail()
                 raise RuntimeError(f"vLLM-Omni WSL worker stopped before responding. stderr={stderr}")
             try:
                 response = json.loads(line)
