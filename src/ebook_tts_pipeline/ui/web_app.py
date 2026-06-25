@@ -137,7 +137,7 @@ class ReadAlongWebState:
     session_chapter: str = ""
 
     def __post_init__(self) -> None:
-        self.library_root = Path(self.library_root)
+        self.library_root = Path(self.library_root).resolve()
         self.lock = threading.RLock()
         self.jobs: Dict[str, LibraryJob] = {}
         self.jobs_by_slug: Dict[str, str] = {}
@@ -751,8 +751,9 @@ class ReadAlongWebState:
         return self.controller
 
     def _make_controller(self, book_root: Path) -> PrototypeUiController:
+        resolved_book_root = Path(book_root).resolve()
         return PrototypeUiController(
-            book_root=book_root,
+            book_root=resolved_book_root,
             pipeline_factory=self.pipeline_factory,
             extractor=self.extractor,
             fake_tts=self.fake_tts,
@@ -806,7 +807,7 @@ def create_server(
     pipeline_factory: Optional[PipelineFactory] = None,
 ) -> ReadAlongHttpServer:
     if book_root is not None:
-        root = Path(book_root)
+        root = Path(book_root).resolve()
         state = ReadAlongWebState(
             library_root=root.parent,
             fake_tts=fake_tts,
@@ -1083,7 +1084,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 def resolve_launch_root(launch_root: str | Path) -> LaunchSelection:
-    root = Path(launch_root)
+    root = Path(launch_root).resolve()
     if _is_book_root(root):
         return LaunchSelection(library_root=root.parent, active_book_root=root)
     books_dir = root / "books"
@@ -1093,7 +1094,7 @@ def resolve_launch_root(launch_root: str | Path) -> LaunchSelection:
 
 
 def discover_books(library_root: str | Path) -> List[LibraryBookSummary]:
-    root = Path(library_root)
+    root = Path(library_root).resolve()
     if not root.exists():
         return []
     books = [
@@ -1105,7 +1106,7 @@ def discover_books(library_root: str | Path) -> List[LibraryBookSummary]:
 
 
 def summarize_book(book_root: str | Path) -> LibraryBookSummary:
-    root = Path(book_root)
+    root = Path(book_root).resolve()
     manifest = _read_book_manifest(root)
     registry = _read_json_if_exists(root / "registry.json")
     title = ""

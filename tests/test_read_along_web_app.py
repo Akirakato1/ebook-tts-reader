@@ -123,6 +123,28 @@ def test_direct_book_launch_root_opens_reader_without_selection(tmp_path):
         _stop_server(server, thread)
 
 
+def test_relative_launch_root_resolves_selected_book_root_to_absolute(tmp_path, monkeypatch):
+    library_root = tmp_path / "books"
+    paths = _write_demo_book(library_root, name="book", title="Relative Book", ready_for_tts=True)
+    monkeypatch.chdir(tmp_path)
+    server = create_server(launch_root=Path("books"), host="127.0.0.1", port=0, fake_tts=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    base_url = f"http://{host}:{port}"
+    try:
+        library = _get_json(base_url + "/api/library")
+        assert Path(library["library_root"]).is_absolute()
+
+        selected = _post_json(base_url + "/api/library/select", {"slug": "book"})
+
+        assert Path(selected["active_book"]["book_root"]).is_absolute()
+        assert server.app_state.controller is not None
+        assert server.app_state.controller.book_root == paths.root.resolve()
+    finally:
+        _stop_server(server, thread)
+
+
 def test_library_selection_switches_active_book(tmp_path):
     _write_demo_book(tmp_path, name="alpha", title="Alpha", ready_for_tts=True)
     _write_demo_book(tmp_path, name="beta", title="Beta", ready_for_tts=True)
