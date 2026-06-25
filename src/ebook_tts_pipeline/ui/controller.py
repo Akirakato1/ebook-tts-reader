@@ -534,14 +534,9 @@ class PrototypeUiController:
         owns_pipeline = pipeline is None
         if pipeline is None:
             pipeline = self._voice_asset_pipeline()
-        if hasattr(pipeline, "_voice_path_for_record"):
-            voice_path = pipeline._voice_path_for_record(role_id, record)
-        else:
-            voice_path = self.paths.voice_qvp(role_id)
+        voice_path = self._voice_path_for_registry_record(role_id, record, pipeline=pipeline)
         try:
-            pipeline.tts_adapter.ensure_voice(role_id, record, voice_path)
-            record["voice_config_path"] = voice_path.relative_to(self.paths.root).as_posix()
-            record["voice_config_hash"] = voice_profile_hash(record)
+            self._ensure_voice_asset(pipeline.tts_adapter, role_id, record, voice_path)
             pipeline.registry.save(registry)
 
             generated = pipeline.tts_adapter.generate_sentences(
@@ -1020,7 +1015,6 @@ class PrototypeUiController:
         self,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
-        pipeline = self._voice_asset_pipeline()
         chapters = [row.chapter for row in self.chapter_rows()]
         voice_count, voice_total = self._registry_voice_readiness_counts()
         self._emit_voice_progress(
@@ -1032,11 +1026,34 @@ class PrototypeUiController:
             },
             progress_callback,
         )
+        for chapter in chapters:
+            if not self.paths.annotation(chapter).exists():
+                raise ValueError(f"Annotation missing for {chapter}.")
+
+        units_ready = all(self.paths.read_along_units(chapter).exists() for chapter in chapters)
+        if units_ready and voice_count >= voice_total:
+            missing = self._missing_read_along_voice_paths(chapters)
+            if not missing:
+                log_runtime_step(
+                    "readalong_voice_assets_cached",
+                    book_root=self.book_root,
+                    voice_count=voice_count,
+                    voice_total=voice_total,
+                    chapters=len(chapters),
+                )
+                return {
+                    "chapters": len(chapters),
+                    "prepared_chapters": 0,
+                    "sample_count": 0,
+                    "voice_count": voice_count,
+                    "voice_total": voice_total,
+                    "missing_voice_paths": [],
+                    "voices_ready": True,
+                }
+
+        pipeline = self._voice_asset_pipeline()
         prepared_chapters = 0
         try:
-            for chapter in chapters:
-                if not self.paths.annotation(chapter).exists():
-                    raise ValueError(f"Annotation missing for {chapter}.")
             sample_count = self.generate_registry_voice_samples(
                 pipeline=pipeline,
                 progress_callback=progress_callback,
@@ -1079,14 +1096,38 @@ class PrototypeUiController:
         registry = read_json(self.paths.registry) if self.paths.registry.exists() else {}
         role_ids = self._registry_character_role_ids(registry)
         generated = 0
+        completed = 0
         for role_id in role_ids:
             record = dict(registry.get("characters", {}).get(role_id, {}))
+            display_name = record.get("display_name", role_id)
+            state = self._registry_voice_asset_state(role_id, record)
+            if state["qvp_ready"] and state["sample_ready"]:
+                completed += 1
+                log_runtime_step(
+                    "readalong_voice_sample_cached",
+                    role_id=role_id,
+                    completed=completed,
+                    total=len(role_ids),
+                )
+                self._emit_voice_progress(
+                    {
+                        "phase": "samples",
+                        "status": "cached",
+                        "role_id": role_id,
+                        "display_name": display_name,
+                        "completed": completed,
+                        "total": len(role_ids),
+                    },
+                    progress_callback,
+                )
+                continue
             self.generate_registry_voice_sample(role_id, pipeline=pipeline)
             generated += 1
+            completed += 1
             log_runtime_step(
                 "readalong_voice_sample_ready",
                 role_id=role_id,
-                completed=generated,
+                completed=completed,
                 total=len(role_ids),
             )
             self._emit_voice_progress(
@@ -1094,8 +1135,8 @@ class PrototypeUiController:
                     "phase": "samples",
                     "status": "completed",
                     "role_id": role_id,
-                    "display_name": record.get("display_name", role_id),
-                    "completed": generated,
+                    "display_name": display_name,
+                    "completed": completed,
                     "total": len(role_ids),
                 },
                 progress_callback,
@@ -1162,6 +1203,35 @@ class PrototypeUiController:
             adapter.role_voice_paths[role_id] = voice_path
         record["voice_config_path"] = voice_path.relative_to(self.paths.root).as_posix()
         return str(record["voice_config_path"])
+
+    def _voice_path_for_registry_record(
+        self,
+        role_id: str,
+        record: Dict[str, Any],
+        pipeline: Optional[AudiobookPipeline] = None,
+    ) -> Path:
+        if pipeline is not None and hasattr(pipeline, "_voice_path_for_record"):
+            return Path(pipeline._voice_path_for_record(role_id, record))
+        voice_path = str(record.get("voice_config_path") or "").strip()
+        if voice_path:
+            path = Path(voice_path)
+            return path if path.is_absolute() else self.paths.root / path
+        return self.paths.voice_qvp(role_id)
+
+    def _registry_voice_asset_state(self, role_id: str, record: Dict[str, Any]) -> Dict[str, Any]:
+        voice_path = self._voice_path_for_registry_record(role_id, record)
+        current_hash = voice_profile_hash(record)
+        cached_hash = str(record.get("voice_config_hash") or "")
+        sample_path = self.paths.root / "voices" / "_samples" / f"{role_id}.wav"
+        return {
+            "role_id": role_id,
+            "voice_path": voice_path,
+            "sample_path": sample_path,
+            "current_hash": current_hash,
+            "cached_hash": cached_hash,
+            "qvp_ready": voice_path.exists() and cached_hash == current_hash,
+            "sample_ready": sample_path.exists(),
+        }
 
     def _apply_session_narrator_voice_paths(
         self,
@@ -1418,9 +1488,8 @@ class PrototypeUiController:
         ready = 0
         for role_id in role_ids:
             record = registry.get("characters", {}).get(role_id, {})
-            voice_path = str(record.get("voice_config_path") or "").strip()
-            sample_path = self.paths.root / "voices" / "_samples" / f"{role_id}.wav"
-            if voice_path and (self.paths.root / voice_path).exists() and sample_path.exists():
+            state = self._registry_voice_asset_state(role_id, record)
+            if state["qvp_ready"] and state["sample_ready"]:
                 ready += 1
         return ready, len(role_ids)
 

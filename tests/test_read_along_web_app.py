@@ -12,7 +12,7 @@ from ebook_tts_pipeline.epub_ingestion import EpubExtractResult
 from ebook_tts_pipeline.ingestion import SentenceSegmenter
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
-from ebook_tts_pipeline.registry import RegistryManager
+from ebook_tts_pipeline.registry import RegistryManager, voice_profile_hash
 from ebook_tts_pipeline.tts.fake import FakeTtsAdapter
 from ebook_tts_pipeline.ui.web_app import build_parser, create_server
 
@@ -81,7 +81,7 @@ def test_library_api_discovers_books_and_hides_non_book_dirs(tmp_path):
 def test_library_voice_stats_count_registry_characters_with_qvp_and_sample(tmp_path):
     paths = _write_demo_book(tmp_path, name="voices", title="Voices Book")
     registry = read_json(paths.registry)
-    registry["characters"]["callie_adult"] = {
+    callie = {
         "role_id": "callie_adult",
         "profile_id": "callie_adult",
         "person_id": "callie",
@@ -93,6 +93,8 @@ def test_library_voice_stats_count_registry_characters_with_qvp_and_sample(tmp_p
         "voice_identity": {"seed": 3, "differentiators": []},
         "voice_profile": {"description": "adult female", "qwen_instruct": "adult female"},
     }
+    callie["voice_config_hash"] = voice_profile_hash(callie)
+    registry["characters"]["callie_adult"] = callie
     write_json_atomic(paths.registry, registry)
     (paths.root / "voices" / "_samples").mkdir(parents=True, exist_ok=True)
     (paths.root / "voices" / "_samples" / "leigh_adult.wav").write_bytes(b"sample")
@@ -1188,6 +1190,37 @@ def _stop_server(server, thread):
     thread.join(timeout=5)
 
 
+def _demo_registry(title: str, slug: str) -> dict:
+    leigh = {
+        "role_id": "leigh_adult",
+        "profile_id": "leigh_adult",
+        "person_id": "leigh",
+        "display_name": "Leigh",
+        "age_stage": "adult",
+        "aliases": [],
+        "voice_config_path": "voices/leigh_adult.qvp",
+        "identity_profile": {
+            "age_stage": "adult",
+            "gender": "female",
+            "personality": ["direct"],
+        },
+        "voice_identity": {"seed": 2, "differentiators": []},
+        "voice_profile": {"description": "adult female", "qwen_instruct": "adult female"},
+    }
+    leigh["voice_config_hash"] = voice_profile_hash(leigh)
+    return {
+        "book": {"title": title, "slug": slug},
+        "narrator": {
+            "role_id": "narrator",
+            "display_name": "Narrator",
+            "voice_profile": {"description": "male narrator", "qwen_instruct": "male narrator"},
+            "voice_identity": {"seed": 1, "differentiators": []},
+            "voice_config_path": "voices/narrator.qvp",
+        },
+        "characters": {"leigh_adult": leigh},
+    }
+
+
 def _write_demo_book(
     tmp_path,
     name: str = "book",
@@ -1212,34 +1245,7 @@ def _write_demo_book(
     )
     write_json_atomic(
         paths.registry,
-        {
-            "book": {"title": title, "slug": name},
-            "narrator": {
-                "role_id": "narrator",
-                "display_name": "Narrator",
-                "voice_profile": {"description": "male narrator", "qwen_instruct": "male narrator"},
-                "voice_identity": {"seed": 1, "differentiators": []},
-                "voice_config_path": "voices/narrator.qvp",
-            },
-            "characters": {
-                "leigh_adult": {
-                    "role_id": "leigh_adult",
-                    "profile_id": "leigh_adult",
-                    "person_id": "leigh",
-                    "display_name": "Leigh",
-                    "age_stage": "adult",
-                    "aliases": [],
-                    "voice_config_path": "voices/leigh_adult.qvp",
-                    "identity_profile": {
-                        "age_stage": "adult",
-                        "gender": "female",
-                        "personality": ["direct"],
-                    },
-                    "voice_identity": {"seed": 2, "differentiators": []},
-                    "voice_profile": {"description": "adult female", "qwen_instruct": "adult female"},
-                }
-            },
-        },
+        _demo_registry(title=title, slug=name),
     )
     paths.annotation("chapter_001").parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(

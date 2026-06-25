@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.read_along.session import BufferedAudio, ReadAlongSession
+from ebook_tts_pipeline.registry import voice_profile_hash
 from ebook_tts_pipeline.runtime_logging import log_runtime_step
 from ebook_tts_pipeline.ui.controller import ChapterExtractor, PipelineFactory, PrototypeUiController
 
@@ -1435,8 +1436,10 @@ def _registry_voice_readiness(book_root: Path, registry: Dict[str, Any]) -> Tupl
             continue
         total += 1
         voice_path = str(record.get("voice_config_path") or "").strip()
+        current_hash = voice_profile_hash(record)
+        cached_hash = str(record.get("voice_config_hash") or "")
         sample_path = book_root / "voices" / "_samples" / f"{role_id}.wav"
-        if voice_path and (book_root / voice_path).exists() and sample_path.exists():
+        if voice_path and (book_root / voice_path).exists() and cached_hash == current_hash and sample_path.exists():
             ready += 1
     return ready, total
 

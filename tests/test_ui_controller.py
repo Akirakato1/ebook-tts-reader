@@ -121,6 +121,34 @@ class VoiceAssetPipeline:
         return self.paths.voice_qvp(role_id)
 
 
+class RecordingFakeTtsAdapter(FakeTtsAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.ensure_voice_calls = []
+        self.generated_role_ids = []
+
+    def ensure_voice(self, role_id, voice_record, voice_path):
+        self.ensure_voice_calls.append((role_id, Path(voice_path)))
+        return super().ensure_voice(role_id, voice_record, voice_path)
+
+    def generate_sentences(self, jobs):
+        self.generated_role_ids.extend(str(job["role_id"]) for job in jobs)
+        return super().generate_sentences(jobs)
+
+
+class RecordingVoiceAssetPipeline:
+    def __init__(self, config) -> None:
+        self.paths = BookPaths(config.book_root)
+        self.registry = RegistryManager(self.paths)
+        self.tts_adapter = RecordingFakeTtsAdapter()
+
+    def _voice_path_for_record(self, role_id, record):
+        return self.paths.voice_qvp(role_id)
+
+    def build_read_along_units(self, chapter):
+        return read_json(self.paths.read_along_units(chapter))["units"]
+
+
 class FakeProgressPipeline(FakePipeline):
     def annotate_chapter(self, chapter, lock_registry=False):
         self.calls.append(("annotate", chapter, lock_registry))
@@ -1097,6 +1125,180 @@ def test_controller_prepare_read_along_voices_prepares_global_only_and_defers_lo
     units = read_json(paths.read_along_units("chapter_001"))["units"]
     assert any(unit["voice_config_path"] == "voices/_temp/chapter_001/tmp_001.qvp" for unit in units)
     assert any(unit["role_id"] == "narrator" and unit["voice_config_path"] is None for unit in units)
+
+
+def test_controller_prepare_read_along_voices_skips_tts_pipeline_when_registry_assets_cached(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text('Leigh said, "Hello."', encoding="utf-8")
+    character = {
+        "role_id": "leigh_adult",
+        "profile_id": "leigh_adult",
+        "person_id": "leigh",
+        "display_name": "Leigh",
+        "age_stage": "adult",
+        "aliases": [],
+        "identity_profile": {"age_stage": "adult", "gender": "female", "personality": ["direct"]},
+        "voice_identity": {"seed": 2, "differentiators": []},
+        "voice_profile": {"description": "adult female", "qwen_instruct": "adult female"},
+        "voice_config_path": "voices/leigh_adult.qvp",
+    }
+    character["voice_config_hash"] = voice_profile_hash(character)
+    write_json_atomic(
+        paths.registry,
+        {
+            "book": {"title": "Demo", "slug": "demo"},
+            "narrator": {"role_id": "narrator", "display_name": "Narrator", "voice_config_path": None},
+            "characters": {"leigh_adult": character},
+        },
+    )
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {"schema": "quote_attribution_v1", "roles": ["leigh_adult"], "quotes": [[1, 0]]},
+    )
+    paths.read_along_units("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.read_along_units("chapter_001"),
+        {
+            "chapter": "chapter_001",
+            "units": [
+                {
+                    "chapter": "chapter_001",
+                    "unit_id": 0,
+                    "text": '"Hello."',
+                    "source_start": 12,
+                    "source_end": 20,
+                    "role": "Leigh",
+                    "role_id": "leigh_adult",
+                    "type": "dialogue",
+                    "voice_config_path": "voices/leigh_adult.qvp",
+                    "quote_id": "q001",
+                    "sentence_idx": 0,
+                    "character": "Leigh",
+                    "voice_variant": None,
+                }
+            ],
+        },
+    )
+    paths.voice_qvp("leigh_adult").parent.mkdir(parents=True, exist_ok=True)
+    paths.voice_qvp("leigh_adult").write_bytes(b"cached qvp")
+    sample_path = paths.root / "voices" / "_samples" / "leigh_adult.wav"
+    sample_path.parent.mkdir(parents=True, exist_ok=True)
+    sample_path.write_bytes(b"cached sample")
+    calls = []
+
+    def fail_if_pipeline_created(config, needs_llm, fake_tts):
+        calls.append((needs_llm, fake_tts))
+        raise AssertionError("cached voice generation should not construct a TTS pipeline")
+
+    controller = PrototypeUiController(book_root=paths.root, pipeline_factory=fail_if_pipeline_created, fake_tts=True)
+
+    result = controller.prepare_read_along_voices()
+
+    assert calls == []
+    assert result["sample_count"] == 0
+    assert result["prepared_chapters"] == 0
+    assert result["voice_count"] == 1
+    assert result["voice_total"] == 1
+    assert result["voices_ready"] is True
+
+
+def test_controller_prepare_read_along_voices_generates_only_missing_samples(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text('"Hi." "There."', encoding="utf-8")
+    characters = {}
+    for role_id, display_name in [("leigh_adult", "Leigh"), ("callie_adult", "Callie")]:
+        record = {
+            "role_id": role_id,
+            "profile_id": role_id,
+            "person_id": role_id.split("_")[0],
+            "display_name": display_name,
+            "age_stage": "adult",
+            "aliases": [],
+            "identity_profile": {"age_stage": "adult", "gender": "female", "personality": []},
+            "voice_identity": {"seed": 2, "differentiators": []},
+            "voice_profile": {"description": f"{display_name} adult female", "qwen_instruct": f"{display_name} adult female"},
+            "voice_config_path": f"voices/{role_id}.qvp",
+        }
+        record["voice_config_hash"] = voice_profile_hash(record)
+        characters[role_id] = record
+        paths.voice_qvp(role_id).parent.mkdir(parents=True, exist_ok=True)
+        paths.voice_qvp(role_id).write_bytes(f"cached {role_id}".encode("utf-8"))
+    write_json_atomic(
+        paths.registry,
+        {
+            "book": {"title": "Demo", "slug": "demo"},
+            "narrator": {"role_id": "narrator", "display_name": "Narrator", "voice_config_path": None},
+            "characters": characters,
+        },
+    )
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {"schema": "quote_attribution_v1", "roles": ["leigh_adult", "callie_adult"], "quotes": [[0, 0], [1, 1]]},
+    )
+    paths.read_along_units("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.read_along_units("chapter_001"),
+        {
+            "chapter": "chapter_001",
+            "units": [
+                {
+                    "chapter": "chapter_001",
+                    "unit_id": 0,
+                    "text": '"Hi."',
+                    "source_start": 0,
+                    "source_end": 5,
+                    "role": "Leigh",
+                    "role_id": "leigh_adult",
+                    "type": "dialogue",
+                    "voice_config_path": "voices/leigh_adult.qvp",
+                    "quote_id": "q001",
+                    "sentence_idx": 0,
+                    "character": "Leigh",
+                    "voice_variant": None,
+                },
+                {
+                    "chapter": "chapter_001",
+                    "unit_id": 1,
+                    "text": '"There."',
+                    "source_start": 6,
+                    "source_end": 14,
+                    "role": "Callie",
+                    "role_id": "callie_adult",
+                    "type": "dialogue",
+                    "voice_config_path": "voices/callie_adult.qvp",
+                    "quote_id": "q002",
+                    "sentence_idx": 1,
+                    "character": "Callie",
+                    "voice_variant": None,
+                },
+            ],
+        },
+    )
+    sample_dir = paths.root / "voices" / "_samples"
+    sample_dir.mkdir(parents=True, exist_ok=True)
+    (sample_dir / "leigh_adult.wav").write_bytes(b"cached sample")
+    pipelines = []
+
+    def factory(config, needs_llm, fake_tts):
+        pipeline = RecordingVoiceAssetPipeline(config)
+        pipelines.append(pipeline)
+        return pipeline
+
+    controller = PrototypeUiController(book_root=paths.root, pipeline_factory=factory, fake_tts=True)
+
+    result = controller.prepare_read_along_voices()
+
+    assert len(pipelines) == 1
+    assert pipelines[0].tts_adapter.ensure_voice_calls == []
+    assert pipelines[0].tts_adapter.generated_role_ids == ["callie_adult"]
+    assert result["sample_count"] == 1
+    assert result["voice_count"] == 2
+    assert result["voice_total"] == 2
+    assert result["voices_ready"] is True
 
 
 def test_controller_read_along_session_generates_local_temp_voice_at_session_start(tmp_path):
