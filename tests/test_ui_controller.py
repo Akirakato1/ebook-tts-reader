@@ -6,7 +6,10 @@ from ebook_tts_pipeline.epub_ingestion import EpubExtractResult
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.config import PipelineConfig
-from ebook_tts_pipeline.read_along.narrator_profile import narrator_profile_hash
+from ebook_tts_pipeline.read_along.narrator_profile import (
+    functional_narrator_voice_record,
+    narrator_profile_hash,
+)
 from ebook_tts_pipeline.registry import RegistryManager, voice_profile_hash
 from ebook_tts_pipeline.tts.fake import FakeTtsAdapter
 from ebook_tts_pipeline.ui import controller as controller_module
@@ -1165,7 +1168,6 @@ def test_controller_read_along_session_generates_local_temp_voice_at_session_sta
             "start_buffer_seconds": 20,
             "max_buffer_seconds": 40,
             "max_buffer_units": 32,
-            "narrator_voice_type": "male",
         },
     )
 
@@ -1315,7 +1317,6 @@ def test_read_along_session_requires_prepared_voice_paths(tmp_path):
                 "start_buffer_seconds": 20,
                 "max_buffer_seconds": 40,
                 "max_buffer_units": 32,
-                "narrator_voice_type": "current",
             },
         )
 
@@ -1352,7 +1353,6 @@ def test_controller_read_along_session_uses_prepared_voices_before_buffering(tmp
             "start_buffer_seconds": 20,
             "max_buffer_seconds": 40,
             "max_buffer_units": 32,
-            "narrator_voice_type": "female",
         }
     )
     paths.annotation("chapter_001").parent.mkdir(parents=True)
@@ -1374,57 +1374,41 @@ def test_controller_read_along_session_uses_prepared_voices_before_buffering(tmp
             "start_buffer_seconds": 20,
             "max_buffer_seconds": 40,
             "max_buffer_units": 32,
-            "narrator_voice_type": "female",
         },
     )
     buffered = session.fill_buffer(start_unit_id=0)
 
-    reloaded = read_json(paths.registry)
-    assert "adult female" in reloaded["narrator"]["voice_profile"]["description"]
-    assert paths.voice_qvp("narrator").exists()
+    profile = controller.read_along_narrator_profile()
+    narrator_hash = narrator_profile_hash(profile)
+    assert paths.narrator_voice_qvp(narrator_hash, "narrator").exists()
     assert paths.voice_qvp("leigh_adult").exists()
-    assert not (paths.root / "voices" / "_session" / session.session_id / "functional_narrator.qvp").exists()
     assert len(buffered) == 2
     session.end()
 
 
-def test_controller_regenerates_narrator_voice_when_session_voice_type_changes(tmp_path, monkeypatch):
+def test_controller_reuses_cached_narrator_voice_when_profile_hash_unchanged(tmp_path, monkeypatch):
     paths = BookPaths(tmp_path / "book")
     paths.chapter_text("chapter_001").parent.mkdir(parents=True)
     paths.chapter_text("chapter_001").write_text("Leigh waited.", encoding="utf-8")
-    male_profile = {"description": "adult male narrator", "qwen_instruct": "adult male narrator"}
-    narrator = {
-        "role_id": "narrator",
-        "display_name": "Narrator",
-        "voice_profile": male_profile,
-        "voice_identity": {"seed": 1, "differentiators": []},
-        "voice_config_path": "voices/narrator.qvp",
-    }
-    narrator["voice_config_hash"] = voice_profile_hash(narrator)
-    write_json_atomic(
-        paths.registry,
-        {
-            "book": {"title": "Demo", "slug": "demo"},
-            "narrator": narrator,
-            "characters": {},
-        },
-    )
+    write_json_atomic(paths.registry, {"book": {"title": "Demo", "slug": "demo"}, "characters": {}})
     paths.annotation("chapter_001").parent.mkdir(parents=True)
     write_json_atomic(
         paths.annotation("chapter_001"),
         {"schema": "quote_attribution_v1", "roles": [], "quotes": []},
     )
-    paths.voice_qvp("narrator").parent.mkdir(parents=True, exist_ok=True)
-    paths.voice_qvp("narrator").write_bytes(b"old male narrator qvp")
-    calls = []
-    original_ensure_voice = FakeTtsAdapter.ensure_voice
-
-    def recording_ensure_voice(self, role_id, voice_record, voice_path):
-        calls.append((role_id, dict(voice_record), Path(voice_path)))
-        return original_ensure_voice(self, role_id, voice_record, voice_path)
-
-    monkeypatch.setattr(FakeTtsAdapter, "ensure_voice", recording_ensure_voice)
     controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+    profile = controller.read_along_narrator_profile()
+    profile_hash = narrator_profile_hash(profile)
+    narrator_path = paths.narrator_voice_qvp(profile_hash, "narrator")
+    narrator_path.parent.mkdir(parents=True, exist_ok=True)
+    narrator_path.write_bytes(b"cached narrator")
+    calls = []
+
+    def fail_if_called(self, role_id, voice_record, voice_path):
+        calls.append((role_id, Path(voice_path)))
+        raise AssertionError("narrator cache should be reused")
+
+    monkeypatch.setattr(FakeTtsAdapter, "ensure_voice", fail_if_called)
     units = controller.build_read_along_units("chapter_001")
 
     session = controller.create_read_along_session(
@@ -1438,17 +1422,67 @@ def test_controller_regenerates_narrator_voice_when_session_voice_type_changes(t
             "start_buffer_seconds": 20,
             "max_buffer_seconds": 40,
             "max_buffer_units": 32,
-            "narrator_voice_type": "female",
+        },
+    )
+
+    assert calls == []
+    assert [unit.voice_config_path for unit in session.units] == [narrator_path.relative_to(paths.root).as_posix()]
+    session.end()
+
+
+def test_controller_regenerates_narrator_voice_when_profile_changes(tmp_path, monkeypatch):
+    paths = BookPaths(tmp_path / "book")
+    paths.chapter_text("chapter_001").parent.mkdir(parents=True)
+    paths.chapter_text("chapter_001").write_text("Leigh waited.", encoding="utf-8")
+    write_json_atomic(paths.registry, {"book": {"title": "Demo", "slug": "demo"}, "characters": {}})
+    paths.annotation("chapter_001").parent.mkdir(parents=True)
+    write_json_atomic(
+        paths.annotation("chapter_001"),
+        {"schema": "quote_attribution_v1", "roles": [], "quotes": []},
+    )
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+    controller.save_read_along_narrator_profile(
+        {
+            "display_name": "Narrator",
+            "age_stage": "adult",
+            "gender": "female",
+            "personality": "warm, steady",
+            "accent": "American",
+            "race_or_ethnicity": "",
+            "occupation": "audiobook narrator",
+        }
+    )
+    calls = []
+    original_ensure_voice = FakeTtsAdapter.ensure_voice
+
+    def recording_ensure_voice(self, role_id, voice_record, voice_path):
+        calls.append((role_id, dict(voice_record), Path(voice_path)))
+        return original_ensure_voice(self, role_id, voice_record, voice_path)
+
+    monkeypatch.setattr(FakeTtsAdapter, "ensure_voice", recording_ensure_voice)
+    units = controller.build_read_along_units("chapter_001")
+
+    session = controller.create_read_along_session(
+        "chapter_001",
+        units,
+        {
+            "playback_speed": 1.0,
+            "generation_mode": "balanced",
+            "buffer_limit": 2,
+            "target_buffer_seconds": 20,
+            "start_buffer_seconds": 20,
+            "max_buffer_seconds": 40,
+            "max_buffer_units": 32,
         },
     )
 
     narrator_calls = [call for call in calls if call[0] == "narrator"]
     assert narrator_calls
-    assert narrator_calls[-1][1]["_force_regenerate"] is True
-    assert "adult female" in narrator_calls[-1][1]["voice_profile"]["description"]
-    reloaded = read_json(paths.registry)
-    assert "adult female" in reloaded["narrator"]["voice_profile"]["description"]
-    assert reloaded["narrator"]["voice_config_hash"] == voice_profile_hash(reloaded["narrator"])
+    assert "female" in narrator_calls[-1][1]["voice_profile"]["description"]
+    assert "American accent" in narrator_calls[-1][1]["voice_profile"]["description"]
+    assert narrator_calls[-1][2].as_posix().endswith(
+        "/voices/_narrator/" + narrator_profile_hash(controller.read_along_narrator_profile()) + "/narrator.qvp"
+    )
     session.end()
 
 
@@ -1508,22 +1542,23 @@ def test_controller_read_along_session_generates_functional_narrator_voice_at_se
             "start_buffer_seconds": 20,
             "max_buffer_seconds": 40,
             "max_buffer_units": 32,
-            "narrator_voice_type": "female",
         },
     )
 
-    functional_path = paths.root / "voices" / "_session" / session.session_id / "functional_narrator.qvp"
-    assert paths.voice_qvp("narrator").exists()
+    profile = controller.read_along_narrator_profile()
+    narrator_hash = narrator_profile_hash(profile)
+    functional_record = functional_narrator_voice_record(profile)
+    functional_hash = voice_profile_hash(functional_record)
+    functional_path = paths.narrator_voice_qvp(functional_hash, "functional_narrator")
+    assert paths.narrator_voice_qvp(narrator_hash, "narrator").exists()
     assert functional_path.exists()
     patched_quote = [unit for unit in session.units if unit.quote_id == "q001"][0]
     assert patched_quote.role_id == "functional_narrator"
     assert patched_quote.voice_config_path == functional_path.relative_to(paths.root).as_posix()
-    reloaded = read_json(paths.registry)
-    assert "adult female" in reloaded["narrator"]["voice_profile"]["description"]
     session.end()
 
 
-def test_controller_saves_read_along_settings_with_narrator_voice_type(tmp_path):
+def test_controller_saves_read_along_settings_without_narrator_voice_type(tmp_path):
     paths = BookPaths(tmp_path / "book")
     controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
 
@@ -1532,7 +1567,6 @@ def test_controller_saves_read_along_settings_with_narrator_voice_type(tmp_path)
             "playback_speed": "1.25",
             "generation_mode": "fast",
             "buffer_limit": "2",
-            "narrator_voice_type": "female",
         }
     )
 
@@ -1540,7 +1574,7 @@ def test_controller_saves_read_along_settings_with_narrator_voice_type(tmp_path)
     assert settings["playback_speed"] == 1.25
     assert settings["generation_mode"] == "fast"
     assert settings["buffer_limit"] == 2
-    assert settings["narrator_voice_type"] == "female"
+    assert "narrator_voice_type" not in settings
 
 
 def test_controller_read_along_narrator_profile_defaults_to_editable_profile(tmp_path):
@@ -1614,7 +1648,6 @@ def test_controller_read_along_settings_clamp_speed_to_supported_range(tmp_path)
             "start_buffer_seconds": "20",
             "max_buffer_seconds": "40",
             "max_buffer_units": "32",
-            "narrator_voice_type": "female",
         }
     )
 
@@ -1753,7 +1786,6 @@ def test_controller_saves_read_along_time_buffer_settings(tmp_path):
             "start_buffer_seconds": "4",
             "max_buffer_seconds": "20",
             "max_buffer_units": "9",
-            "narrator_voice_type": "female",
         }
     )
 
@@ -1765,4 +1797,4 @@ def test_controller_saves_read_along_time_buffer_settings(tmp_path):
     assert settings["start_buffer_seconds"] == 4.0
     assert settings["max_buffer_seconds"] == 20.0
     assert settings["max_buffer_units"] == 9
-    assert settings["narrator_voice_type"] == "female"
+    assert "narrator_voice_type" not in settings

@@ -37,7 +37,6 @@ from ebook_tts_pipeline.read_along.units import (
 from ebook_tts_pipeline.registry import (
     build_compact_voice_profile,
     migrate_registry_voice_records,
-    narrator_voice_profile_for_type,
     prune_deprecated_registry_fields,
     voice_profile_hash,
 )
@@ -376,7 +375,6 @@ class PrototypeUiController:
             "start_buffer_seconds": 20.0,
             "max_buffer_seconds": 40.0,
             "max_buffer_units": 32,
-            "narrator_voice_type": "male",
         }
         if not self.paths.read_along_settings.exists():
             return defaults
@@ -419,11 +417,6 @@ class PrototypeUiController:
                 32,
                 max(1, _positive_int(payload.get("max_buffer_units"), defaults["max_buffer_units"])),
             ),
-            "narrator_voice_type": _choice(
-                payload.get("narrator_voice_type"),
-                {"male", "female", "current"},
-                defaults["narrator_voice_type"],
-            ),
         }
 
     def save_read_along_settings(self, values: Dict[str, Any]) -> None:
@@ -442,11 +435,6 @@ class PrototypeUiController:
             "start_buffer_seconds": start_buffer_seconds,
             "max_buffer_seconds": max_buffer_seconds,
             "max_buffer_units": min(32, max(1, _positive_int(values.get("max_buffer_units"), 32))),
-            "narrator_voice_type": _choice(
-                values.get("narrator_voice_type"),
-                {"male", "female", "current"},
-                "male",
-            ),
         }
         write_json_atomic(self.paths.read_along_settings, settings)
 
@@ -1024,7 +1012,6 @@ class PrototypeUiController:
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         pipeline = self._voice_asset_pipeline()
-        self._apply_read_along_narrator_voice_type(pipeline, self.read_along_settings())
         chapters = [row.chapter for row in self.chapter_rows()]
         voice_count, voice_total = self._registry_voice_readiness_counts()
         self._emit_voice_progress(
@@ -1114,75 +1101,31 @@ class PrototypeUiController:
         if progress_callback is not None:
             progress_callback(dict(event))
 
-    def _apply_read_along_narrator_voice_type(
-        self,
-        pipeline: AudiobookPipeline,
-        settings: Dict[str, Any],
-    ) -> None:
-        voice_type = _choice(
-            settings.get("narrator_voice_type"),
-            {"male", "female", "current"},
-            "male",
-        )
-        if voice_type == "current":
-            return
-        registry = pipeline.registry.load()
-        narrator = registry.setdefault("narrator", {})
-        desired_profile = narrator_voice_profile_for_type(voice_type)
-        if narrator.get("voice_profile") == desired_profile:
-            return
-        narrator["role_id"] = str(narrator.get("role_id", "narrator"))
-        narrator["display_name"] = str(narrator.get("display_name", "Narrator"))
-        narrator["voice_profile"] = desired_profile
-        narrator["voice_config_hash"] = None
-        pipeline.registry.save(registry)
-
-    def _validate_read_along_narrator_voice_type(
-        self,
-        pipeline: AudiobookPipeline,
-        settings: Dict[str, Any],
-    ) -> None:
-        voice_type = _choice(
-            settings.get("narrator_voice_type"),
-            {"male", "female", "current"},
-            "male",
-        )
-        if voice_type == "current":
-            return
-        registry = pipeline.registry.load()
-        narrator = dict(registry.get("narrator", {}))
-        desired_profile = narrator_voice_profile_for_type(voice_type)
-        if narrator.get("voice_profile") != desired_profile:
-            raise ValueError("Change narrator voice type before Prepare Voices, then prepare voices again.")
-
     def _ensure_read_along_session_narrator_voices(
         self,
         pipeline: AudiobookPipeline,
-        settings: Dict[str, Any],
-        session_id: str,
+        _settings: Dict[str, Any],
+        _session_id: str,
         units: List[Dict[str, Any]],
     ) -> Dict[str, str]:
-        self._apply_read_along_narrator_voice_type(pipeline, settings)
-        registry = pipeline.registry.load()
-        narrator = registry.setdefault("narrator", {})
-        narrator["role_id"] = "narrator"
-        narrator["display_name"] = "Narrator"
-        if not isinstance(narrator.get("voice_profile"), dict):
-            narrator["voice_profile"] = narrator_voice_profile_for_type("male")
-
-        narrator_path = self.paths.voice_qvp("narrator")
+        profile = self.read_along_narrator_profile()
+        narrator_record = narrator_voice_record(profile)
+        profile_hash = voice_profile_hash(narrator_record)
+        narrator_record["voice_config_hash"] = profile_hash
+        narrator_path = self.paths.narrator_voice_qvp(profile_hash, "narrator")
         narrator_rel = self._ensure_voice_asset(
             pipeline.tts_adapter,
             "narrator",
-            narrator,
+            narrator_record,
             narrator_path,
         )
 
-        pipeline.registry.save(registry)
         voice_paths = {"narrator": narrator_rel}
         if any(_is_functional_narrator_unit(unit) for unit in units):
-            functional_record = self._functional_narrator_voice_record(narrator)
-            functional_path = self.paths.root / "voices" / "_session" / session_id / "functional_narrator.qvp"
+            functional_record = functional_narrator_voice_record(profile)
+            functional_hash = voice_profile_hash(functional_record)
+            functional_record["voice_config_hash"] = functional_hash
+            functional_path = self.paths.narrator_voice_qvp(functional_hash, FUNCTIONAL_NARRATOR_ROLE_ID)
             voice_paths[FUNCTIONAL_NARRATOR_ROLE_ID] = self._ensure_voice_asset(
                 pipeline.tts_adapter,
                 FUNCTIONAL_NARRATOR_ROLE_ID,
@@ -1210,29 +1153,6 @@ class PrototypeUiController:
             adapter.role_voice_paths[role_id] = voice_path
         record["voice_config_path"] = voice_path.relative_to(self.paths.root).as_posix()
         return str(record["voice_config_path"])
-
-    def _functional_narrator_voice_record(self, narrator: Dict[str, Any]) -> Dict[str, Any]:
-        profile = dict(narrator.get("voice_profile") or {})
-        base_description = str(profile.get("description") or "audiobook narrator")
-        base_instruction = str(profile.get("qwen_instruct") or base_description)
-        description = (
-            f"{base_description}; same narrator identity for quoted non-dialogue text, "
-            "slightly higher pitch, flatter monotone delivery, crisp and restrained"
-        )
-        instruction = (
-            f"{base_instruction}. Keep the same base narrator identity, but render quoted "
-            "non-dialogue text with a slightly higher pitch, flatter monotone cadence, "
-            "restrained emotion, and crisp articulation."
-        )
-        return {
-            "role_id": FUNCTIONAL_NARRATOR_ROLE_ID,
-            "display_name": FUNCTIONAL_NARRATOR_ROLE,
-            "voice_identity": dict(narrator.get("voice_identity") or {}),
-            "voice_profile": {
-                "description": description,
-                "qwen_instruct": instruction,
-            },
-        }
 
     def _apply_session_narrator_voice_paths(
         self,
