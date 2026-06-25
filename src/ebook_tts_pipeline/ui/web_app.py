@@ -728,9 +728,11 @@ class ReadAlongWebState:
         with self.lock:
             session = self._require_session()
             consumed = session.consume_ready()
-            if consumed is not None:
-                self._record_last_read(self.session_chapter, consumed.unit_id)
             session.fill_buffer()
+            if session.ready_items:
+                self._record_last_read(self.session_chapter, session.ready_items[0].unit_id)
+            elif consumed is not None:
+                self._record_last_read(self.session_chapter, consumed.unit_id)
             return {
                 "ok": True,
                 "chapter": self.session_chapter,
@@ -2386,6 +2388,29 @@ INDEX_HTML = r"""<!doctype html>
       els.libraryView.hidden = !enabled;
       els.readerView.hidden = enabled;
     }
+    function preferredViewMode() {
+      try {
+        return window.localStorage.getItem("readAlongViewMode") || "";
+      } catch (_error) {
+        return "";
+      }
+    }
+    function setPreferredViewMode(mode) {
+      try {
+        window.localStorage.setItem("readAlongViewMode", mode);
+      } catch (_error) {}
+    }
+    function resetReaderState() {
+      state.chapter = "";
+      state.text = "";
+      state.units = [];
+      state.selectedUnitId = 0;
+      state.currentUnitId = null;
+      state.pages = [];
+      state.unitPage = {};
+      state.pageIndex = 0;
+      state.ready = [];
+    }
     async function api(path, options = {}) {
       const response = await fetch(path, options);
       const payload = await response.json();
@@ -2409,7 +2434,8 @@ INDEX_HTML = r"""<!doctype html>
       state.activeBook = payload.active_book;
       renderLibrary(payload);
       setLibraryStatus(payload.books.length ? "Ready" : "No books found in this folder.");
-      if (!forceLibrary && payload.active_book) {
+      if (forceLibrary) setPreferredViewMode("library");
+      if (!forceLibrary && payload.active_book && preferredViewMode() !== "library") {
         setLibraryMode(false);
         await loadState();
       } else {
@@ -2841,6 +2867,8 @@ INDEX_HTML = r"""<!doctype html>
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ slug })
       });
+      setPreferredViewMode("reader");
+      resetReaderState();
       setLibraryMode(false);
       await loadState();
     }
@@ -2937,7 +2965,13 @@ INDEX_HTML = r"""<!doctype html>
       lockControls(Boolean(payload.session_active));
       await loadNarratorProfile();
       renderChapters();
-      if (!state.chapter && state.chapters.length) await loadChapter(state.chapters[0].chapter);
+      if (!state.chapter && state.chapters.length) {
+        const lastRead = (payload.active_book && payload.active_book.last_read) || {};
+        const desiredChapter = state.chapters.some(chapter => chapter.chapter === lastRead.chapter)
+          ? lastRead.chapter
+          : state.chapters[0].chapter;
+        await loadChapter(desiredChapter);
+      }
     }
     function renderChapters() {
       els.chapters.textContent = "";

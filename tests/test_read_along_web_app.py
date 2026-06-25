@@ -856,6 +856,11 @@ def test_home_page_serves_clean_reader_shell(tmp_path):
         assert "scheduleSettingsSave" in response
         assert "saveSettings" in response
         assert "saveReadingPositionById(item.unit_id" in response
+        assert "preferredViewMode" in response
+        assert 'setPreferredViewMode("library")' in response
+        assert 'setPreferredViewMode("reader")' in response
+        assert "payload.active_book.last_read" in response
+        assert "desiredChapter" in response
         assert "lockControls(Boolean(payload.session_active));" in response
         assert "window.readAlongApp" in response
     finally:
@@ -1003,6 +1008,8 @@ def test_web_api_serves_chapter_and_bounded_session_audio(tmp_path):
         assert advanced["ok"] is True
         assert "ready_playback_seconds" in advanced
         assert [item["unit_id"] for item in advanced["ready"]]
+        manifest = read_json(paths.root / "readalong_book.json")
+        assert manifest["last_read"] == {"chapter": "chapter_001", "unit_id": advanced["ready"][0]["unit_id"]}
 
         session_dir = server.app_state.session.session_dir
         assert session_dir.exists()
