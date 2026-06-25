@@ -2205,7 +2205,6 @@ INDEX_HTML = r"""<!doctype html>
           <span id="narrator-summary">Narrator: loading</span>
           <button id="edit-narrator" type="button">Edit Narrator</button>
         </div>
-        <button id="save">Save</button>
         <button class="primary" id="start">Start Session</button>
         <button id="end" disabled>End Session</button>
       </div>
@@ -2340,6 +2339,7 @@ INDEX_HTML = r"""<!doctype html>
       returnPromptCopy: document.getElementById("return-prompt-copy")
     };
     let sessionProgressTimer = null;
+    let settingsSaveTimer = null;
     function compactStatusText(text, limit = 420) {
       const value = String(text || "");
       if (value.length <= limit) return value;
@@ -3082,11 +3082,14 @@ INDEX_HTML = r"""<!doctype html>
           ensureAnchorPage(unit.unit_id);
           renderPages();
           setStatus("Selected " + (unit.unit_id + 1) + "/" + state.units.length + ": " + unit.role);
-          await saveReadingPosition(unit);
+          await saveReadingPositionById(unit.unit_id);
         };
         page.appendChild(span);
       }
       return page;
+    }
+    function unitById(unitId) {
+      return state.units.find(unit => Number(unit.unit_id) === Number(unitId)) || null;
     }
     function applyHighlights() {
       const buffered = new Set(state.ready.map(item => item.unit_id));
@@ -3101,7 +3104,12 @@ INDEX_HTML = r"""<!doctype html>
       if (current !== null) state.currentUnitId = current;
       applyHighlights();
     }
-    async function saveReadingPosition(unit) {
+    async function saveReadingPositionById(unitId, options = {}) {
+      const unit = unitById(unitId);
+      if (!unit) return;
+      await saveReadingPosition(unit, options);
+    }
+    async function saveReadingPosition(unit, options = {}) {
       if (!state.activeBook || !state.chapter) return;
       try {
         const payload = await api("/api/reading-position", {
@@ -3119,8 +3127,37 @@ INDEX_HTML = r"""<!doctype html>
           renderLibrary(payload.library);
         }
       } catch (error) {
-        setStatus("Selected " + (unit.unit_id + 1) + "/" + state.units.length + ". Last read not saved: " + error.message);
+        if (!options.silent) {
+          setStatus("Selected " + (unit.unit_id + 1) + "/" + state.units.length + ". Last read not saved: " + error.message);
+        }
       }
+    }
+    async function saveSettings() {
+      if (state.sessionActive) return;
+      try {
+        const payload = await api("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(settings())
+        });
+        els.speed.value = payload.settings.playback_speed;
+        els.generation.value = payload.settings.generation_mode;
+        els.buffer.value = payload.settings.buffer_limit;
+        els.targetBuffer.value = payload.settings.target_buffer_seconds;
+        els.startBuffer.value = payload.settings.start_buffer_seconds;
+        els.maxUnits.value = payload.settings.max_buffer_units;
+        setStatus("Settings saved.");
+      } catch (error) {
+        setStatus(error.message);
+      }
+    }
+    function scheduleSettingsSave() {
+      if (state.sessionActive) return;
+      if (settingsSaveTimer !== null) window.clearTimeout(settingsSaveTimer);
+      settingsSaveTimer = window.setTimeout(() => {
+        settingsSaveTimer = null;
+        saveSettings().catch(error => setStatus(error.message));
+      }, 350);
     }
     async function startSession() {
       if (!state.chapter) return;
@@ -3179,6 +3216,7 @@ INDEX_HTML = r"""<!doctype html>
       renderPages();
       highlight(item.unit_id);
       setStatus("Playing " + (item.unit_id + 1) + "/" + state.units.length);
+      saveReadingPositionById(item.unit_id, { silent: true }).catch(error => setStatus(error.message));
       els.audio.src = item.audio_url;
       els.audio.playbackRate = Number(els.speed.value || 1);
       if (!els.returnPrompt.hidden) {
@@ -3310,22 +3348,9 @@ INDEX_HTML = r"""<!doctype html>
       if (!els.addTitle.value) els.addTitle.value = titleFromFilename(file.name);
       if (!els.addSlug.value) els.addSlug.value = slugFromFilename(file.name);
     };
-    document.getElementById("save").onclick = async () => {
-      try {
-        const payload = await api("/api/settings", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(settings())
-        });
-        els.speed.value = payload.settings.playback_speed;
-        els.generation.value = payload.settings.generation_mode;
-        els.buffer.value = payload.settings.buffer_limit;
-        els.targetBuffer.value = payload.settings.target_buffer_seconds;
-        els.startBuffer.value = payload.settings.start_buffer_seconds;
-        els.maxUnits.value = payload.settings.max_buffer_units;
-        setStatus("Settings saved.");
-      } catch (error) { setStatus(error.message); }
-    };
+    for (const el of [els.speed, els.generation, els.buffer, els.targetBuffer, els.startBuffer, els.maxUnits]) {
+      el.addEventListener("change", scheduleSettingsSave);
+    }
     els.start.onclick = startSession;
     els.end.onclick = () => endSession();
     els.audio.onended = advanceSession;

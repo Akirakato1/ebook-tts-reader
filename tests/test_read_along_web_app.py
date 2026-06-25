@@ -851,6 +851,11 @@ def test_home_page_serves_clean_reader_shell(tmp_path):
         assert "ensureAnchorPage" in response
         assert "state.sidebarOpen" in response
         assert "keydown" in response
+        assert 'id="save"' not in response
+        assert 'document.getElementById("save")' not in response
+        assert "scheduleSettingsSave" in response
+        assert "saveSettings" in response
+        assert "saveReadingPositionById(item.unit_id" in response
         assert "lockControls(Boolean(payload.session_active));" in response
         assert "window.readAlongApp" in response
     finally:
