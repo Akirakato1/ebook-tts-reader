@@ -58,6 +58,10 @@ class BookPaths:
     def read_along_settings(self) -> Path:
         return self.root / "read_along" / "settings.json"
 
+    @property
+    def read_along_narrator_profile(self) -> Path:
+        return self.root / "read_along" / "narrator_profile.json"
+
     def read_along_session_dir(self, session_id: str) -> Path:
         return self.root / "read_along_sessions" / session_id
 
@@ -66,6 +70,11 @@ class BookPaths:
 
     def voice_qvp(self, role_id: str) -> Path:
         return self.root / "voices" / f"{role_id}.qvp"
+
+    def narrator_voice_qvp(self, profile_hash: str, role_id: str) -> Path:
+        safe_hash = str(profile_hash).strip()
+        safe_role = str(role_id).strip() or "narrator"
+        return self.root / "voices" / "_narrator" / safe_hash / f"{safe_role}.qvp"
 
     def voice_metadata(self, role_id: str) -> Path:
         return self.root / "voices" / f"{role_id}.json"

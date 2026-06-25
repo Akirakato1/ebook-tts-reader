@@ -19,6 +19,14 @@ from ebook_tts_pipeline.epub_ingestion import EpubChapterExtractor, EpubExtractR
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.pipeline import AudiobookPipeline
+from ebook_tts_pipeline.read_along.narrator_profile import (
+    functional_narrator_voice_record,
+    narrator_profile_from_registry,
+    narrator_profile_hash,
+    narrator_summary,
+    narrator_voice_record,
+    normalize_narrator_profile,
+)
 from ebook_tts_pipeline.read_along.session import ReadAlongSession
 from ebook_tts_pipeline.read_along.units import (
     FUNCTIONAL_NARRATOR_ROLE,
@@ -303,6 +311,61 @@ class PrototypeUiController:
             "intra_sentence_pause_ms": _nonnegative_int(values.get("intra_sentence_pause_ms"), 50),
         }
         write_json_atomic(self.paths.settings, settings)
+
+    def read_along_narrator_profile(self) -> Dict[str, Any]:
+        if self.paths.read_along_narrator_profile.exists():
+            return normalize_narrator_profile(read_json(self.paths.read_along_narrator_profile))
+        registry = read_json(self.paths.registry) if self.paths.registry.exists() else {}
+        book_slug = str(registry.get("book", {}).get("slug", self.book_root.name))
+        profile = narrator_profile_from_registry(registry, book_slug=book_slug)
+        write_json_atomic(self.paths.read_along_narrator_profile, profile)
+        return profile
+
+    def save_read_along_narrator_profile(self, values: Dict[str, Any]) -> Dict[str, Any]:
+        current = self.read_along_narrator_profile()
+        identity = dict(current.get("identity_profile") or {})
+        identity.update(
+            {
+                "age_stage": str(values.get("age_stage", identity.get("age_stage", "adult"))).strip() or "adult",
+                "gender": str(values.get("gender", identity.get("gender", "unknown"))).strip() or "unknown",
+                "personality": _split_csv(values.get("personality", ",".join(identity.get("personality", [])))),
+                "race_or_ethnicity": _blank_to_none(
+                    values.get("race_or_ethnicity", identity.get("race_or_ethnicity", ""))
+                ),
+                "accent": _blank_to_none(values.get("accent", identity.get("accent", ""))),
+                "occupation": _blank_to_none(values.get("occupation", identity.get("occupation", "audiobook narrator"))),
+            }
+        )
+        profile = normalize_narrator_profile(
+            {
+                "role_id": "narrator",
+                "display_name": str(values.get("display_name", current.get("display_name", "Narrator"))).strip()
+                or "Narrator",
+                "identity_profile": identity,
+                "voice_identity": dict(current.get("voice_identity") or {}),
+            },
+            book_slug=self.book_root.name,
+        )
+        write_json_atomic(self.paths.read_along_narrator_profile, profile)
+        return profile
+
+    def read_along_narrator_profile_payload(self) -> Dict[str, Any]:
+        profile = self.read_along_narrator_profile()
+        identity = dict(profile.get("identity_profile") or {})
+        return {
+            "profile": profile,
+            "summary": narrator_summary(profile),
+            "hash": narrator_profile_hash(profile),
+            "fields": {
+                "display_name": str(profile.get("display_name", "Narrator")),
+                "age_stage": str(identity.get("age_stage", "")),
+                "gender": str(identity.get("gender", "")),
+                "personality": ", ".join(identity.get("personality", [])),
+                "race_or_ethnicity": str(identity.get("race_or_ethnicity") or ""),
+                "accent": str(identity.get("accent") or ""),
+                "occupation": str(identity.get("occupation") or ""),
+            },
+        }
 
     def read_along_settings(self) -> Dict[str, Any]:
         defaults = {

@@ -6,6 +6,7 @@ from ebook_tts_pipeline.epub_ingestion import EpubExtractResult
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.config import PipelineConfig
+from ebook_tts_pipeline.read_along.narrator_profile import narrator_profile_hash
 from ebook_tts_pipeline.registry import RegistryManager, voice_profile_hash
 from ebook_tts_pipeline.tts.fake import FakeTtsAdapter
 from ebook_tts_pipeline.ui import controller as controller_module
@@ -1540,6 +1541,49 @@ def test_controller_saves_read_along_settings_with_narrator_voice_type(tmp_path)
     assert settings["generation_mode"] == "fast"
     assert settings["buffer_limit"] == 2
     assert settings["narrator_voice_type"] == "female"
+
+
+def test_controller_read_along_narrator_profile_defaults_to_editable_profile(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+
+    profile = controller.read_along_narrator_profile()
+
+    assert profile["role_id"] == "narrator"
+    assert profile["display_name"] == "Narrator"
+    assert profile["identity_profile"]["age_stage"] == "adult"
+    assert profile["identity_profile"]["gender"] == "male"
+    assert "audiobook narrator" in profile["identity_profile"]["occupation"]
+    assert profile["voice_profile"]["description"]
+    assert paths.read_along_narrator_profile.exists()
+
+
+def test_controller_migrates_narrator_profile_from_legacy_registry(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    write_json_atomic(
+        paths.registry,
+        {
+            "book": {"title": "Demo", "slug": "demo"},
+            "narrator": {
+                "role_id": "narrator",
+                "display_name": "Story Reader",
+                "voice_identity": {"seed": 9, "differentiators": ["warm tone"]},
+                "voice_profile": {
+                    "description": "warm adult female narrator",
+                    "qwen_instruct": "A warm adult female narrator.",
+                },
+            },
+            "characters": {},
+        },
+    )
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+
+    profile = controller.read_along_narrator_profile()
+
+    assert profile["display_name"] == "Story Reader"
+    assert profile["voice_identity"]["seed"] == 9
+    assert "warm adult female narrator" in profile["voice_profile"]["description"]
+    assert paths.read_along_narrator_profile.exists()
 
 
 def test_controller_read_along_defaults_are_safe_for_vllm_omni_profile(tmp_path):
