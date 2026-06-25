@@ -20,6 +20,8 @@ the read-along web app and its WSL/Qwen read-along TTS stack.
   unit during playback.
 - Start-session settings lock the narrator type, playback speed, and buffer window for
   that session. End the session before changing those settings.
+- Voice-ready books can be exported as portable ReadAlong zip packages and imported into
+  another library folder without copying logs or generated playback buffers.
 - The default read-along TTS backend is the WSL vLLM-Omni/Qwen3-TTS 12 Hz stack found in
   the benchmark notes.
 
@@ -66,8 +68,10 @@ uses this Python environment.
 5. Review Voices: opens the editable global registry character profiles.
 6. Generate Voices: creates QVP voice files and intro WAV samples for global registry
    characters only.
-7. Open Book: click the book title area once the book is voice-ready.
-8. Start Session: choose the start unit, narrator voice type, playback speed, and buffer
+7. Share Zip, optional: exports a portable `.readalong.zip` package for another
+   `readalongweb` library.
+8. Open Book: click the book title area once the book is voice-ready.
+9. Start Session: choose the start unit, narrator voice type, playback speed, and buffer
    seconds. The session builds a WAV time buffer before playback begins.
 
 Generated book data lives inside each book folder:
@@ -85,6 +89,37 @@ Generated book data lives inside each book folder:
 
 Books, models, generated audio, logs, and test output folders are intentionally local
 runtime data and are not meant to be committed.
+
+## Sharing Books
+
+The library view exposes two portable-book actions:
+
+- `Share Zip`: available after a book reaches `Voices ready`. It downloads a
+  `<book-slug>.readalong.zip` package.
+- `Import Zip`: imports a package produced by `Share Zip` into the current library root
+  and creates a normal voice-ready book entry.
+
+The share package includes only the files needed to open and run read-along sessions:
+
+```text
+readalong_book.json
+registry.json
+toc.json
+chapters/
+sentence_segments/
+annotations/
+read_along/*.units.json
+read_along/settings.json
+read_along/narrator_profile.json
+temp_registries/
+voices/*.qvp
+voices/_samples/*.wav
+```
+
+The package intentionally excludes the source EPUB, logs, `read_along_sessions/`,
+temporary playback WAVs, runtime narrator QVPs, and chapter-local temp speaker QVPs.
+Imported books regenerate narrator/session voices as needed from the receiving user's
+session settings and local TTS stack.
 
 ## Voice Lifecycle
 
@@ -134,7 +169,24 @@ scripts/vllm_omni_qwen3_tts_16gb_len8192_seq2_s0util026.yaml
 ```
 
 That profile was chosen because benchmarks showed it could generate faster than playback
-while keeping VRAM near the safer 10 GB target on a 16 GB GPU. See:
+with stable read-along buffering on the test laptop GPU. It should be treated as a
+16 GB NVIDIA CUDA requirement: confirmed benchmark rows sat around 11.9 GB peak, while
+live vLLM sessions can reserve roughly 12-14 GB. The lower ~10.7 GB experimental profile
+was not stable enough to expose as a production setting.
+
+The generation selector in the web UI controls batching behavior, not the resident vLLM
+memory profile:
+
+- `Balanced (12-14 GB, RTF ~0.15)`: default. Generates up to two read-along units per
+  request while still returning per-unit audio for highlighting. Benchmarked smooth
+  ceiling was about 6.6x at 1.0x playback.
+- `Precise (12-14 GB, RTF ~0.25)`: one unit per request. Useful for debugging voice
+  attribution or fidelity, with less speed headroom.
+- `Burst (12-14 GB, fastest fill)`: uses the same resident VRAM profile but allows larger
+  queue fills when buffer time allows.
+
+An 8 GB GPU can use slower native/WSL paths for experimentation or offline work, but the
+current smooth local read-along target requires the 16 GB accelerated vLLM stack. See:
 
 - `docs/benchmarks/readalong_tts_vllm_omni_experiment_summary.txt`
 - `docs/benchmarks/2026-06-23-chapter-015-window-sweep.md`
