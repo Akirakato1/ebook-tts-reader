@@ -975,6 +975,8 @@ def test_web_interface_exposes_tts_loading_overlay_and_selection_outline(tmp_pat
         assert "outline: 1px dashed" in response
         assert "showTtsLoading(true)" in response
         assert "showTtsLoading(false)" in response
+        assert 'id="session-error"' in response
+        assert "showSessionError" in response
     finally:
         _stop_server(server, thread)
 

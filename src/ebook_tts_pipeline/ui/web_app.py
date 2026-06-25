@@ -1974,6 +1974,17 @@ INDEX_HTML = r"""<!doctype html>
       background: rgba(255, 255, 255, 0.2);
     }
     .tts-loading[hidden] { display: none; }
+    .session-error {
+      margin: 8px 16px;
+      padding: 10px 12px;
+      border: 1px solid #d79090;
+      background: #fff1f1;
+      color: #7a1f1f;
+      border-radius: 6px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .session-error[hidden] { display: none; }
     .tts-loading-panel {
       display: inline-flex;
       align-items: center;
@@ -2124,6 +2135,7 @@ INDEX_HTML = r"""<!doctype html>
           <span>TTS stack loading</span>
         </div>
       </div>
+      <div class="session-error" id="session-error" hidden></div>
       <div class="status" id="status">Ready</div>
       <audio id="audio"></audio>
     </section>
@@ -2198,7 +2210,8 @@ INDEX_HTML = r"""<!doctype html>
       start: document.getElementById("start"),
       end: document.getElementById("end"),
       audio: document.getElementById("audio"),
-      ttsLoading: document.getElementById("tts-loading-overlay")
+      ttsLoading: document.getElementById("tts-loading-overlay"),
+      sessionError: document.getElementById("session-error")
     };
     function compactStatusText(text, limit = 420) {
       const value = String(text || "");
@@ -2208,6 +2221,11 @@ INDEX_HTML = r"""<!doctype html>
     function setStatus(text) { els.status.textContent = text; }
     function showTtsLoading(visible) {
       els.ttsLoading.hidden = !visible;
+    }
+    function showSessionError(message) {
+      const text = String(message || "");
+      els.sessionError.hidden = !text;
+      els.sessionError.textContent = text;
     }
     function setLibraryStatus(text) {
       const value = String(text || "");
@@ -2943,6 +2961,7 @@ INDEX_HTML = r"""<!doctype html>
       }
       lockControls(true);
       showTtsLoading(true);
+      showSessionError("");
       setStatus("TTS stack loading...");
       try {
         const payload = await api("/api/session/start", {
@@ -2969,6 +2988,7 @@ INDEX_HTML = r"""<!doctype html>
         state.ready = [];
         lockControls(false);
         highlight();
+        showSessionError(error.message);
         setStatus(error.message);
       }
     }
@@ -3016,6 +3036,7 @@ INDEX_HTML = r"""<!doctype html>
       els.audio.pause();
       els.audio.removeAttribute("src");
       showTtsLoading(false);
+      showSessionError("");
       state.ready = [];
       state.currentUnitId = null;
       lockControls(false);
