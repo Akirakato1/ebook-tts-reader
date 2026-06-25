@@ -123,6 +123,28 @@ def test_direct_book_launch_root_opens_reader_without_selection(tmp_path):
         _stop_server(server, thread)
 
 
+def test_relative_launch_root_resolves_selected_book_root_to_absolute(tmp_path, monkeypatch):
+    library_root = tmp_path / "books"
+    paths = _write_demo_book(library_root, name="book", title="Relative Book", ready_for_tts=True)
+    monkeypatch.chdir(tmp_path)
+    server = create_server(launch_root=Path("books"), host="127.0.0.1", port=0, fake_tts=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    base_url = f"http://{host}:{port}"
+    try:
+        library = _get_json(base_url + "/api/library")
+        assert Path(library["library_root"]).is_absolute()
+
+        selected = _post_json(base_url + "/api/library/select", {"slug": "book"})
+
+        assert Path(selected["active_book"]["book_root"]).is_absolute()
+        assert server.app_state.controller is not None
+        assert server.app_state.controller.book_root == paths.root.resolve()
+    finally:
+        _stop_server(server, thread)
+
+
 def test_library_selection_switches_active_book(tmp_path):
     _write_demo_book(tmp_path, name="alpha", title="Alpha", ready_for_tts=True)
     _write_demo_book(tmp_path, name="beta", title="Beta", ready_for_tts=True)
@@ -342,7 +364,6 @@ def test_book_lifecycle_requires_explicit_steps_before_open_and_tracks_last_read
                     "start_buffer_seconds": 0.1,
                     "max_buffer_seconds": 0.2,
                     "max_buffer_units": 1,
-                    "narrator_voice_type": "current",
                 },
             },
         )
@@ -622,7 +643,6 @@ def test_unopened_book_start_session_requires_selecting_ready_book(tmp_path):
                     "start_buffer_seconds": 20,
                     "max_buffer_seconds": 40,
                     "max_buffer_units": 32,
-                    "narrator_voice_type": "male",
                 },
             },
             expect_status=400,
@@ -800,8 +820,52 @@ def test_home_page_serves_clean_reader_shell(tmp_path):
         assert 'url.searchParams.set("slug", state.registryBook.slug);' in response
         assert "Run Generate Voices first." in response
         assert "/api/library/prepare-voices" in response
+        assert 'id="narrator-summary"' in response
+        assert 'id="edit-narrator"' in response
+        assert 'id="narrator-panel"' in response
+        assert '<option value="male">male</option>' not in response
+        assert "narrator_voice_type" not in response
+        assert 'id="toggle-sidebar"' in response
+        assert 'id="page-prev"' in response
+        assert 'id="page-next"' in response
+        assert 'id="page-indicator"' in response
+        assert 'id="page-measurer"' in response
+        assert "renderPages()" in response
+        assert "ensureAnchorPage" in response
+        assert "state.sidebarOpen" in response
+        assert "keydown" in response
         assert "lockControls(Boolean(payload.session_active));" in response
         assert "window.readAlongApp" in response
+    finally:
+        _stop_server(server, thread)
+
+
+def test_web_api_serves_and_saves_narrator_profile(tmp_path):
+    server, thread, base_url = _start_test_server(tmp_path)
+    try:
+        profile = _get_json(base_url + "/api/narrator-profile")
+
+        assert profile["ok"] is True
+        assert profile["profile"]["role_id"] == "narrator"
+        assert "summary" in profile
+
+        saved = _post_json(
+            base_url + "/api/narrator-profile",
+            {
+                "display_name": "Narrator",
+                "age_stage": "adult",
+                "gender": "female",
+                "personality": "warm, precise",
+                "accent": "American",
+                "race_or_ethnicity": "",
+                "occupation": "audiobook narrator",
+            },
+        )
+
+        assert saved["ok"] is True
+        assert saved["profile"]["identity_profile"]["gender"] == "female"
+        assert saved["fields"]["personality"] == "warm, precise"
+        assert "female" in saved["profile"]["voice_profile"]["description"]
     finally:
         _stop_server(server, thread)
 
@@ -840,7 +904,6 @@ def test_web_api_serves_chapter_and_bounded_session_audio(tmp_path):
                     "start_buffer_seconds": 0.1,
                     "max_buffer_seconds": 0.2,
                     "max_buffer_units": 4,
-                    "narrator_voice_type": "current",
                 },
             },
         )
@@ -912,6 +975,8 @@ def test_web_interface_exposes_tts_loading_overlay_and_selection_outline(tmp_pat
         assert "outline: 1px dashed" in response
         assert "showTtsLoading(true)" in response
         assert "showTtsLoading(false)" in response
+        assert 'id="session-error"' in response
+        assert "showSessionError" in response
     finally:
         _stop_server(server, thread)
 
@@ -959,7 +1024,6 @@ def test_web_api_saves_read_along_settings(tmp_path):
                 "playback_speed": "1.4",
                 "generation_mode": "fast",
                 "buffer_limit": "3",
-                "narrator_voice_type": "female",
             },
         )
 
@@ -972,7 +1036,6 @@ def test_web_api_saves_read_along_settings(tmp_path):
             "start_buffer_seconds": 20.0,
             "max_buffer_seconds": 40.0,
             "max_buffer_units": 32,
-            "narrator_voice_type": "female",
         }
         assert _get_json(base_url + "/api/state")["settings"] == saved["settings"]
     finally:
