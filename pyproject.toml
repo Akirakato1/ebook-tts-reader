@@ -31,7 +31,6 @@ qwen = [
 
 [project.scripts]
 ebook-tts = "ebook_tts_pipeline.cli:main"
-ebook-tts-ui = "ebook_tts_pipeline.ui.tk_app:main"
 ebook-tts-readalong-web = "ebook_tts_pipeline.ui.web_app:main"
 readalongweb = "ebook_tts_pipeline.ui.web_app:main"
 

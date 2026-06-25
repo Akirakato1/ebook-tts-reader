@@ -349,10 +349,6 @@ class PrototypeUiController:
             "identity_profile": identity,
             "voice_identity": dict(current.get("voice_identity") or {}),
         }
-        if _narrator_visible_fields(current.get("display_name", "Narrator"), current_identity) == _narrator_visible_fields(
-            display_name, identity
-        ):
-            payload["voice_profile"] = dict(current.get("voice_profile") or {})
         profile = normalize_narrator_profile(payload, book_slug=self.book_root.name)
         write_json_atomic(self.paths.read_along_narrator_profile, profile)
         return profile
@@ -393,6 +389,7 @@ class PrototypeUiController:
             "start_buffer_seconds": 20.0,
             "max_buffer_seconds": 40.0,
             "max_buffer_units": 32,
+            "chapter_end_behavior": "stop",
         }
         if not self.paths.read_along_settings.exists():
             return defaults
@@ -435,6 +432,11 @@ class PrototypeUiController:
                 32,
                 max(1, _positive_int(payload.get("max_buffer_units"), defaults["max_buffer_units"])),
             ),
+            "chapter_end_behavior": _choice(
+                payload.get("chapter_end_behavior"),
+                {"stop", "continue"},
+                defaults["chapter_end_behavior"],
+            ),
         }
 
     def save_read_along_settings(self, values: Dict[str, Any]) -> None:
@@ -453,6 +455,7 @@ class PrototypeUiController:
             "start_buffer_seconds": start_buffer_seconds,
             "max_buffer_seconds": max_buffer_seconds,
             "max_buffer_units": min(32, max(1, _positive_int(values.get("max_buffer_units"), 32))),
+            "chapter_end_behavior": _choice(values.get("chapter_end_behavior"), {"stop", "continue"}, "stop"),
         }
         write_json_atomic(self.paths.read_along_settings, settings)
 

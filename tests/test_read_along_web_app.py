@@ -1132,6 +1132,11 @@ def test_web_interface_uses_time_buffer_controls_and_pause_button(tmp_path):
         assert "/api/session/top-up" in response
         assert "let topUpPromise = null;" in response
         assert "if (topUpPromise) return topUpPromise;" in response
+        assert 'id="chapter-end-behavior"' in response
+        assert "Continue to next chapter" in response
+        assert "chapter_end_behavior: els.chapterEndBehavior.value" in response
+        assert "continueToNextChapter" in response
+        assert "Continuing to next chapter" in response
         assert "Units <input" not in response
         assert "Max units <input" not in response
     finally:
@@ -1218,6 +1223,7 @@ def test_web_api_saves_read_along_settings(tmp_path):
                 "playback_speed": "1.4",
                 "generation_mode": "fast",
                 "buffer_limit": "3",
+                "chapter_end_behavior": "continue",
             },
         )
 
@@ -1230,6 +1236,7 @@ def test_web_api_saves_read_along_settings(tmp_path):
             "start_buffer_seconds": 20.0,
             "max_buffer_seconds": 40.0,
             "max_buffer_units": 32,
+            "chapter_end_behavior": "continue",
         }
         assert _get_json(base_url + "/api/state")["settings"] == saved["settings"]
     finally:

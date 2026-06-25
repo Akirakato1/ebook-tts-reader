@@ -4,10 +4,12 @@ from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.registry import RegistryManager
 
 
-def test_project_exposes_tkinter_ui_entry_point():
+def test_project_exposes_readalong_web_entry_points():
     pyproject = read_json_like_toml_scripts()
 
-    assert pyproject["ebook-tts-ui"] == "ebook_tts_pipeline.ui.tk_app:main"
+    assert pyproject["readalongweb"] == "ebook_tts_pipeline.ui.web_app:main"
+    assert pyproject["ebook-tts-readalong-web"] == "ebook_tts_pipeline.ui.web_app:main"
+    assert "ebook-tts-ui" not in pyproject
 
 
 def test_cli_has_run_chapter_command():

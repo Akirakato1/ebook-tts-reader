@@ -1750,6 +1750,36 @@ def test_controller_regenerates_narrator_voice_when_profile_changes(tmp_path, mo
     session.end()
 
 
+def test_controller_expands_simple_narrator_accent_into_strict_voice_instruction(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+
+    profile = controller.save_read_along_narrator_profile(
+        {
+            "display_name": "Narrator",
+            "age_stage": "adult",
+            "gender": "male",
+            "personality": "calm, clear, measured",
+            "accent": "General American",
+            "race_or_ethnicity": "White",
+            "occupation": "audiobook narrator",
+        }
+    )
+
+    identity = profile["identity_profile"]
+    instruction = profile["voice_profile"]["qwen_instruct"]
+
+    assert identity["accent"] == "General American"
+    assert identity["race_or_ethnicity"] == "White"
+    assert "General American" in instruction
+    assert "Do not use British" in instruction
+    assert "Do not infer a regional accent from race or ethnicity" in instruction
+    assert "accent is controlled only by the selected accent field" in instruction
+    assert "Maintain the exact same adult male" in instruction
+    assert "No accent drift" in instruction
+    assert "no character voice switching" in instruction
+
+
 def test_controller_read_along_session_generates_functional_narrator_voice_at_session_start(tmp_path):
     paths = BookPaths(tmp_path / "book")
     paths.chapter_text("chapter_001").parent.mkdir(parents=True)
@@ -1952,6 +1982,7 @@ def test_controller_read_along_defaults_are_safe_for_vllm_omni_profile(tmp_path)
     assert settings["start_buffer_seconds"] == 20.0
     assert settings["max_buffer_seconds"] == 40.0
     assert settings["max_buffer_units"] == 32
+    assert settings["chapter_end_behavior"] == "stop"
 
 
 def test_controller_read_along_settings_clamp_speed_to_supported_range(tmp_path):
@@ -2105,6 +2136,7 @@ def test_controller_saves_read_along_time_buffer_settings(tmp_path):
             "start_buffer_seconds": "4",
             "max_buffer_seconds": "20",
             "max_buffer_units": "9",
+            "chapter_end_behavior": "continue",
         }
     )
 
@@ -2116,4 +2148,5 @@ def test_controller_saves_read_along_time_buffer_settings(tmp_path):
     assert settings["start_buffer_seconds"] == 4.0
     assert settings["max_buffer_seconds"] == 20.0
     assert settings["max_buffer_units"] == 9
+    assert settings["chapter_end_behavior"] == "continue"
     assert "narrator_voice_type" not in settings

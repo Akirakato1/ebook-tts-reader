@@ -2271,6 +2271,12 @@ INDEX_HTML = r"""<!doctype html>
           <input id="buffer" type="hidden" value="2">
           <label>Buffer s <input id="target-buffer" type="number" min="1" max="120" step="0.5"></label>
           <label>Start s <input id="start-buffer" type="number" min="1" max="120" step="0.5"></label>
+          <label>Chapter End
+            <select id="chapter-end-behavior">
+              <option value="stop">Stop at chapter end</option>
+              <option value="continue">Continue to next chapter</option>
+            </select>
+          </label>
           <input id="max-units" type="hidden" value="32">
           <div class="narrator-control">
             <span id="narrator-summary">Narrator: loading</span>
@@ -2356,7 +2362,8 @@ INDEX_HTML = r"""<!doctype html>
       activeJobs: {},
       busySlug: "",
       sessionActive: false,
-      sessionPaused: false
+      sessionPaused: false,
+      sessionChapterEndBehavior: "stop"
     };
     const ACTION_LABELS = {
       initialize: "Initialize Book",
@@ -2396,6 +2403,7 @@ INDEX_HTML = r"""<!doctype html>
       buffer: document.getElementById("buffer"),
       targetBuffer: document.getElementById("target-buffer"),
       startBuffer: document.getElementById("start-buffer"),
+      chapterEndBehavior: document.getElementById("chapter-end-behavior"),
       maxUnits: document.getElementById("max-units"),
       narratorSummary: document.getElementById("narrator-summary"),
       editNarrator: document.getElementById("edit-narrator"),
@@ -2506,7 +2514,8 @@ INDEX_HTML = r"""<!doctype html>
         target_buffer_seconds: Number(els.targetBuffer.value || 20),
         start_buffer_seconds: Number(els.startBuffer.value || 20),
         max_buffer_seconds: Math.max(Number(els.targetBuffer.value || 20), Number(els.targetBuffer.value || 20) * 2),
-        max_buffer_units: Number(els.maxUnits.value || 32)
+        max_buffer_units: Number(els.maxUnits.value || 32),
+        chapter_end_behavior: els.chapterEndBehavior.value
       };
     }
     async function loadLibrary(forceLibrary = false) {
@@ -2986,7 +2995,7 @@ INDEX_HTML = r"""<!doctype html>
       return (stem.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120).trim()) || "Untitled Book";
     }
     function lockControls(locked) {
-      for (const el of [els.speed, els.generation, els.buffer, els.targetBuffer, els.startBuffer, els.maxUnits, els.editNarrator, els.start]) {
+      for (const el of [els.speed, els.generation, els.buffer, els.targetBuffer, els.startBuffer, els.chapterEndBehavior, els.maxUnits, els.editNarrator, els.start]) {
         el.disabled = locked;
       }
       els.pause.disabled = !locked;
@@ -3045,6 +3054,7 @@ INDEX_HTML = r"""<!doctype html>
       els.buffer.value = payload.settings.buffer_limit;
       els.targetBuffer.value = payload.settings.target_buffer_seconds;
       els.startBuffer.value = payload.settings.start_buffer_seconds;
+      els.chapterEndBehavior.value = payload.settings.chapter_end_behavior || "stop";
       els.maxUnits.value = payload.settings.max_buffer_units;
       lockControls(Boolean(payload.session_active));
       await loadNarratorProfile();
@@ -3067,14 +3077,21 @@ INDEX_HTML = r"""<!doctype html>
         els.chapters.appendChild(button);
       }
     }
-    async function loadChapter(chapter) {
-      if (state.sessionActive) return;
+    function nextChapterAfter(chapter) {
+      const index = state.chapters.findIndex(item => item.chapter === chapter);
+      if (index < 0 || index + 1 >= state.chapters.length) return null;
+      return state.chapters[index + 1];
+    }
+    async function loadChapter(chapter, options = {}) {
+      if (state.sessionActive && !options.allowDuringSession) return;
       setStatus("Loading chapter...");
       const payload = await api("/api/chapter/" + encodeURIComponent(chapter));
       state.chapter = payload.chapter;
       state.text = payload.text;
       state.units = payload.units;
-      state.selectedUnitId = payload.selected_unit_id ?? (state.units.length ? state.units[0].unit_id : 0);
+      state.selectedUnitId = options.selectFirstUnit && state.units.length
+        ? state.units[0].unit_id
+        : payload.selected_unit_id ?? (state.units.length ? state.units[0].unit_id : 0);
       state.currentUnitId = null;
       state.pageIndex = 0;
       renderChapters();
@@ -3263,6 +3280,7 @@ INDEX_HTML = r"""<!doctype html>
         els.buffer.value = payload.settings.buffer_limit;
         els.targetBuffer.value = payload.settings.target_buffer_seconds;
         els.startBuffer.value = payload.settings.start_buffer_seconds;
+        els.chapterEndBehavior.value = payload.settings.chapter_end_behavior || "stop";
         els.maxUnits.value = payload.settings.max_buffer_units;
         setStatus("Settings saved.");
       } catch (error) {
@@ -3302,6 +3320,7 @@ INDEX_HTML = r"""<!doctype html>
         });
         state.units = payload.units;
         state.sessionId = payload.session_id;
+        state.sessionChapterEndBehavior = payload.settings.chapter_end_behavior || "stop";
         state.ready = payload.ready;
         state.currentUnitId = null;
         renderText();
@@ -3414,6 +3433,59 @@ INDEX_HTML = r"""<!doctype html>
       topUpPromise = promise;
       return promise;
     }
+    async function continueToNextChapter() {
+      const nextChapter = nextChapterAfter(state.chapter);
+      if (!nextChapter) {
+        await endSession("Reached the end of the book.");
+        return;
+      }
+      showTtsLoading(true);
+      setTtsLoadingStage("Continuing to next chapter...");
+      setStatus("Continuing to next chapter...");
+      stopSessionProgressPolling();
+      try {
+        if (topUpPromise) {
+          setTtsLoadingStage("Finishing current chapter buffer work.");
+          await topUpPromise;
+        }
+        await api("/api/session/end", { method: "POST" });
+        topUpPromise = null;
+        state.sessionId = null;
+        state.ready = [];
+        state.currentUnitId = null;
+        setTtsLoadingStage("Loading next chapter text and read-along units.");
+        await loadChapter(nextChapter.chapter, { allowDuringSession: true, selectFirstUnit: true });
+        setTtsLoadingStage("Loading TTS stack and narrator voices.");
+        const startRequest = api("/api/session/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chapter: state.chapter,
+            start_unit_id: state.selectedUnitId,
+            settings: settings()
+          })
+        });
+        startSessionProgressPolling();
+        const payload = await startRequest;
+        state.units = payload.units;
+        state.sessionId = payload.session_id;
+        state.sessionChapterEndBehavior = payload.settings.chapter_end_behavior || "stop";
+        state.ready = payload.ready;
+        state.currentUnitId = null;
+        renderText();
+        stopSessionProgressPolling();
+        showTtsLoading(false);
+        setStatus("Buffered " + payload.ready_playback_seconds.toFixed(1) + "s. Continuing playback...");
+        await playReady();
+        topUpBuffer();
+      } catch (error) {
+        const message = error.message;
+        stopSessionProgressPolling();
+        showTtsLoading(false);
+        await endSession("Session ended.");
+        showSessionError(message);
+      }
+    }
     async function advanceSession() {
       if (!state.sessionActive) return;
       try {
@@ -3433,6 +3505,10 @@ INDEX_HTML = r"""<!doctype html>
               await playReady();
               return;
             }
+          }
+          if (payload.ended && state.sessionChapterEndBehavior === "continue") {
+            await continueToNextChapter();
+            return;
           }
           await endSession(payload.ended ? "Reached the end of the chapter." : "Buffer unavailable.");
           return;
@@ -3551,7 +3627,7 @@ INDEX_HTML = r"""<!doctype html>
       if (!els.addTitle.value) els.addTitle.value = titleFromFilename(file.name);
       if (!els.addSlug.value) els.addSlug.value = slugFromFilename(file.name);
     };
-    for (const el of [els.speed, els.generation, els.buffer, els.targetBuffer, els.startBuffer, els.maxUnits]) {
+    for (const el of [els.speed, els.generation, els.buffer, els.targetBuffer, els.startBuffer, els.chapterEndBehavior, els.maxUnits]) {
       el.addEventListener("change", scheduleSettingsSave);
     }
     els.start.onclick = startSession;

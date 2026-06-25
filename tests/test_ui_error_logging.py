@@ -1,5 +1,5 @@
 from ebook_tts_pipeline.debug_logging import attach_debug_log_path
-from ebook_tts_pipeline.ui.tk_app import _pipeline_error_message
+from ebook_tts_pipeline.ui.errors import pipeline_error_message
 
 
 def test_pipeline_error_message_uses_existing_debug_log_path(tmp_path):
@@ -7,7 +7,7 @@ def test_pipeline_error_message_uses_existing_debug_log_path(tmp_path):
     exc = RuntimeError("annotation failed")
     attach_debug_log_path(exc, log_path)
 
-    message = _pipeline_error_message(
+    message = pipeline_error_message(
         exc,
         label="Working on chapter_003...",
         book_root="books/demo",
@@ -22,7 +22,7 @@ def test_pipeline_error_message_uses_existing_debug_log_path(tmp_path):
 def test_pipeline_error_message_writes_generic_log_when_no_path_exists(tmp_path):
     exc = RuntimeError("tts failed")
 
-    message = _pipeline_error_message(
+    message = pipeline_error_message(
         exc,
         label="Working on chapter_003...",
         book_root="books/demo",

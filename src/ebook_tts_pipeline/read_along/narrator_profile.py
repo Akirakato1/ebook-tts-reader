@@ -4,7 +4,6 @@ from typing import Any, Dict
 
 from ebook_tts_pipeline.registry import (
     build_compact_voice_profile,
-    default_narrator_voice_profile,
     voice_profile_hash,
 )
 from ebook_tts_pipeline.voice_identity import role_seed
@@ -30,7 +29,6 @@ def default_narrator_profile(book_slug: str = "book") -> Dict[str, Any]:
                 "seed": role_seed(book_slug, "narrator"),
                 "differentiators": ["calm baseline narrator timbre"],
             },
-            "voice_profile": default_narrator_voice_profile(),
         },
         book_slug=book_slug,
     )
@@ -55,7 +53,7 @@ def normalize_narrator_profile(profile: Dict[str, Any], book_slug: str = "book")
     voice_identity.setdefault("differentiators", ["calm baseline narrator timbre"])
     voice_profile = dict(profile.get("voice_profile") or {})
     if not voice_profile.get("description") or not voice_profile.get("qwen_instruct"):
-        voice_profile = build_compact_voice_profile(display_name, {"identity_profile": identity})
+        voice_profile = build_strict_narrator_voice_profile(display_name, identity)
     return {
         "role_id": role_id,
         "display_name": display_name,
@@ -77,6 +75,40 @@ def narrator_voice_record(profile: Dict[str, Any]) -> Dict[str, Any]:
         "identity_profile": dict(normalized["identity_profile"]),
         "voice_identity": dict(normalized["voice_identity"]),
         "voice_profile": dict(normalized["voice_profile"]),
+    }
+
+
+def build_strict_narrator_voice_profile(display_name: str, identity: Dict[str, Any]) -> Dict[str, str]:
+    voice_profile = build_compact_voice_profile(display_name, {"identity_profile": identity})
+    age_stage = str(identity.get("age_stage") or "adult").replace("_", " ").strip() or "adult"
+    gender = str(identity.get("gender") or "unknown").strip() or "unknown"
+    accent = _nullable_string(identity.get("accent"))
+    race_or_ethnicity = _nullable_string(identity.get("race_or_ethnicity"))
+    identity_phrase = " ".join(part for part in [age_stage, gender] if part and part != "unknown").strip()
+    if not identity_phrase:
+        identity_phrase = "adult narrator"
+
+    description_parts = [str(voice_profile.get("description") or "").strip()]
+    if accent:
+        description_parts.append(f"strictly consistent {accent} pronunciation")
+    description_parts.append("stable calm audiobook narrator timbre with no accent drift")
+
+    instruction_parts = [str(voice_profile.get("qwen_instruct") or "").strip().rstrip(".")]
+    if race_or_ethnicity:
+        instruction_parts.append(
+            f"Voice identity metadata: {race_or_ethnicity}; Do not infer a regional accent from race or ethnicity; "
+            "accent is controlled only by the selected accent field"
+        )
+    if accent:
+        instruction_parts.append(_strict_accent_instruction(accent))
+    instruction_parts.append(
+        f"Maintain the exact same {identity_phrase} calm audiobook narrator timbre across every sentence; "
+        "No accent drift, no pitch drift, no character voice switching, no regional pronunciation changes, "
+        "and no performance style change"
+    )
+    return {
+        "description": "; ".join(part for part in description_parts if part),
+        "qwen_instruct": ". ".join(part for part in instruction_parts if part) + ".",
     }
 
 
@@ -122,3 +154,25 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     return [item.strip() for item in str(value).split(",") if item.strip()]
+
+
+def _nullable_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _strict_accent_instruction(accent: str) -> str:
+    normalized = accent.strip().lower()
+    if normalized == "general american":
+        return (
+            "Use consistent General American English pronunciation. Do not use British, Irish, Australian, "
+            "Southern US, New York, or other regional accent features. Keep vowel shapes, rhythm, consonant "
+            "articulation, and prosody stable across every generated sentence"
+        )
+    return (
+        f"Use consistent {accent} pronunciation only. Do not switch to British, Irish, Australian, "
+        "or unrelated regional accent features. Keep vowel shapes, rhythm, consonant articulation, "
+        "and prosody stable across every generated sentence"
+    )
