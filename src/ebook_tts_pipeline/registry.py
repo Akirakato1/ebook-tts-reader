@@ -67,6 +67,32 @@ def voice_profile_hash(voice_record: Dict[str, Any]) -> str:
     return hashlib.sha256(signature.encode("utf-8")).hexdigest()
 
 
+def infer_accent_from_identity(race_or_ethnicity: Any) -> str | None:
+    text = str(race_or_ethnicity or "").strip()
+    if not text:
+        return None
+    normalized = normalize_name(text)
+    if "yorkshire" in normalized:
+        return "Yorkshire"
+    if "french" in normalized:
+        return "French"
+    if "german" in normalized and "scottish" in normalized:
+        return "German-Scottish"
+    if "german" in normalized:
+        return "German"
+    if "scottish" in normalized:
+        return "Scottish"
+    if "irish" in normalized:
+        return "Irish"
+    if "welsh" in normalized:
+        return "Welsh"
+    if "upperclass" in normalized or "aristocratic" in normalized or "receivedpronunciation" in normalized:
+        return "Received Pronunciation"
+    if "english" in normalized or "british" in normalized or "unitedkingdom" in normalized:
+        return "British"
+    return None
+
+
 def default_narrator_voice_profile() -> Dict[str, str]:
     return dict(DEFAULT_NARRATOR_VOICE_PROFILE)
 
@@ -321,14 +347,16 @@ def normalize_character_profile(name: str, raw_profile: Any) -> Dict[str, Any]:
     person_id = slugify_name(str(profile.get("person_id", "")).strip() or name)
     profile_id = profile_id_for_character(name, {**profile, "person_id": person_id, "age_stage": age_stage})
     personality = _string_list(profile.get("personality"))
+    race_or_ethnicity = _nullable_string(
+        profile.get("race_or_ethnicity", profile.get("race", profile.get("ethnicity")))
+    )
+    accent = _nullable_string(profile.get("accent")) or infer_accent_from_identity(race_or_ethnicity)
     identity_profile = {
         "age_stage": age_stage,
         "gender": gender,
         "personality": personality,
-        "race_or_ethnicity": _nullable_string(
-            profile.get("race_or_ethnicity", profile.get("race", profile.get("ethnicity")))
-        ),
-        "accent": _nullable_string(profile.get("accent")),
+        "race_or_ethnicity": race_or_ethnicity,
+        "accent": accent,
         "occupation": _nullable_string(profile.get("occupation", profile.get("job", profile.get("profession")))),
     }
     aliases = _string_list(profile.get("aliases"))
@@ -530,7 +558,7 @@ def build_compact_voice_profile(display_name: str, profile: Dict[str, Any]) -> D
     age_stage = str(identity.get("age_stage", "unknown")).replace("_", " ")
     gender = str(identity.get("gender", "unknown"))
     personality = _string_list(identity.get("personality"))
-    accent = _nullable_string(identity.get("accent"))
+    accent = _nullable_string(identity.get("accent")) or infer_accent_from_identity(identity.get("race_or_ethnicity"))
     race_or_ethnicity = _nullable_string(identity.get("race_or_ethnicity"))
 
     age_gender_parts: List[str] = []

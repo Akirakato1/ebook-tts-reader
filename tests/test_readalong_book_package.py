@@ -26,6 +26,8 @@ def test_build_readalong_package_includes_portable_assets_and_excludes_runtime_a
     assert "read_along/chapter_001.units.json" in names
     assert "read_along/settings.json" in names
     assert "read_along/narrator_profile.json" in names
+    assert "audiobook/settings.json" in names
+    assert "audiobook/narrator_profile.json" in names
     assert "temp_registries/chapter_001.temp_registry.json" in names
     assert "voices/leigh_adult.qvp" in names
     assert "voices/_samples/leigh_adult.wav" in names
@@ -37,6 +39,8 @@ def test_build_readalong_package_includes_portable_assets_and_excludes_runtime_a
     assert "voices/narrator.qvp" not in names
     assert "voices/_narrator/hash/narrator.qvp" not in names
     assert "voices/_temp/chapter_001/local.qvp" not in names
+    assert "audiobook/chapter_001.wav" not in names
+    assert "audiobook/chapter_001.timeline.json" not in names
 
     with zipfile.ZipFile(io.BytesIO(archive)) as package:
         manifest = json.loads(package.read("readalong_book.json").decode("utf-8"))
@@ -59,6 +63,7 @@ def test_import_readalong_package_creates_safe_ready_book_without_personal_state
     assert imported == library_root / "shared-copy"
     assert (imported / "chapters" / "chapter_001.txt").read_text(encoding="utf-8")
     assert (imported / "read_along" / "chapter_001.units.json").exists()
+    assert (imported / "audiobook" / "narrator_profile.json").exists()
     assert (imported / "voices" / "leigh_adult.qvp").read_bytes() == b"global voice"
     assert (imported / "voices" / "_samples" / "leigh_adult.wav").read_bytes() == b"sample voice"
     assert not (imported / "_source").exists()
@@ -160,6 +165,8 @@ def _write_portable_book(root) -> BookPaths:
     )
     write_json_atomic(paths.root / "read_along" / "settings.json", {"generation_mode": "balanced"})
     write_json_atomic(paths.root / "read_along" / "narrator_profile.json", {"role_id": "narrator"})
+    write_json_atomic(paths.root / "audiobook" / "settings.json", {"generation_mode": "balanced"})
+    write_json_atomic(paths.root / "audiobook" / "narrator_profile.json", {"display_name": "Audiobook Narrator"})
     paths.chapter_temp_registry("chapter_001").parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(paths.chapter_temp_registry("chapter_001"), {"speakers": {}})
 
@@ -178,4 +185,6 @@ def _write_portable_book(root) -> BookPaths:
     (paths.root / "voices" / "_samples" / "leigh_adult.wav").write_bytes(b"sample voice")
     (paths.root / "voices" / "_narrator" / "hash" / "narrator.qvp").write_bytes(b"runtime narrator")
     (paths.root / "voices" / "_temp" / "chapter_001" / "local.qvp").write_bytes(b"runtime local")
+    (paths.root / "audiobook" / "chapter_001.wav").write_bytes(b"generated audiobook")
+    write_json_atomic(paths.root / "audiobook" / "chapter_001.timeline.json", {"sentences": []})
     return paths

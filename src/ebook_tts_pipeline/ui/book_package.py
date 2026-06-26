@@ -20,6 +20,7 @@ _ROOT_FILES = {"registry.json", "toc.json"}
 _ROOT_EXACT = {PACKAGE_MANIFEST, BOOK_MANIFEST, *_ROOT_FILES}
 _ALLOWED_PREFIXES = ("chapters/", "sentence_segments/", "annotations/", "temp_registries/")
 _READ_ALONG_EXACT = {"read_along/settings.json", "read_along/narrator_profile.json"}
+_AUDIOBOOK_EXACT = {"audiobook/settings.json", "audiobook/narrator_profile.json"}
 _EXCLUDED_PREFIXES = (
     "_source/",
     "logs/",
@@ -115,6 +116,11 @@ def _portable_relative_paths(root: Path, registry: Dict[str, Any]) -> List[Path]
         for name in ("settings.json", "narrator_profile.json"):
             if (read_along / name).exists():
                 paths.add(Path("read_along") / name)
+    audiobook = root / "audiobook"
+    if audiobook.exists():
+        for name in ("settings.json", "narrator_profile.json"):
+            if (audiobook / name).exists():
+                paths.add(Path("audiobook") / name)
     paths.update(_registry_voice_paths(root, registry))
     return sorted(paths, key=lambda item: item.as_posix())
 
@@ -175,6 +181,8 @@ def _is_allowed_package_path(relative: Path) -> bool:
     if value.startswith(_ALLOWED_PREFIXES):
         return True
     if value in _READ_ALONG_EXACT:
+        return True
+    if value in _AUDIOBOOK_EXACT:
         return True
     if value.startswith("read_along/") and value.endswith(".units.json"):
         return True

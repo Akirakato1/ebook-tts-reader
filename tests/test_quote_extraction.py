@@ -63,3 +63,18 @@ def test_quote_extractor_marks_quotes_in_original_chapter_text():
     extraction = extract_quoted_dialogue(text)
 
     assert extraction.to_marked_text() == 'One. |q001| "Two." ||q001|| Three.'
+
+
+def test_quote_extractor_handles_single_curly_dialogue_with_apostrophes():
+    text = (
+        "I meet its eyes. "
+        "\u2018That there\u2019s Ensor House, there,\u2019 says the driver. "
+        "\u2018I\u2019ve \u2019ad worse.\u2019"
+    )
+
+    extraction = extract_quoted_dialogue(text)
+
+    assert [(quote.quote_id, quote.text) for quote in extraction.quotes] == [
+        ("q001", "\u2018That there\u2019s Ensor House, there,\u2019"),
+        ("q002", "\u2018I\u2019ve \u2019ad worse.\u2019"),
+    ]

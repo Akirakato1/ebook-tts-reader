@@ -16,6 +16,19 @@ def test_parse_json_response_text_accepts_markdown_json_fence():
     assert payload["roles"] == ["Narrator"]
 
 
+def test_parse_json_response_text_accepts_json_fence_after_explanatory_text():
+    payload = parse_json_response_text(
+        (
+            "The role id should be corrected. Let me provide the fixed JSON.\n"
+            "```json\n"
+            '{"roles":["mr_john_pounds_adult"],"quotes":[[1,0]]}\n'
+            "```"
+        )
+    )
+
+    assert payload == {"roles": ["mr_john_pounds_adult"], "quotes": [[1, 0]]}
+
+
 def test_parse_json_response_text_rejects_empty_response_with_clear_error():
     with pytest.raises(AnnotationModelOutputError, match="empty"):
         parse_json_response_text("   ")

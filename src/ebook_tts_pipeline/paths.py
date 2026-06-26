@@ -51,6 +51,28 @@ class BookPaths:
     def chapter_timeline(self, chapter: str) -> Path:
         return self.root / "audio" / f"{chapter}.timeline.json"
 
+    @property
+    def audiobook_manifest(self) -> Path:
+        return self.root / "audiobook" / "manifest.json"
+
+    @property
+    def audiobook_settings(self) -> Path:
+        return self.root / "audiobook" / "settings.json"
+
+    @property
+    def audiobook_position(self) -> Path:
+        return self.root / "audiobook" / "position.json"
+
+    @property
+    def audiobook_narrator_profile(self) -> Path:
+        return self.root / "audiobook" / "narrator_profile.json"
+
+    def audiobook_chapter_audio(self, chapter: str) -> Path:
+        return self.root / "audiobook" / f"{chapter}.wav"
+
+    def audiobook_chapter_timeline(self, chapter: str) -> Path:
+        return self.root / "audiobook" / f"{chapter}.timeline.json"
+
     def read_along_units(self, chapter: str) -> Path:
         return self.root / "read_along" / f"{chapter}.units.json"
 

@@ -1,0 +1,59 @@
+Qwen3-TTS 25Hz vLLM-Omni Smoke Attempt
+Date: 2026-06-26
+
+Goal
+Run the same vLLM-Omni benchmark harness used for the 12Hz window sweep against the expected Qwen3-TTS 25Hz 1.7B Base model, then measure VRAM and speed if the model can initialize.
+
+Environment
+- Host project root: C:\Users\zhuyl\OneDrive\Documents\Ebook Reader
+- WSL distro: Ubuntu-24.04
+- WSL Python: /opt/ebook-vllm-omni-venv/bin/python
+- Benchmark harness: scripts/benchmark_vllm_omni_qwen3_tts.py
+- Book root: test false witness real tts chapter 15
+- Chapter: chapter_015
+- Stage profile: scripts/vllm_omni_qwen3_tts_16gb_len8192_seq2_s0util026.yaml
+- Target model: Qwen/Qwen3-TTS-25Hz-1.7B-Base
+- Windows HF token available: False
+- WSL HF token available: False
+
+Command
+wsl.exe -d Ubuntu-24.04 -u root -- bash -lc "cd '/mnt/c/Users/zhuyl/OneDrive/Documents/Ebook Reader' && /opt/ebook-vllm-omni-venv/bin/python scripts/benchmark_vllm_omni_qwen3_tts.py --book-root 'test false witness real tts chapter 15' --chapter chapter_015 --start-chars 100 --step-chars 100 --max-targets 1 --repeat-count 1 --warmup-text Test --max-vram-gb 16 --model 'Qwen/Qwen3-TTS-25Hz-1.7B-Base' --stage-configs-path '/mnt/c/Users/zhuyl/OneDrive/Documents/Ebook Reader/scripts/vllm_omni_qwen3_tts_16gb_len8192_seq2_s0util026.yaml' --output-stem 'vllm_omni_window_sweep_chapter_015_25hz_smoke_attempt'"
+
+Observed Output
+INFO 06-26 14:49:51 [patch.py:252] NVFP4 W4A4 weight_scale NaN-clamp: installed.
+INFO 06-26 14:49:52 [quack_fp8.py:66] Quack FP8 fused-bias GEMM enabled (CuteDSL).
+INFO 06-26 14:49:52 [quack_fp8.py:118] Patched FlashInfer FP8 ScaledMM to use quack fused-bias GEMM.
+INFO 06-26 14:49:52 [weight_utils.py:50] Using model weights format ['*']
+httpx.HTTPStatusError: Client error '401 Unauthorized' for url 'https://huggingface.co/api/models/Qwen/Qwen3-TTS-25Hz-1.7B-Base/revision/main'
+huggingface_hub.errors.RepositoryNotFoundError: 401 Client Error.
+Repository Not Found for url: https://huggingface.co/api/models/Qwen/Qwen3-TTS-25Hz-1.7B-Base/revision/main.
+If you are trying to access a private or gated repo, make sure you are authenticated and your token has the required permissions.
+ValueError: Repository not found for 'Qwen/Qwen3-TTS-25Hz-1.7B-Base'. Please check the model name or path.
+
+Other Asset Checks
+- Hugging Face Qwen author search for Qwen3-TTS returned only 12Hz public repos.
+- Qwen/Qwen3-TTS-25Hz-1.7B-Base returned HTTP 401.
+- Qwen/Qwen3-TTS-25Hz-0.6B-Base returned HTTP 401.
+- Qwen/Qwen3-TTS-Tokenizer-25Hz returned HTTP 401.
+- Qwen/Qwen-TTS-Tokenizer-25Hz returned HTTP 401.
+- Qwen/Qwen3-TTS-25Hz-0.6B-CustomVoice returned HTTP 401.
+- Qwen/Qwen3-TTS-25Hz-1.7B-CustomVoice and Qwen/Qwen3TTS-25Hz-1.7B-CustomVoice connection-reset repeatedly during API checks.
+
+Local Asset Checks
+- models/qwen-tts contains only:
+  - Qwen3-TTS-12Hz-1.7B-Base
+  - Qwen3-TTS-12Hz-1.7B-VoiceDesign
+  - Qwen3-TTS-Tokenizer-12Hz
+- Qwen3-TTS-12Hz-1.7B-Base/config.json has tokenizer_type qwen3_tts_tokenizer_12hz.
+- Qwen3-TTS-Tokenizer-12Hz/config.json has model_type qwen3_tts_tokenizer_12hz and encoder_config._frame_rate 12.5.
+
+Conclusion
+The 25Hz experiment was conducted up to the actual model initialization step. It failed before any audio generation, VRAM measurement, or RTF measurement could occur because the 25Hz model repository is not accessible from the current unauthenticated Windows/WSL environment and no local 25Hz model folder exists.
+
+No generation-speed or VRAM result exists for 25Hz on this machine yet. The result is a hard access/blocker result, not a performance result.
+
+Next Required Input
+To run the real speed/VRAM sweep, provide one of:
+- a local Qwen3-TTS-25Hz model/tokenizer folder compatible with vLLM-Omni,
+- a Hugging Face token with access to the gated/private 25Hz repos, or
+- an official public 25Hz repo path if Qwen publishes it under a different name.

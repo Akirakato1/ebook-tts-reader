@@ -24,7 +24,12 @@ from ebook_tts_pipeline.read_along.session import BufferedAudio, ReadAlongSessio
 from ebook_tts_pipeline.registry import voice_profile_hash
 from ebook_tts_pipeline.runtime_logging import log_runtime_step
 from ebook_tts_pipeline.ui.book_package import build_readalong_package, import_readalong_package
-from ebook_tts_pipeline.ui.controller import ChapterExtractor, PipelineFactory, PrototypeUiController
+from ebook_tts_pipeline.ui.controller import (
+    ChapterExtractor,
+    PipelineFactory,
+    PrototypeUiController,
+    _annotation_matches_chapter_quotes,
+)
 from ebook_tts_pipeline.ui.errors import write_readalong_error_event
 
 
@@ -119,6 +124,9 @@ class LibraryJob:
     error: str = ""
     started_at: float = field(default_factory=time.time)
     finished_at: Optional[float] = None
+    chapters: List[str] = field(default_factory=list)
+    settings: Dict[str, Any] = field(default_factory=dict)
+    force: bool = False
 
     def to_payload(self) -> Dict[str, Any]:
         return {
@@ -134,6 +142,7 @@ class LibraryJob:
             "error": self.error,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            "chapters": list(self.chapters),
         }
 
 
@@ -474,6 +483,39 @@ class ReadAlongWebState:
                 "library": self.library_payload(),
             }
 
+    def registry_save_characters(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        with self.lock:
+            summary = self._require_book_summary(str(payload.get("slug", "")))
+            controller = self._make_controller(summary.book_root)
+            entries = payload.get("entries", [])
+            if not isinstance(entries, list) or not entries:
+                raise ValueError("At least one registry character entry is required.")
+            changed_role_ids: List[str] = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                role_id = str(entry.get("role_id", "")).strip()
+                if not role_id:
+                    continue
+                changed = controller.save_registry_character_form(
+                    role_id,
+                    {str(key): str(value) for key, value in dict(entry.get("fields", {})).items()},
+                )
+                if changed:
+                    changed_role_ids.append(role_id)
+            sample_count = 0
+            if changed_role_ids:
+                _update_book_stage(summary.book_root, registry_reviewed=False, voices_ready=False)
+            summary = summarize_book(summary.book_root)
+            return {
+                "ok": True,
+                "book": summary.to_payload(),
+                "changed_role_ids": changed_role_ids,
+                "sample_count": sample_count,
+                "review": controller.registry_review_payload(),
+                "library": self.library_payload(),
+            }
+
     def registry_confirm(self, slug: str) -> Dict[str, Any]:
         with self.lock:
             summary = self._require_book_summary(slug)
@@ -713,6 +755,17 @@ class ReadAlongWebState:
             controller.save_read_along_narrator_profile(payload)
             return {"ok": True, **controller.read_along_narrator_profile_payload()}
 
+    def audiobook_narrator_profile_payload(self) -> Dict[str, Any]:
+        with self.lock:
+            controller = self._require_controller()
+            return {"ok": True, **controller.audiobook_narrator_profile_payload()}
+
+    def save_audiobook_narrator_profile(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        with self.lock:
+            controller = self._require_controller()
+            controller.save_audiobook_narrator_profile(payload)
+            return {"ok": True, **controller.audiobook_narrator_profile_payload()}
+
     def save_reading_position(self, slug: str, chapter: str, unit_id: int) -> Dict[str, Any]:
         with self.lock:
             summary = self._require_book_summary(slug)
@@ -726,6 +779,165 @@ class ReadAlongWebState:
                 "last_read_display": _last_read_label(last_read),
                 "library": self.library_payload(),
             }
+
+    def audiobook_payload(self, slug: str) -> Dict[str, Any]:
+        with self.lock:
+            summary = self._require_book_summary(slug)
+            controller = self._make_controller(summary.book_root)
+            paths = controller.paths
+            manifest = _read_json_if_exists(paths.audiobook_manifest)
+            manifest_chapters = manifest.get("chapters", {}) if isinstance(manifest.get("chapters"), dict) else {}
+            chapters = []
+            for row in controller.chapter_rows():
+                entry = dict(manifest_chapters.get(row.chapter, {}))
+                audio_path = paths.audiobook_chapter_audio(row.chapter)
+                timeline_path = paths.audiobook_chapter_timeline(row.chapter)
+                audio_ready = audio_path.exists()
+                chapters.append(
+                    {
+                        "chapter": row.chapter,
+                        "index": row.index,
+                        "title": row.title,
+                        "audio_ready": audio_ready,
+                        "timeline_ready": timeline_path.exists(),
+                        "audio_url": f"/api/audiobook/audio/{row.chapter}.wav?slug={summary.slug}" if audio_ready else "",
+                        "duration_seconds": float(entry.get("duration_seconds") or 0.0),
+                        "generated_at": entry.get("generated_at"),
+                        "window_count": int(entry.get("window_count") or 0),
+                        "unit_count": int(entry.get("unit_count") or 0),
+                    }
+                )
+            job = self._running_job_for_slug(summary.slug)
+            return {
+                "ok": True,
+                "book": summary.to_payload(active=self.controller is not None and _same_path(self.controller.book_root, summary.book_root)),
+                "chapters": chapters,
+                "settings": controller.audiobook_settings(),
+                "position": _read_json_if_exists(paths.audiobook_position),
+                "job": job.to_payload() if job is not None and job.action_key == "audiobook" else None,
+            }
+
+    def generate_audiobook(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        with self.lock:
+            summary = self._require_book_summary(str(payload.get("slug", "")))
+            if not summary.open_enabled:
+                raise ValueError("Generate Voices before generating audiobook audio.")
+            existing = self._running_job_for_slug(summary.slug)
+            if existing is not None:
+                return {
+                    "ok": True,
+                    "book": summary.to_payload(),
+                    "job": existing.to_payload(),
+                    "library": self.library_payload(),
+                }
+            controller = self._make_controller(summary.book_root)
+            requested = [str(chapter).strip() for chapter in payload.get("chapters", []) if str(chapter).strip()]
+            if not requested:
+                requested = [row.chapter for row in controller.chapter_rows()]
+            valid = {row.chapter for row in controller.chapter_rows()}
+            chapters = [chapter for chapter in requested if chapter in valid]
+            if not chapters:
+                raise ValueError("Select at least one valid chapter.")
+            job = LibraryJob(
+                job_id=uuid.uuid4().hex,
+                slug=summary.slug,
+                action_key="audiobook",
+                completed=0,
+                total=len(chapters),
+                chapters=chapters,
+                settings=dict(payload.get("settings", {})),
+                force=bool(payload.get("force")),
+            )
+            self.jobs[job.job_id] = job
+            self.jobs_by_slug[summary.slug] = job.job_id
+            worker = threading.Thread(target=self._run_audiobook_job, args=(job.job_id,), daemon=True)
+            worker.start()
+            return {
+                "ok": True,
+                "book": summary.to_payload(),
+                "job": job.to_payload(),
+                "library": self.library_payload(),
+            }
+
+    def _run_audiobook_job(self, job_id: str) -> None:
+        with self.lock:
+            job = self.jobs[job_id]
+            summary = self._require_book_summary(job.slug)
+            controller = self._make_controller(summary.book_root)
+            job.status = "running"
+
+        def progress_callback(event: Dict[str, Any]) -> None:
+            with self.lock:
+                current = self.jobs[job_id]
+                current.total = int(event.get("total") or current.total or 0)
+                current.current_chapter = str(event.get("chapter") or current.current_chapter)
+                current.current_item = f"{int(event.get('window_count') or 0)} windows"
+                status = str(event.get("status") or "")
+                if status == "started":
+                    current.completed = max(0, int(event.get("completed") or 0))
+                if status == "completed":
+                    current.completed = max(current.completed, int(event.get("completed") or current.completed))
+
+        try:
+            result = controller.generate_audiobook_chapters(
+                job.chapters,
+                job.settings,
+                force=job.force,
+                progress_callback=progress_callback,
+            )
+        except Exception as exc:
+            with self.lock:
+                job = self.jobs[job_id]
+                job.status = "failed"
+                job.failed_chapter = job.current_chapter
+                job.error = str(exc)
+                job.finished_at = time.time()
+                summary = self._require_book_summary(job.slug)
+                self.log_event(
+                    "library_audiobook_job_error",
+                    {
+                        "job_id": job_id,
+                        "slug": job.slug,
+                        "current_chapter": job.current_chapter,
+                    },
+                    exc=exc,
+                    book_root=summary.book_root,
+                )
+            return
+
+        with self.lock:
+            job = self.jobs[job_id]
+            job.status = "completed"
+            job.completed = int(result.get("chapters", job.completed))
+            job.total = int(result.get("chapters", job.total))
+            job.current_chapter = ""
+            job.current_item = ""
+            job.finished_at = time.time()
+
+    def audiobook_audio(self, slug: str, chapter: str) -> bytes:
+        with self.lock:
+            summary = self._require_book_summary(slug)
+            paths = BookPaths(summary.book_root)
+            audio_root = (paths.root / "audiobook").resolve()
+            audio_path = paths.audiobook_chapter_audio(chapter).resolve()
+            if audio_root not in audio_path.parents:
+                raise FileNotFoundError("audiobook audio path is outside the audiobook directory")
+            return audio_path.read_bytes()
+
+    def save_audiobook_position(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        with self.lock:
+            summary = self._require_book_summary(str(payload.get("slug", "")))
+            chapter = str(payload.get("chapter", "")).strip()
+            if not chapter:
+                raise ValueError("chapter is required")
+            paths = BookPaths(summary.book_root)
+            position = {
+                "chapter": chapter,
+                "position_seconds": max(0.0, float(payload.get("position_seconds") or 0.0)),
+                "updated_at": time.time(),
+            }
+            write_json_atomic(paths.audiobook_position, position)
+            return {"ok": True, "position": position}
 
     def start_session(
         self,
@@ -1113,6 +1325,18 @@ def build_handler(app_state: ReadAlongWebState):
                     audio_bytes = app_state.registry_sample_audio(role_id, slug=slug)
                     self._send_bytes(audio_bytes, content_type="audio/wav")
                     return
+                if path == "/api/audiobook":
+                    slug = parse_qs(parsed.query).get("slug", [""])[0]
+                    self._send_json(app_state.audiobook_payload(slug))
+                    return
+                if path == "/api/audiobook/narrator-profile":
+                    self._send_json(app_state.audiobook_narrator_profile_payload())
+                    return
+                audiobook_audio_match = _audiobook_audio_path_parts(path)
+                if audiobook_audio_match is not None:
+                    slug = parse_qs(parsed.query).get("slug", [""])[0]
+                    self._send_bytes(app_state.audiobook_audio(slug, audiobook_audio_match), content_type="audio/wav")
+                    return
                 if path == "/api/state":
                     self._send_json(app_state.state_payload())
                     return
@@ -1176,11 +1400,23 @@ def build_handler(app_state: ReadAlongWebState):
                 if path == "/api/registry/save-character":
                     self._send_json(app_state.registry_save_character(payload))
                     return
+                if path == "/api/registry/save-characters":
+                    self._send_json(app_state.registry_save_characters(payload))
+                    return
                 if path == "/api/registry/confirm":
                     self._send_json(app_state.registry_confirm(str(payload.get("slug", ""))))
                     return
                 if path == "/api/registry/generate-sample":
                     self._send_json(app_state.registry_generate_sample(payload))
+                    return
+                if path == "/api/audiobook/generate":
+                    self._send_json(app_state.generate_audiobook(payload))
+                    return
+                if path == "/api/audiobook/narrator-profile":
+                    self._send_json(app_state.save_audiobook_narrator_profile(payload))
+                    return
+                if path == "/api/audiobook/position":
+                    self._send_json(app_state.save_audiobook_position(payload))
                     return
                 if path == "/api/process-book":
                     self._send_json(app_state.process_book())
@@ -1458,10 +1694,9 @@ def summarize_book(book_root: str | Path) -> LibraryBookSummary:
     author = author or str(manifest.get("author", "")).strip()
     title = title or root.name.replace("_", " ").replace("-", " ").title() or "Untitled Book"
     chapter_count = _glob_count(root / "chapters", "*.txt")
-    annotation_count = _glob_count(root / "annotations", "*.annotation.json")
-    unit_count = _glob_count(root / "read_along", "*.units.json")
+    annotation_count, unit_count = _read_along_readiness_counts(root)
     voice_count, voice_total = _registry_voice_readiness(root, registry)
-    audio_count = _glob_count(root / "audio", "*.wav")
+    audio_count = _chapter_audio_count(root)
     status_key, status_label = _book_status(
         chapter_count=chapter_count,
         annotation_count=annotation_count,
@@ -1519,6 +1754,27 @@ def _audio_path_parts(path: str) -> Optional[Tuple[str, int]]:
     return parts[0], int(parts[2][:-len(suffix)])
 
 
+def _audiobook_audio_path_parts(path: str) -> Optional[str]:
+    prefix = "/api/audiobook/audio/"
+    suffix = ".wav"
+    if not path.startswith(prefix) or not path.endswith(suffix):
+        return None
+    chapter = path[len(prefix):-len(suffix)]
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", chapter):
+        return None
+    return chapter
+
+
+def _chapter_audio_count(book_root: Path) -> int:
+    chapters = set()
+    for folder in ("audio", "audiobook"):
+        audio_dir = book_root / folder
+        if not audio_dir.exists():
+            continue
+        chapters.update(path.stem for path in audio_dir.glob("*.wav"))
+    return len(chapters)
+
+
 def _status_for_exception(exc: Exception) -> HTTPStatus:
     if isinstance(exc, (ValueError, json.JSONDecodeError)):
         return HTTPStatus.BAD_REQUEST
@@ -1547,6 +1803,7 @@ def _book_status(
     manifest: Dict[str, Any],
 ) -> Tuple[str, str]:
     stages = dict(manifest.get("stages", {})) if isinstance(manifest.get("stages"), dict) else {}
+    annotations_ready = chapter_count > 0 and annotation_count >= chapter_count and read_along_unit_count >= chapter_count
     if manifest:
         if not stages.get("initialized"):
             return "fresh_added", "Freshly added"
@@ -1555,8 +1812,15 @@ def _book_status(
         if stages.get("annotating"):
             return "annotating", "Annotating"
         if not stages.get("annotated"):
+            if annotation_count > 0 or read_along_unit_count > 0:
+                return "partially_annotated", "Partially annotated"
             return "registry_ready", "Registry ready"
-        if not stages.get("voices_ready"):
+        if not annotations_ready:
+            if annotation_count > 0 or read_along_unit_count > 0:
+                return "partially_annotated", "Partially annotated"
+            return "registry_ready", "Registry ready"
+        voices_current = voice_total > 0 and voice_count >= voice_total
+        if not stages.get("voices_ready") or not voices_current:
             return "annotated", "Annotated"
         return "voices_ready", "Voices ready"
     if chapter_count <= 0:
@@ -1695,8 +1959,7 @@ def _update_book_last_read(book_root: Path, chapter: str, unit_id: int) -> None:
 
 def _infer_stages_from_artifacts(book_root: Path) -> Dict[str, bool]:
     chapter_count = _glob_count(book_root / "chapters", "*.txt")
-    annotation_count = _glob_count(book_root / "annotations", "*.annotation.json")
-    unit_count = _glob_count(book_root / "read_along", "*.units.json")
+    annotation_count, unit_count = _read_along_readiness_counts(book_root)
     registry = _read_json_if_exists(book_root / "registry.json")
     voice_count, voice_total = _registry_voice_readiness(book_root, registry)
     return {
@@ -1789,6 +2052,27 @@ def _glob_count(root: Path, pattern: str) -> int:
     return sum(1 for _ in root.glob(pattern))
 
 
+def _read_along_readiness_counts(book_root: Path) -> Tuple[int, int]:
+    paths = BookPaths(book_root)
+    chapters_dir = book_root / "chapters"
+    if not chapters_dir.exists():
+        return 0, 0
+    annotation_count = 0
+    unit_count = 0
+    for chapter_file in sorted(chapters_dir.glob("*.txt")):
+        chapter = chapter_file.stem
+        annotation_path = paths.annotation(chapter)
+        if not annotation_path.exists():
+            continue
+        payload = _read_json_if_exists(annotation_path)
+        if not _annotation_matches_chapter_quotes(paths, chapter, payload):
+            continue
+        annotation_count += 1
+        if paths.read_along_units(chapter).exists():
+            unit_count += 1
+    return annotation_count, unit_count
+
+
 def _recursive_glob_count(root: Path, pattern: str) -> int:
     if not root.exists():
         return 0
@@ -1833,7 +2117,8 @@ INDEX_HTML = r"""<!doctype html>
       --selected: #dce9f7;
       --current: #f6d56f;
       --buffered: #d8ead7;
-      --book-grid-columns: 32px minmax(160px, 2fr) minmax(110px, 0.9fr) minmax(72px, 0.45fr) minmax(96px, 0.6fr) minmax(118px, 0.75fr) minmax(70px, 0.45fr) minmax(70px, 0.45fr) minmax(120px, 0.8fr) 132px;
+      --book-grid-columns: minmax(160px, 2fr) minmax(110px, 0.9fr) minmax(72px, 0.45fr) minmax(96px, 0.6fr) minmax(118px, 0.75fr) minmax(70px, 0.45fr) minmax(120px, 0.8fr) 132px;
+      --book-shell-columns: 32px minmax(0, 1fr) 32px;
     }
     * { box-sizing: border-box; }
     [hidden] { display: none !important; }
@@ -1877,6 +2162,13 @@ INDEX_HTML = r"""<!doctype html>
       display: grid;
       gap: 8px;
     }
+    .book-list-header-shell,
+    .book-row-shell {
+      display: grid;
+      grid-template-columns: var(--book-shell-columns);
+      gap: 8px;
+      align-items: center;
+    }
     .book-list-header {
       display: grid;
       grid-template-columns: var(--book-grid-columns);
@@ -1899,18 +2191,36 @@ INDEX_HTML = r"""<!doctype html>
       background: #fff;
       box-shadow: 0 1px 2px rgba(32, 33, 36, 0.06);
     }
-    .delete-book {
+    .delete-book,
+    .share-book {
       width: 32px;
       min-width: 32px;
       padding: 0;
+      min-height: 32px;
       border-color: transparent;
       background: transparent;
+    }
+    .delete-book {
       color: #9b3b32;
       font-weight: 700;
     }
     .delete-book:hover {
       border-color: #e1b7b2;
       background: #fff1ef;
+    }
+    .share-book {
+      color: #4f5c69;
+    }
+    .share-book svg {
+      display: block;
+      width: 17px;
+      height: 17px;
+      margin: 0 auto;
+      stroke: currentColor;
+    }
+    .share-book:hover:not(:disabled) {
+      border-color: #cbd2da;
+      background: #f7f8fa;
     }
     .book-cell {
       min-width: 0;
@@ -2056,6 +2366,11 @@ INDEX_HTML = r"""<!doctype html>
     .registry-head h2 {
       margin: 0;
       font-size: 18px;
+    }
+    #registry-save-all.saved {
+      border-color: #2f7b44;
+      background: #3fa65c;
+      color: #fff;
     }
     .registry-list {
       display: grid;
@@ -2325,6 +2640,68 @@ INDEX_HTML = r"""<!doctype html>
       font-size: 13px;
       text-align: center;
     }
+    .audiobook-app {
+      display: grid;
+      gap: 12px;
+      align-content: start;
+      min-height: 100vh;
+      padding: 24px clamp(16px, 4vw, 48px);
+      background: #f6f7f8;
+      overflow: auto;
+    }
+    .audiobook-app[hidden] {
+      display: none;
+    }
+    .audiobook-head,
+    .audiobook-settings,
+    .audiobook-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .audiobook-head h2 {
+      margin: 0;
+      font-size: 20px;
+    }
+    .audiobook-settings,
+    .audiobook-actions {
+      justify-content: flex-start;
+    }
+    .audiobook-inline {
+      color: var(--ink);
+    }
+    .audiobook-chapters {
+      display: grid;
+      gap: 8px;
+    }
+    .audiobook-chapter {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max-content max-content;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .audiobook-chapter-title {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 700;
+    }
+    .audiobook-chapter-meta {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    #audiobook-player {
+      width: 100%;
+      margin-top: 6px;
+    }
     .page-measurer {
       position: fixed;
       left: -10000px;
@@ -2498,6 +2875,7 @@ INDEX_HTML = r"""<!doctype html>
       <section class="registry-panel" id="registry-panel" hidden>
         <div class="registry-head">
           <h2 id="registry-title">Registry Review</h2>
+          <button id="registry-save-all">Save All</button>
           <button id="registry-close">Close</button>
         </div>
         <div class="registry-list" id="registry-list"></div>
@@ -2539,6 +2917,7 @@ INDEX_HTML = r"""<!doctype html>
           <button class="primary" id="start">Start Session</button>
           <button id="pause-session" type="button" disabled>Pause Session</button>
           <button id="end" disabled>End Session</button>
+          <button id="open-audiobook" type="button">Audiobook</button>
         </div>
       </div>
       <section class="narrator-panel" id="narrator-panel" hidden>
@@ -2591,6 +2970,52 @@ INDEX_HTML = r"""<!doctype html>
       <audio id="audio"></audio>
     </section>
   </main>
+  <main class="audiobook-app" id="audiobook-view" hidden>
+    <div class="audiobook-head">
+      <h2>Audiobook</h2>
+      <button id="audiobook-back" type="button">Book</button>
+    </div>
+    <div class="audiobook-settings">
+      <label>Generation
+        <select id="audiobook-generation">
+          <option value="balanced">12Hz Balanced (12-14 GB, RTF ~0.15)</option>
+          <option value="fast">12Hz Larger Windows (12-14 GB, chapter throughput)</option>
+          <option value="precise">12Hz Smaller Windows (12-14 GB, debug)</option>
+        </select>
+      </label>
+      <label>Player Speed <input id="audiobook-speed" type="number" min="0.5" max="4" step="0.05" value="1"></label>
+      <label class="audiobook-inline"><input id="audiobook-auto-continue" type="checkbox" checked> Continue chapters</label>
+      <div class="narrator-control">
+        <span id="audiobook-narrator-summary">Audiobook narrator: loading</span>
+        <button id="audiobook-edit-narrator" type="button">Edit Audiobook Narrator</button>
+      </div>
+    </div>
+    <section class="narrator-panel" id="audiobook-narrator-panel" hidden>
+      <div class="registry-head">
+        <h2>Audiobook Narrator Voice</h2>
+        <button id="audiobook-narrator-close" type="button">Close</button>
+      </div>
+      <div class="registry-grid">
+        <label>Name <input id="audiobook-narrator-display-name" data-audiobook-narrator-field="display_name" type="text"></label>
+        <label>Age <input id="audiobook-narrator-age-stage" data-audiobook-narrator-field="age_stage" type="text"></label>
+        <label>Gender <input id="audiobook-narrator-gender" data-audiobook-narrator-field="gender" type="text"></label>
+        <label>Personality <input id="audiobook-narrator-personality" data-audiobook-narrator-field="personality" type="text"></label>
+        <label>Race / Ethnicity <select id="audiobook-narrator-race" data-audiobook-narrator-field="race_or_ethnicity"></select></label>
+        <label>Accent <select id="audiobook-narrator-accent" data-audiobook-narrator-field="accent"></select></label>
+        <label>Occupation <input id="audiobook-narrator-occupation" data-audiobook-narrator-field="occupation" type="text"></label>
+      </div>
+      <div class="registry-actions">
+        <button id="audiobook-save-narrator" type="button">Save Audiobook Narrator</button>
+      </div>
+    </section>
+    <div class="audiobook-actions">
+      <button class="primary" id="audiobook-generate" type="button">Generate Selected</button>
+      <button id="audiobook-regenerate" type="button">Regenerate Selected</button>
+      <button id="audiobook-select-all" type="button">Select All</button>
+    </div>
+    <div class="audiobook-chapters" id="audiobook-chapters"></div>
+    <audio id="audiobook-player" controls></audio>
+  </main>
   <script>
     window.readAlongApp = true;
     const state = {
@@ -2615,7 +3040,10 @@ INDEX_HTML = r"""<!doctype html>
       busySlug: "",
       sessionActive: false,
       sessionPaused: false,
-      sessionChapterEndBehavior: "stop"
+      sessionChapterEndBehavior: "stop",
+      audiobook: null,
+      audiobookNarratorProfile: null,
+      registrySaveTimer: null
     };
     const ACTION_LABELS = {
       initialize: "Initialize Book",
@@ -2642,10 +3070,12 @@ INDEX_HTML = r"""<!doctype html>
       registryPanel: document.getElementById("registry-panel"),
       registryTitle: document.getElementById("registry-title"),
       registryList: document.getElementById("registry-list"),
+      registrySaveAll: document.getElementById("registry-save-all"),
       registryClose: document.getElementById("registry-close"),
       chapters: document.getElementById("chapters"),
       reader: document.getElementById("page-spread"),
       pageWrap: document.getElementById("page-wrap"),
+      pageShell: document.getElementById("page-shell"),
       pageSpread: document.getElementById("page-spread"),
       pageIndicator: document.getElementById("page-indicator"),
       pageMeasurer: document.getElementById("page-measurer"),
@@ -2669,6 +3099,24 @@ INDEX_HTML = r"""<!doctype html>
       start: document.getElementById("start"),
       pause: document.getElementById("pause-session"),
       end: document.getElementById("end"),
+      openAudiobook: document.getElementById("open-audiobook"),
+      audiobookView: document.getElementById("audiobook-view"),
+      audiobookBack: document.getElementById("audiobook-back"),
+      audiobookGeneration: document.getElementById("audiobook-generation"),
+      audiobookSpeed: document.getElementById("audiobook-speed"),
+      audiobookAutoContinue: document.getElementById("audiobook-auto-continue"),
+      audiobookNarratorSummary: document.getElementById("audiobook-narrator-summary"),
+      audiobookEditNarrator: document.getElementById("audiobook-edit-narrator"),
+      audiobookNarratorPanel: document.getElementById("audiobook-narrator-panel"),
+      audiobookNarratorClose: document.getElementById("audiobook-narrator-close"),
+      audiobookNarratorRace: document.getElementById("audiobook-narrator-race"),
+      audiobookNarratorAccent: document.getElementById("audiobook-narrator-accent"),
+      audiobookSaveNarrator: document.getElementById("audiobook-save-narrator"),
+      audiobookGenerate: document.getElementById("audiobook-generate"),
+      audiobookRegenerate: document.getElementById("audiobook-regenerate"),
+      audiobookSelectAll: document.getElementById("audiobook-select-all"),
+      audiobookChapters: document.getElementById("audiobook-chapters"),
+      audiobookPlayer: document.getElementById("audiobook-player"),
       audio: document.getElementById("audio"),
       ttsLoading: document.getElementById("tts-loading-overlay"),
       ttsLoadingStage: document.getElementById("tts-loading-stage"),
@@ -2682,6 +3130,7 @@ INDEX_HTML = r"""<!doctype html>
     let sessionProgressTimer = null;
     let settingsSaveTimer = null;
     let topUpPromise = null;
+    let audiobookPositionTimer = null;
     function compactStatusText(text, limit = 420) {
       const value = String(text || "");
       if (value.length <= limit) return value;
@@ -2730,6 +3179,7 @@ INDEX_HTML = r"""<!doctype html>
     function setLibraryMode(enabled) {
       els.libraryView.hidden = !enabled;
       els.readerView.hidden = enabled;
+      els.audiobookView.hidden = true;
     }
     function preferredViewMode() {
       try {
@@ -2811,15 +3261,23 @@ INDEX_HTML = r"""<!doctype html>
         els.bookList.appendChild(empty);
         return;
       }
+      const headerShell = document.createElement("div");
+      headerShell.className = "book-list-header-shell";
+      headerShell.appendChild(document.createElement("div"));
       const header = document.createElement("div");
       header.className = "book-list-header";
-      for (const label of ["", "Title", "Status", "Chapters", "Annotated", "Read-along", "Voices", "Audio", "Last Read", ""]) {
+      for (const label of ["Title", "Status", "Chapters", "Annotated", "Read-along", "Voices", "Last Read", ""]) {
         const cell = document.createElement("div");
         cell.textContent = label;
         header.appendChild(cell);
       }
-      els.bookList.appendChild(header);
+      headerShell.appendChild(header);
+      headerShell.appendChild(document.createElement("div"));
+      els.bookList.appendChild(headerShell);
       for (const book of payload.books) {
+        const activeJob = Object.values(state.activeJobs).find(job => job.slug === book.slug);
+        const shell = document.createElement("div");
+        shell.className = "book-row-shell";
         const row = document.createElement("div");
         row.className = "book-row";
         const deleteButton = document.createElement("button");
@@ -2830,7 +3288,14 @@ INDEX_HTML = r"""<!doctype html>
         deleteButton.setAttribute("aria-label", "Delete " + book.title);
         deleteButton.disabled = Boolean(state.busySlug);
         deleteButton.onclick = () => deleteBook(book);
-        const activeJob = Object.values(state.activeJobs).find(job => job.slug === book.slug);
+        const share = document.createElement("button");
+        share.className = "share-book";
+        share.type = "button";
+        share.title = book.open_enabled ? "Share Zip" : "Generate Voices before sharing";
+        share.setAttribute("aria-label", "Share " + book.title);
+        share.disabled = !book.open_enabled || Boolean(state.busySlug) || Boolean(activeJob);
+        share.innerHTML = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"/><path d="M12 16V4"/><path d="M7 9l5-5 5 5"/></svg>';
+        share.onclick = () => shareBookPackage(book);
         const title = document.createElement("div");
         title.className = "book-cell book-title-cell";
         title.title = book.title;
@@ -2869,7 +3334,6 @@ INDEX_HTML = r"""<!doctype html>
         const annotated = bookCell("book-cell book-annotated-cell", book.annotation_count + "/" + book.chapter_count);
         const units = bookCell("book-cell book-units-cell", book.read_along_unit_count + "/" + book.chapter_count);
         const voices = bookCell("book-cell book-voices-cell", voiceFractionText(book));
-        const audio = bookCell("book-cell book-audio-cell", String(book.audio_count));
         const lastRead = bookCell("book-cell book-last-read-cell", book.last_read_label);
         const actions = document.createElement("div");
         actions.className = "book-action-cell";
@@ -2889,16 +3353,6 @@ INDEX_HTML = r"""<!doctype html>
           review.onclick = () => openRegistryReview(book);
           actions.appendChild(review);
         }
-        if (book.open_enabled) {
-          const share = document.createElement("button");
-          share.className = "book-secondary-action";
-          share.type = "button";
-          share.textContent = "Share Zip";
-          share.title = "Share Zip";
-          share.disabled = Boolean(state.busySlug) || Boolean(activeJob);
-          share.onclick = () => shareBookPackage(book);
-          actions.appendChild(share);
-        }
         if (book.resume_annotation_enabled && book.action_key !== "annotate") {
           const resume = document.createElement("button");
           resume.className = "book-secondary-action";
@@ -2909,17 +3363,18 @@ INDEX_HTML = r"""<!doctype html>
           resume.onclick = () => resumeAnnotation(book);
           actions.appendChild(resume);
         }
-        row.appendChild(deleteButton);
         row.appendChild(title);
         row.appendChild(status);
         row.appendChild(chapters);
         row.appendChild(annotated);
         row.appendChild(units);
         row.appendChild(voices);
-        row.appendChild(audio);
         row.appendChild(lastRead);
         row.appendChild(actions);
-        els.bookList.appendChild(row);
+        shell.appendChild(deleteButton);
+        shell.appendChild(row);
+        shell.appendChild(share);
+        els.bookList.appendChild(shell);
       }
     }
     function bookCell(className, text) {
@@ -3033,6 +3488,15 @@ INDEX_HTML = r"""<!doctype html>
       if (job.status === "failed") {
         return compactStatusText((job.failed_chapter ? job.failed_chapter + ": " : "") + job.error);
       }
+      if (job.action_key === "audiobook") {
+        if (job.status === "completed") {
+          return "Audiobook audio ready.";
+        }
+        if (job.current_chapter) {
+          return "Generating audiobook " + job.completed + "/" + job.total + ": " + job.current_chapter;
+        }
+        return "Generating audiobook " + job.completed + "/" + job.total + "...";
+      }
       if (job.action_key === "prepare_voices") {
         if (job.status === "completed") {
           return "Voices ready.";
@@ -3124,14 +3588,6 @@ INDEX_HTML = r"""<!doctype html>
             if (field) grid.appendChild(field);
           }
           card.appendChild(grid);
-          const actions = document.createElement("div");
-          actions.className = "registry-actions";
-          const save = document.createElement("button");
-          save.type = "button";
-          save.textContent = "Save";
-          save.onclick = () => saveRegistryCharacter(entry.role_id);
-          actions.appendChild(save);
-          card.appendChild(actions);
         }
         els.registryList.appendChild(card);
       }
@@ -3152,6 +3608,24 @@ INDEX_HTML = r"""<!doctype html>
           option.value = value;
           option.textContent = value || "None";
           input.appendChild(option);
+        }
+        if (key === "accent") {
+          const custom = document.createElement("input");
+          custom.type = "text";
+          custom.className = "custom-accent-input";
+          custom.placeholder = "Custom accent";
+          custom.dataset.customFieldKey = key;
+          input.dataset.fieldKey = key;
+          const showCustom = () => {
+            custom.hidden = input.value !== "Custom";
+            if (!custom.hidden) custom.focus();
+          };
+          input.onchange = showCustom;
+          label.appendChild(input);
+          label.appendChild(custom);
+          input.value = fields[key] || "";
+          showCustom();
+          return label;
         }
       } else {
         input = document.createElement("input");
@@ -3192,6 +3666,61 @@ INDEX_HTML = r"""<!doctype html>
       renderLibrary(payload.library);
       renderRegistryPanel(payload.book, payload.review);
       setLibraryStatus("Saved " + roleId + ". Sample ready. Run Generate Voices again.");
+    }
+    async function saveRegistryAll() {
+      if (!state.registryBook) return;
+      const entries = [];
+      for (const card of els.registryList.querySelectorAll("[data-role-id]")) {
+        const fields = {};
+        for (const input of card.querySelectorAll("[data-field-key]")) {
+          fields[input.dataset.fieldKey] = registryInputValue(input, card);
+        }
+        entries.push({ role_id: card.dataset.roleId, fields });
+      }
+      setLibraryStatus("Saving registry changes...");
+      resetRegistrySaveButton("Saving...");
+      els.registrySaveAll.disabled = true;
+      let saved = false;
+      try {
+        const payload = await api("/api/registry/save-characters", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ slug: state.registryBook.slug, entries })
+        });
+        state.books = payload.library.books;
+        renderLibrary(payload.library);
+        renderRegistryPanel(payload.book, payload.review);
+        if (payload.changed_role_ids.length > 0) {
+          setLibraryStatus("Saved " + payload.changed_role_ids.length + " voice profiles. Run Generate Voices again.");
+        } else {
+          setLibraryStatus("No registry voice profile changes to save.");
+        }
+        saved = true;
+      } finally {
+        els.registrySaveAll.disabled = false;
+        if (saved) markRegistrySaveSuccess();
+        else resetRegistrySaveButton();
+      }
+    }
+    function markRegistrySaveSuccess() {
+      resetRegistrySaveButton("Saved");
+      els.registrySaveAll.classList.add("saved");
+      state.registrySaveTimer = window.setTimeout(() => resetRegistrySaveButton(), 1400);
+    }
+    function resetRegistrySaveButton(label = "Save All") {
+      if (state.registrySaveTimer) {
+        window.clearTimeout(state.registrySaveTimer);
+        state.registrySaveTimer = null;
+      }
+      els.registrySaveAll.classList.remove("saved");
+      els.registrySaveAll.textContent = label;
+    }
+    function registryInputValue(input, card) {
+      if (input.dataset.fieldKey === "accent" && input.value === "Custom") {
+        const custom = card.querySelector('[data-custom-field-key="accent"]');
+        return custom ? custom.value : "";
+      }
+      return input.value;
     }
     async function playRegistrySample(entry) {
       if (!state.registryBook) return;
@@ -3357,6 +3886,31 @@ INDEX_HTML = r"""<!doctype html>
       state.narratorProfile = payload;
       els.narratorSummary.textContent = "Narrator: " + payload.summary;
       setStatus("Narrator profile saved. It will be used when the next session starts.");
+    }
+    async function loadAudiobookNarratorProfile() {
+      const payload = await api("/api/audiobook/narrator-profile");
+      state.audiobookNarratorProfile = payload;
+      els.audiobookNarratorSummary.textContent = "Audiobook narrator: " + payload.summary;
+      populateSelect(els.audiobookNarratorRace, payload.race_or_ethnicity_options, payload.fields.race_or_ethnicity);
+      populateSelect(els.audiobookNarratorAccent, payload.accent_options, payload.fields.accent);
+      for (const input of document.querySelectorAll("[data-audiobook-narrator-field]")) {
+        if (input.tagName.toLowerCase() === "select") continue;
+        input.value = payload.fields[input.dataset.audiobookNarratorField] || "";
+      }
+    }
+    async function saveAudiobookNarratorProfile() {
+      const fields = {};
+      for (const input of document.querySelectorAll("[data-audiobook-narrator-field]")) {
+        fields[input.dataset.audiobookNarratorField] = input.value;
+      }
+      const payload = await api("/api/audiobook/narrator-profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(fields)
+      });
+      state.audiobookNarratorProfile = payload;
+      els.audiobookNarratorSummary.textContent = "Audiobook narrator: " + payload.summary;
+      setStatus("Audiobook narrator saved. Regenerate audiobook chapters to use the new voice.");
     }
     async function loadState() {
       const payload = await api("/api/state");
@@ -3605,6 +4159,159 @@ INDEX_HTML = r"""<!doctype html>
         settingsSaveTimer = null;
         saveSettings().catch(error => setStatus(error.message));
       }, 350);
+    }
+    function setAudiobookMode(enabled) {
+      els.audiobookView.hidden = !enabled;
+      els.readerView.hidden = enabled;
+      if (enabled) els.libraryView.hidden = true;
+      els.narratorPanel.hidden = true;
+      els.audiobookNarratorPanel.hidden = true;
+      if (!enabled) {
+        els.readerView.hidden = false;
+        renderText();
+      }
+    }
+    async function openAudiobookView() {
+      if (state.sessionActive) {
+        setStatus("End the read-along session before opening audiobook generation.");
+        return;
+      }
+      if (!state.activeBook) return;
+      setAudiobookMode(true);
+      await loadAudiobook();
+    }
+    async function loadAudiobook() {
+      if (!state.activeBook) return;
+      setStatus("Loading audiobook status...");
+      const [payload] = await Promise.all([
+        api("/api/audiobook?slug=" + encodeURIComponent(state.activeBook.slug)),
+        loadAudiobookNarratorProfile()
+      ]);
+      state.audiobook = payload;
+      renderAudiobook();
+      setStatus("Audiobook ready.");
+    }
+    function renderAudiobook() {
+      const payload = state.audiobook || { chapters: [], settings: {} };
+      const settings = payload.settings || {};
+      els.audiobookGeneration.value = settings.generation_mode || "balanced";
+      els.audiobookSpeed.value = settings.playback_speed || 1;
+      els.audiobookAutoContinue.checked = settings.auto_continue !== false;
+      els.audiobookChapters.textContent = "";
+      for (const chapter of payload.chapters || []) {
+        const row = document.createElement("div");
+        row.className = "audiobook-chapter";
+        row.dataset.chapter = chapter.chapter;
+        const label = document.createElement("label");
+        label.className = "audiobook-chapter-title";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = !chapter.audio_ready;
+        checkbox.dataset.chapter = chapter.chapter;
+        label.appendChild(checkbox);
+        label.append(" " + String(chapter.index).padStart(3, "0") + " - " + chapter.title);
+        const meta = document.createElement("div");
+        meta.className = "audiobook-chapter-meta";
+        meta.textContent = chapter.audio_ready
+          ? ("Ready" + (chapter.duration_seconds ? " - " + formatSeconds(chapter.duration_seconds) : ""))
+          : "Not generated";
+        const play = document.createElement("button");
+        play.type = "button";
+        play.textContent = "Play";
+        play.disabled = !chapter.audio_ready;
+        play.onclick = () => playAudiobookChapter(chapter);
+        row.appendChild(label);
+        row.appendChild(meta);
+        row.appendChild(play);
+        els.audiobookChapters.appendChild(row);
+      }
+    }
+    function selectedAudiobookChapters() {
+      return Array.from(els.audiobookChapters.querySelectorAll('input[type="checkbox"]:checked'))
+        .map(input => input.dataset.chapter)
+        .filter(Boolean);
+    }
+    function audiobookSettings() {
+      return {
+        generation_mode: els.audiobookGeneration.value,
+        model_profile: "12hz",
+        playback_speed: Number(els.audiobookSpeed.value || 1),
+        auto_continue: els.audiobookAutoContinue.checked
+      };
+    }
+    async function generateAudiobook(force = false) {
+      if (!state.activeBook) return;
+      const chapters = selectedAudiobookChapters();
+      if (!chapters.length) {
+        setStatus("Select at least one audiobook chapter.");
+        return;
+      }
+      for (const button of [els.audiobookGenerate, els.audiobookRegenerate]) button.disabled = true;
+      setStatus(force ? "Regenerating audiobook..." : "Generating audiobook...");
+      try {
+        const payload = await api("/api/audiobook/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            slug: state.activeBook.slug,
+            chapters,
+            force,
+            settings: audiobookSettings()
+          })
+        });
+        if (payload.job) {
+          state.activeJobs[payload.job.job_id] = payload.job;
+          setStatus(jobStatusText(payload.job));
+          await pollLibraryJob(payload.job.job_id);
+        }
+        await loadAudiobook();
+      } finally {
+        for (const button of [els.audiobookGenerate, els.audiobookRegenerate]) button.disabled = false;
+      }
+    }
+    async function playAudiobookChapter(chapter) {
+      if (!chapter || !chapter.audio_url) return;
+      els.audiobookPlayer.src = chapter.audio_url + (chapter.audio_url.includes("?") ? "&" : "?") + "t=" + Date.now();
+      els.audiobookPlayer.dataset.chapter = chapter.chapter;
+      els.audiobookPlayer.playbackRate = Number(els.audiobookSpeed.value || 1);
+      await els.audiobookPlayer.play();
+      setStatus("Playing " + chapter.title + ".");
+    }
+    function currentAudiobookChapter() {
+      const chapterId = els.audiobookPlayer.dataset.chapter;
+      const chapters = (state.audiobook && state.audiobook.chapters) || [];
+      return chapters.find(chapter => chapter.chapter === chapterId) || null;
+    }
+    function saveAudiobookPositionSoon() {
+      if (!state.activeBook || !els.audiobookPlayer.dataset.chapter) return;
+      if (audiobookPositionTimer !== null) return;
+      audiobookPositionTimer = window.setTimeout(() => {
+        audiobookPositionTimer = null;
+        api("/api/audiobook/position", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            slug: state.activeBook.slug,
+            chapter: els.audiobookPlayer.dataset.chapter,
+            position_seconds: els.audiobookPlayer.currentTime || 0
+          })
+        }).catch(error => setStatus(error.message));
+      }, 1200);
+    }
+    async function playNextAudiobookChapter() {
+      if (!els.audiobookAutoContinue.checked || !state.audiobook) return;
+      const current = currentAudiobookChapter();
+      if (!current) return;
+      const chapters = state.audiobook.chapters || [];
+      const index = chapters.findIndex(chapter => chapter.chapter === current.chapter);
+      const next = chapters.slice(index + 1).find(chapter => chapter.audio_ready);
+      if (next) await playAudiobookChapter(next);
+    }
+    function formatSeconds(seconds) {
+      const total = Math.max(0, Math.round(Number(seconds) || 0));
+      const minutes = Math.floor(total / 60);
+      const remainder = total % 60;
+      return minutes + ":" + String(remainder).padStart(2, "0");
     }
     async function startSession() {
       if (!state.chapter) return;
@@ -3906,9 +4613,29 @@ INDEX_HTML = r"""<!doctype html>
     document.getElementById("add-book").onclick = () => addBook().catch(error => setLibraryStatus(error.message));
     document.getElementById("import-package").onclick = () => importPackage().catch(error => setLibraryStatus(error.message));
     els.registryClose.onclick = () => { els.registryPanel.hidden = true; };
+    els.registrySaveAll.onclick = () => saveRegistryAll().catch(error => setLibraryStatus(error.message));
     els.editNarrator.onclick = () => { els.narratorPanel.hidden = false; };
     els.narratorClose.onclick = () => { els.narratorPanel.hidden = true; };
     els.saveNarrator.onclick = () => saveNarratorProfile().catch(error => setStatus(error.message));
+    els.audiobookEditNarrator.onclick = () => { els.audiobookNarratorPanel.hidden = false; };
+    els.audiobookNarratorClose.onclick = () => { els.audiobookNarratorPanel.hidden = true; };
+    els.audiobookSaveNarrator.onclick = () => saveAudiobookNarratorProfile().catch(error => setStatus(error.message));
+    els.openAudiobook.onclick = () => openAudiobookView().catch(error => setStatus(error.message));
+    els.audiobookBack.onclick = () => {
+      els.audiobookPlayer.pause();
+      setAudiobookMode(false);
+      setStatus("Reader ready.");
+    };
+    els.audiobookGenerate.onclick = () => generateAudiobook(false).catch(error => setStatus(error.message));
+    els.audiobookRegenerate.onclick = () => generateAudiobook(true).catch(error => setStatus(error.message));
+    els.audiobookSelectAll.onclick = () => {
+      for (const input of els.audiobookChapters.querySelectorAll('input[type="checkbox"]')) input.checked = true;
+    };
+    els.audiobookSpeed.onchange = () => {
+      els.audiobookPlayer.playbackRate = Number(els.audiobookSpeed.value || 1);
+    };
+    els.audiobookPlayer.ontimeupdate = saveAudiobookPositionSoon;
+    els.audiobookPlayer.onended = () => playNextAudiobookChapter().catch(error => setStatus(error.message));
     els.toggleSidebar.onclick = () => {
       state.sidebarOpen = !state.sidebarOpen;
       els.readerView.classList.toggle("sidebar-hidden", !state.sidebarOpen);

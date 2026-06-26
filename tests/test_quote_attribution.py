@@ -316,6 +316,118 @@ def test_quote_attribution_service_canonicalizes_narrator_quote_rows_to_narrator
     assert len(client.calls) == 1
 
 
+def test_quote_attribution_service_canonicalizes_short_honorific_registry_role_id():
+    extraction = extract_quoted_dialogue('"The apple of my eye."')
+    client = SequenceQuoteClient(
+        [
+            {
+                "roles": ["mr_pounds_adult"],
+                "quotes": [[1, 0]],
+            }
+        ]
+    )
+    service = QuoteAttributionService(client, repair_retries=1)
+
+    result = service.attribute_quotes(
+        chapter="chapter_017",
+        extraction=extraction,
+        registry={
+            "characters": {
+                "mr_john_pounds_adult": {
+                    "role_id": "mr_john_pounds_adult",
+                    "display_name": "Mr John Pounds",
+                    "age_stage": "adult",
+                    "aliases": ["Mr John Pounds adult"],
+                }
+            }
+        },
+    )
+
+    assert result.roles == ["mr_john_pounds_adult"]
+    assert result.quotes == [(1, 0, "dialogue")]
+    assert len(client.calls) == 1
+
+
+def test_quote_attribution_service_does_not_canonicalize_ambiguous_short_honorific_role_id():
+    extraction = extract_quoted_dialogue('"The apple of my eye."')
+    client = SequenceQuoteClient(
+        [
+            {
+                "roles": ["mr_pounds_adult"],
+                "quotes": [[1, 0]],
+            }
+        ]
+    )
+    service = QuoteAttributionService(client, repair_retries=0)
+
+    with pytest.raises(QuoteAttributionValidationError, match="mr_pounds_adult"):
+        service.attribute_quotes(
+            chapter="chapter_017",
+            extraction=extraction,
+            registry={
+                "characters": {
+                    "mr_john_pounds_adult": {
+                        "role_id": "mr_john_pounds_adult",
+                        "display_name": "Mr John Pounds",
+                        "age_stage": "adult",
+                    },
+                    "mr_james_pounds_adult": {
+                        "role_id": "mr_james_pounds_adult",
+                        "display_name": "Mr James Pounds",
+                        "age_stage": "adult",
+                    },
+                }
+            },
+        )
+
+
+def test_quote_attribution_repair_prompt_includes_invalid_role_diagnostics_and_quote_snippets():
+    extraction = extract_quoted_dialogue('"The apple of my eye."')
+    client = SequenceQuoteClient(
+        [
+            {
+                "roles": ["mr_pounds_adult"],
+                "quotes": [[1, 0]],
+            },
+            {
+                "roles": ["mr_john_pounds_adult"],
+                "quotes": [[1, 0]],
+            },
+        ]
+    )
+    service = QuoteAttributionService(client, repair_retries=1)
+
+    result = service.attribute_quotes(
+        chapter="chapter_017",
+        extraction=extraction,
+        registry={
+            "characters": {
+                "mr_john_pounds_adult": {
+                    "role_id": "mr_john_pounds_adult",
+                    "display_name": "Mr John Pounds",
+                    "age_stage": "adult",
+                },
+                "mr_james_pounds_adult": {
+                    "role_id": "mr_james_pounds_adult",
+                    "display_name": "Mr James Pounds",
+                    "age_stage": "adult",
+                },
+            }
+        },
+    )
+
+    assert result.roles == ["mr_john_pounds_adult"]
+    repair_prompt = client.calls[1]["user"]
+    assert "Invalid role diagnostics" in repair_prompt
+    assert "mr_pounds_adult" in repair_prompt
+    assert "q001" in repair_prompt
+    assert "The apple of my eye" in repair_prompt
+    assert "mr_john_pounds_adult" in repair_prompt
+    assert "mr_james_pounds_adult" in repair_prompt
+    assert "replace it with the exact registry role_id" in repair_prompt
+    assert "add a local_speakers entry" in repair_prompt
+
+
 def test_quote_attribution_service_prunes_local_speaker_used_only_by_narrator_quote():
     extraction = extract_quoted_dialogue('"If you would like to make a call ..." "Please hang up."')
     client = SequenceQuoteClient(

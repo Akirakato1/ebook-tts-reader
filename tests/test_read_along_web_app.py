@@ -82,6 +82,40 @@ def test_library_api_discovers_books_and_hides_non_book_dirs(tmp_path):
         _stop_server(server, thread)
 
 
+def test_library_status_ignores_stale_quote_annotation_files(tmp_path):
+    paths = _write_demo_book(tmp_path, name="stale", title="Stale", ready_for_tts=True)
+    write_json_atomic(paths.annotation("chapter_001"), {"schema": "quote_attribution_v1", "roles": [], "quotes": []})
+    write_json_atomic(
+        paths.root / "readalong_book.json",
+        {
+            "schema": "readalong_book_v1",
+            "title": "Stale",
+            "slug": "stale",
+            "stages": {
+                "source_added": True,
+                "initialized": True,
+                "global_registry": True,
+                "annotating": False,
+                "annotated": True,
+                "registry_reviewed": False,
+                "voices_ready": False,
+            },
+        },
+    )
+    server, thread, base_url = _start_test_server_for_root(tmp_path)
+    try:
+        library = _get_json(base_url + "/api/library")
+        book = library["books"][0]
+
+        assert book["annotation_count"] == 0
+        assert book["read_along_unit_count"] == 0
+        assert book["status_key"] == "registry_ready"
+        assert book["action_key"] == "annotate"
+        assert book["open_enabled"] is False
+    finally:
+        _stop_server(server, thread)
+
+
 def test_library_voice_stats_count_registry_characters_with_qvp_and_sample(tmp_path):
     paths = _write_demo_book(tmp_path, name="voices", title="Voices Book")
     registry = read_json(paths.registry)
@@ -251,6 +285,107 @@ def test_library_import_package_creates_ready_book_entry(tmp_path):
         assert (library_root / "friend-copy" / "read_along" / "chapter_001.units.json").exists()
         assert not (library_root / "friend-copy" / "_source").exists()
         assert imported["library"]["books"][0]["slug"] == "friend-copy"
+    finally:
+        _stop_server(server, thread)
+
+
+def test_web_page_exposes_audiobook_controls(tmp_path):
+    _write_demo_book(tmp_path, ready_for_tts=True)
+    server, thread, base_url = _start_test_server_for_root(tmp_path)
+    try:
+        with urllib.request.urlopen(base_url + "/", timeout=10) as response:
+            html = response.read().decode("utf-8")
+
+        assert 'id="open-audiobook"' in html
+        assert '<main class="audiobook-app" id="audiobook-view" hidden>' in html
+        assert '<button id="audiobook-back" type="button">Book</button>' in html
+        assert "Back to Reader" not in html
+        assert 'id="audiobook-player"' in html
+        assert 'id="audiobook-edit-narrator"' in html
+        assert "/api/audiobook/generate" in html
+        assert "/api/audiobook/narrator-profile" in html
+    finally:
+        _stop_server(server, thread)
+
+
+def test_web_api_generates_selected_audiobook_chapter_with_fake_tts(tmp_path):
+    _write_demo_book(tmp_path, ready_for_tts=True)
+    server, thread, base_url = _start_test_server_for_root(tmp_path)
+    try:
+        before = _get_json(base_url + "/api/audiobook?slug=book")
+        assert before["chapters"][0]["audio_ready"] is False
+
+        started = _post_json(
+            base_url + "/api/audiobook/generate",
+            {
+                "slug": "book",
+                "chapters": ["chapter_001"],
+                "force": True,
+                "settings": {"generation_mode": "balanced", "model_profile": "12hz"},
+            },
+        )
+        job = _wait_for_job(base_url, started["job"]["job_id"])
+
+        assert job["job"]["status"] == "completed"
+        after = _get_json(base_url + "/api/audiobook?slug=book")
+        chapter = after["chapters"][0]
+        assert chapter["audio_ready"] is True
+        assert chapter["audio_url"].endswith("/api/audiobook/audio/chapter_001.wav?slug=book")
+        with urllib.request.urlopen(base_url + chapter["audio_url"], timeout=10) as response:
+            assert response.headers["Content-Type"] == "audio/wav"
+            assert response.read()
+    finally:
+        _stop_server(server, thread)
+
+
+def test_library_audio_stats_count_audiobook_chapter_files(tmp_path):
+    paths = _write_demo_book(tmp_path, ready_for_tts=True)
+    paths.audiobook_chapter_audio("chapter_001").parent.mkdir(parents=True, exist_ok=True)
+    paths.audiobook_chapter_audio("chapter_001").write_bytes(b"wav")
+    server, thread, base_url = _start_test_server_for_root(tmp_path)
+    try:
+        library = _get_json(base_url + "/api/library")
+
+        assert library["books"][0]["audio_count"] == 1
+    finally:
+        _stop_server(server, thread)
+
+
+def test_web_api_serves_and_saves_audiobook_narrator_profile_separately(tmp_path):
+    server, thread, base_url = _start_test_server(tmp_path)
+    try:
+        readalong = _post_json(
+            base_url + "/api/narrator-profile",
+            {
+                "display_name": "Readalong Voice",
+                "age_stage": "adult",
+                "gender": "male",
+                "personality": "steady",
+                "race_or_ethnicity": "White",
+                "accent": "American",
+                "occupation": "read-along narrator",
+            },
+        )
+        audiobook = _post_json(
+            base_url + "/api/audiobook/narrator-profile",
+            {
+                "display_name": "Audiobook Voice",
+                "age_stage": "adult",
+                "gender": "female",
+                "personality": "warm",
+                "race_or_ethnicity": "White",
+                "accent": "American",
+                "occupation": "audiobook narrator",
+            },
+        )
+
+        fetched = _get_json(base_url + "/api/audiobook/narrator-profile")
+        readalong_again = _get_json(base_url + "/api/narrator-profile")
+
+        assert audiobook["fields"]["display_name"] == "Audiobook Voice"
+        assert fetched["fields"]["display_name"] == "Audiobook Voice"
+        assert readalong["fields"]["display_name"] == "Readalong Voice"
+        assert readalong_again["fields"]["display_name"] == "Readalong Voice"
     finally:
         _stop_server(server, thread)
 
@@ -513,7 +648,7 @@ def test_failed_annotate_job_reports_failed_chapter_and_keeps_book_closed(tmp_pa
         assert final["job"]["failed_chapter"] == "chapter_002"
         assert "Annotation failed at chapter_002" in final["job"]["error"]
         assert final["book"]["open_enabled"] is False
-        assert final["book"]["status_key"] == "registry_ready"
+        assert final["book"]["status_key"] == "partially_annotated"
     finally:
         _stop_server(server, thread)
 
@@ -562,7 +697,7 @@ def test_retry_annotation_resumes_at_failed_chapter_without_rebuilding_previous_
 
 
 def test_registry_save_invalidates_voice_readiness_and_returns_updated_review_payload(tmp_path):
-    paths = _write_demo_book(tmp_path, name="ready-book", title="Ready Book")
+    paths = _write_demo_book(tmp_path, name="ready-book", title="Ready Book", ready_for_tts=True)
     (paths.root / "voices").mkdir(parents=True, exist_ok=True)
     (paths.root / "voices" / "narrator.qvp").write_bytes(b"voice")
     (paths.root / "voices" / "leigh_adult.qvp").write_bytes(b"voice")
@@ -618,6 +753,186 @@ def test_registry_save_invalidates_voice_readiness_and_returns_updated_review_pa
         assert reloaded["characters"]["leigh_adult"]["voice_config_hash"]
         error = _post_json(base_url + "/api/library/select", {"slug": "ready-book"}, expect_status=400)
         assert "Generate Voices" in error["error"]
+    finally:
+        _stop_server(server, thread)
+
+
+def test_registry_batch_save_persists_multiple_character_accents_without_generating_samples(tmp_path):
+    paths = _write_demo_book(tmp_path, name="accent-book", title="Accent Book", ready_for_tts=True)
+    registry = read_json(paths.registry)
+    cook = dict(registry["characters"]["leigh_adult"])
+    cook["role_id"] = "cook_adult"
+    cook["profile_id"] = "cook_adult"
+    cook["person_id"] = "cook"
+    cook["display_name"] = "The Cook"
+    cook["voice_config_path"] = "voices/cook_adult.qvp"
+    registry["characters"]["cook_adult"] = cook
+    write_json_atomic(paths.registry, registry)
+    (paths.root / "voices" / "cook_adult.qvp").write_bytes(b"voice")
+    (paths.root / "voices" / "_samples" / "cook_adult.wav").write_bytes(b"sample")
+    write_json_atomic(
+        paths.root / "readalong_book.json",
+        {
+            "schema": "readalong_book_v1",
+            "title": "Accent Book",
+            "slug": "accent-book",
+            "source_epub_path": "_source/original.epub",
+            "original_filename": "accent.epub",
+            "stages": {
+                "source_added": True,
+                "initialized": True,
+                "global_registry": True,
+                "annotated": True,
+                "registry_reviewed": True,
+                "voices_ready": True,
+            },
+        },
+    )
+
+    def forbidden_voice_pipeline(config, needs_llm, fake_tts):
+        raise AssertionError("Save All must not build the TTS voice pipeline")
+
+    server, thread, base_url = _start_test_server_for_root_with_pipeline(tmp_path, forbidden_voice_pipeline)
+    try:
+        saved = _post_json(
+            base_url + "/api/registry/save-characters",
+            {
+                "slug": "accent-book",
+                "entries": [
+                    {
+                        "role_id": "leigh_adult",
+                        "fields": {
+                            "display_name": "Leigh",
+                            "age_stage": "adult",
+                            "gender": "female",
+                            "personality": "direct",
+                            "race_or_ethnicity": "English",
+                            "accent": "British",
+                            "occupation": "lawyer",
+                            "aliases": "Leigh",
+                        },
+                    },
+                    {
+                        "role_id": "cook_adult",
+                        "fields": {
+                            "display_name": "The Cook",
+                            "age_stage": "adult",
+                            "gender": "female",
+                            "personality": "stern",
+                            "race_or_ethnicity": "English",
+                            "accent": "Yorkshire",
+                            "occupation": "cook",
+                            "aliases": "Cook",
+                        },
+                    },
+                ],
+            },
+        )
+
+        assert saved["ok"] is True
+        assert saved["book"]["action_key"] == "prepare_voices"
+        assert saved["sample_count"] == 0
+        assert set(saved["changed_role_ids"]) == {"leigh_adult", "cook_adult"}
+        reloaded = read_json(paths.registry)
+        assert reloaded["characters"]["leigh_adult"]["identity_profile"]["accent"] == "British"
+        assert reloaded["characters"]["cook_adult"]["identity_profile"]["accent"] == "Yorkshire"
+        assert reloaded["characters"]["leigh_adult"]["voice_config_hash"] is None
+        assert reloaded["characters"]["cook_adult"]["voice_config_hash"] is None
+    finally:
+        _stop_server(server, thread)
+
+
+def test_registry_batch_save_without_changes_keeps_voices_ready(tmp_path):
+    paths = _write_demo_book(tmp_path, name="unchanged-book", title="Unchanged Book", ready_for_tts=True)
+    write_json_atomic(
+        paths.root / "readalong_book.json",
+        {
+            "schema": "readalong_book_v1",
+            "title": "Unchanged Book",
+            "slug": "unchanged-book",
+            "source_epub_path": "_source/original.epub",
+            "original_filename": "unchanged.epub",
+            "stages": {
+                "source_added": True,
+                "initialized": True,
+                "global_registry": True,
+                "annotated": True,
+                "registry_reviewed": True,
+                "voices_ready": True,
+            },
+        },
+    )
+
+    def forbidden_voice_pipeline(config, needs_llm, fake_tts):
+        raise AssertionError("Unchanged Save All must not build the TTS voice pipeline")
+
+    server, thread, base_url = _start_test_server_for_root_with_pipeline(tmp_path, forbidden_voice_pipeline)
+    try:
+        saved = _post_json(
+            base_url + "/api/registry/save-characters",
+            {
+                "slug": "unchanged-book",
+                "entries": [
+                    {
+                        "role_id": "leigh_adult",
+                        "fields": {
+                            "display_name": "Leigh",
+                            "age_stage": "adult",
+                            "gender": "female",
+                            "personality": "direct",
+                            "race_or_ethnicity": "",
+                            "accent": "",
+                            "occupation": "",
+                            "aliases": "",
+                        },
+                    }
+                ],
+            },
+        )
+
+        assert saved["ok"] is True
+        assert saved["changed_role_ids"] == []
+        assert saved["sample_count"] == 0
+        assert saved["book"]["status_key"] == "voices_ready"
+        assert saved["book"]["action_key"] == "review_registry"
+    finally:
+        _stop_server(server, thread)
+
+
+def test_library_status_requires_current_voice_hashes_even_when_manifest_says_ready(tmp_path):
+    paths = _write_demo_book(tmp_path, name="stale-voices", title="Stale Voices", ready_for_tts=True)
+    registry = read_json(paths.registry)
+    registry["characters"]["leigh_adult"]["voice_config_hash"] = "stale-hash"
+    write_json_atomic(paths.registry, registry)
+    write_json_atomic(
+        paths.root / "readalong_book.json",
+        {
+            "schema": "readalong_book_v1",
+            "title": "Stale Voices",
+            "slug": "stale-voices",
+            "source_epub_path": "_source/original.epub",
+            "original_filename": "stale.epub",
+            "stages": {
+                "source_added": True,
+                "initialized": True,
+                "global_registry": True,
+                "annotated": True,
+                "registry_reviewed": True,
+                "voices_ready": True,
+            },
+        },
+    )
+    server, thread, base_url = _start_test_server_for_root(tmp_path)
+    try:
+        library = _get_json(base_url + "/api/library")
+        book = library["books"][0]
+
+        assert book["voice_count"] == 0
+        assert book["voice_total"] == 1
+        assert book["status_key"] == "annotated"
+        assert book["action_key"] == "prepare_voices"
+        assert book["action_label"] == "Generate Voices"
+        assert book["open_enabled"] is False
     finally:
         _stop_server(server, thread)
 
@@ -831,7 +1146,21 @@ def test_home_page_serves_clean_reader_shell(tmp_path):
         assert "Annotate Book" in response
         assert "Review Voices" in response
         assert "Generate Voices" in response
+        assert 'id="registry-save-all"' in response
+        assert "saveRegistryAll" in response
+        assert "Saving registry changes..." in response
+        assert "regenerating changed samples" not in response
+        assert "No registry voice profile changes to save." in response
+        assert "#registry-save-all.saved" in response
+        assert "markRegistrySaveSuccess" in response
+        assert 'els.registrySaveAll.classList.add("saved")' in response
+        assert "save.onclick = () => saveRegistryCharacter" not in response
+        assert "custom-accent-input" in response
         assert 'className = "delete-book"' in response
+        assert "book-list-header-shell" in response
+        assert "book-row-shell" in response
+        assert 'className = "share-book"' in response
+        assert "actions.appendChild(share)" not in response
         assert "book-list-header" in response
         assert "book-cell book-title-cell" in response
         assert "book-author-line" in response
@@ -840,7 +1169,8 @@ def test_home_page_serves_clean_reader_shell(tmp_path):
         assert "book-cell book-annotated-cell" in response
         assert "book-cell book-units-cell" in response
         assert "book-cell book-voices-cell" in response
-        assert "book-cell book-audio-cell" in response
+        assert "book-cell book-audio-cell" not in response
+        assert '"Audio"' not in response
         assert "book-cell book-last-read-cell" in response
         assert "book-action-cell" in response
         assert "--book-grid-columns:" in response
@@ -1527,6 +1857,20 @@ def _start_test_server_for_root(root: Path):
     return server, thread, f"http://{host}:{port}"
 
 
+def _start_test_server_for_root_with_pipeline(root: Path, pipeline_factory):
+    server = create_server(
+        launch_root=root,
+        host="127.0.0.1",
+        port=0,
+        fake_tts=True,
+        pipeline_factory=pipeline_factory,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    return server, thread, f"http://{host}:{port}"
+
+
 def _stop_server(server, thread):
     server.shutdown()
     server.server_close()
@@ -1777,7 +2121,7 @@ class _FakeLifecyclePipeline:
         return 1
 
     def annotate_chapter(self, chapter: str, lock_registry: bool = True):
-        payload = {"schema": "quote_attribution_v1", "roles": ["leigh_adult"], "quotes": [[0, 0]]}
+        payload = {"schema": "quote_attribution_v1", "roles": ["leigh_adult"], "quotes": [[1, 0]]}
         write_json_atomic(self.paths.annotation(chapter), payload)
         return payload
 
@@ -1814,7 +2158,7 @@ class _FakeLifecyclePipeline:
                 "role_id": "leigh_adult",
                 "type": "dialogue",
                 "voice_config_path": leigh_voice,
-                "quote_id": "q0",
+                "quote_id": "q001",
                 "sentence_idx": 1,
                 "character": "Leigh",
                 "voice_variant": None,

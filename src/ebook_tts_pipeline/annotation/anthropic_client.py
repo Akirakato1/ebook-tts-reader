@@ -30,24 +30,44 @@ def parse_json_response_text(text: str, source: str = "model response") -> Dict:
             raw_text=text,
             source=source,
         )
-    fence_match = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL)
-    if fence_match:
-        stripped = fence_match.group(1).strip()
-    try:
-        payload = json.loads(stripped)
-    except json.JSONDecodeError as exc:
-        raise AnnotationModelOutputError(
-            f"{source} was not valid JSON: {exc}. Preview: {_preview(stripped)}",
-            raw_text=stripped,
-            source=source,
-        ) from exc
-    if not isinstance(payload, dict):
+    candidates = _json_response_candidates(stripped)
+    last_error: json.JSONDecodeError | None = None
+    non_object_text: str | None = None
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
+        if isinstance(payload, dict):
+            return payload
+        non_object_text = candidate
+
+    if non_object_text is not None:
         raise AnnotationModelOutputError(
             f"{source} must be a JSON object.",
-            raw_text=stripped,
+            raw_text=non_object_text,
             source=source,
         )
-    return payload
+
+    error_text = str(last_error) if last_error is not None else "no JSON object found"
+    raise AnnotationModelOutputError(
+        f"{source} was not valid JSON: {error_text}. Preview: {_preview(stripped)}",
+        raw_text=stripped,
+        source=source,
+    ) from last_error
+
+
+def _json_response_candidates(stripped: str) -> list[str]:
+    candidates = [stripped]
+    full_fence = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL)
+    if full_fence:
+        return [full_fence.group(1).strip()]
+    for fence in re.finditer(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL):
+        candidate = fence.group(1).strip()
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
 
 
 class AnthropicJsonClient:

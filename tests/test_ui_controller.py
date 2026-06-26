@@ -6,10 +6,7 @@ from ebook_tts_pipeline.epub_ingestion import EpubExtractResult
 from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.config import PipelineConfig
-from ebook_tts_pipeline.read_along.narrator_profile import (
-    functional_narrator_voice_record,
-    narrator_profile_hash,
-)
+from ebook_tts_pipeline.read_along.narrator_profile import narrator_profile_hash
 from ebook_tts_pipeline.registry import RegistryManager, voice_profile_hash
 from ebook_tts_pipeline.tts.fake import FakeTtsAdapter
 from ebook_tts_pipeline.ui import controller as controller_module
@@ -527,9 +524,44 @@ def test_controller_registry_review_payload_excludes_narrator_and_detects_race_a
     assert "Tokyo" in payload["accent_options"]
     assert "Rio" in payload["accent_options"]
     assert "Lagos" in payload["accent_options"]
+    assert "Yorkshire" in payload["accent_options"]
+    assert "Received Pronunciation" in payload["accent_options"]
+    assert "French" in payload["accent_options"]
     assert "Japanese" in payload["race_or_ethnicity_options"]
     assert "Brazilian" in payload["race_or_ethnicity_options"]
     assert "Nigerian" in payload["race_or_ethnicity_options"]
+
+
+def test_controller_registry_review_infers_blank_accent_from_race_background(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    write_json_atomic(
+        paths.registry,
+        {
+            "book": {"title": "Demo", "slug": "demo"},
+            "characters": {
+                "french_nurse_adult": {
+                    "role_id": "french_nurse_adult",
+                    "display_name": "The French Nurse",
+                    "age_stage": "adult",
+                    "aliases": [],
+                    "identity_profile": {
+                        "age_stage": "adult",
+                        "gender": "female",
+                        "personality": [],
+                        "race_or_ethnicity": "French",
+                        "accent": None,
+                    },
+                    "voice_identity": {"seed": 123, "differentiators": []},
+                    "voice_profile": {"description": "adult female", "qwen_instruct": "adult female"},
+                }
+            },
+        },
+    )
+    controller = PrototypeUiController(book_root=paths.root)
+
+    payload = controller.registry_review_payload()
+
+    assert payload["entries"][0]["fields"]["accent"] == "French"
 
 
 def test_controller_generates_registry_voice_sample_with_voice_asset_backend(tmp_path, monkeypatch):
@@ -1427,6 +1459,44 @@ def test_controller_annotate_read_along_book_reports_per_chapter_progress(tmp_pa
     assert progress_file["total"] == 2
 
 
+def test_controller_annotate_read_along_book_retries_stale_quote_annotations(tmp_path):
+    calls = []
+    paths = BookPaths(tmp_path / "book")
+    chapter = "chapter_001"
+    paths.chapter_text(chapter).parent.mkdir(parents=True, exist_ok=True)
+    paths.chapter_text(chapter).write_text(
+        "The driver said, \u2018That there\u2019s Ensor House, there,\u2019 then waited.",
+        encoding="utf-8",
+    )
+    paths.sentence_artifact(chapter).parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(
+        paths.sentence_artifact(chapter),
+        {
+            "chapter": chapter,
+            "source_path": f"chapters/{chapter}.txt",
+            "segmenter": {"name": "test"},
+            "sentences": [{"idx": 0, "text": "The driver spoke."}],
+        },
+    )
+    write_json_atomic(paths.annotation(chapter), {"schema": "quote_attribution_v1", "roles": [], "quotes": []})
+    write_json_atomic(paths.read_along_units(chapter), {"chapter": chapter, "units": []})
+    write_json_atomic(
+        paths.root / "toc.json",
+        {"chapters": [{"index": 1, "chapter": chapter, "title": "One", "source": "chapter_001.txt"}]},
+    )
+    write_json_atomic(paths.registry, {"book": {"title": "Demo", "slug": "demo"}, "characters": {}})
+    controller = PrototypeUiController(
+        book_root=paths.root,
+        pipeline_factory=fake_progress_pipeline_factory(calls),
+        fake_tts=True,
+    )
+
+    result = controller.annotate_read_along_book()
+
+    assert result == {"chapters": 1, "annotated": 1, "units_built": 1}
+    assert ("annotate", chapter, True) in calls
+
+
 def test_controller_annotate_read_along_book_reports_failed_chapter(tmp_path):
     calls = []
     paths = BookPaths(tmp_path / "book")
@@ -1632,7 +1702,7 @@ def test_controller_reuses_cached_narrator_voice_when_profile_hash_unchanged(tmp
     session.end()
 
 
-def test_controller_reuses_cached_session_narrator_voices_after_noop_profile_save(tmp_path, monkeypatch):
+def test_controller_reuses_cached_session_narrator_voice_after_noop_profile_save(tmp_path, monkeypatch):
     paths = BookPaths(tmp_path / "book")
     paths.chapter_text("chapter_001").parent.mkdir(parents=True)
     paths.chapter_text("chapter_001").write_text('The phone said, "Please hang up."', encoding="utf-8")
@@ -1646,13 +1716,9 @@ def test_controller_reuses_cached_session_narrator_voices_after_noop_profile_sav
     profile = controller.read_along_narrator_profile()
     identity = profile["identity_profile"]
     narrator_hash = narrator_profile_hash(profile)
-    functional_hash = voice_profile_hash(functional_narrator_voice_record(profile))
     narrator_path = paths.narrator_voice_qvp(narrator_hash, "narrator")
-    functional_path = paths.narrator_voice_qvp(functional_hash, "functional_narrator")
     narrator_path.parent.mkdir(parents=True, exist_ok=True)
-    functional_path.parent.mkdir(parents=True, exist_ok=True)
     narrator_path.write_bytes(b"cached narrator")
-    functional_path.write_bytes(b"cached functional narrator")
 
     saved_profile = controller.save_read_along_narrator_profile(
         {
@@ -1667,7 +1733,6 @@ def test_controller_reuses_cached_session_narrator_voices_after_noop_profile_sav
     )
 
     assert narrator_profile_hash(saved_profile) == narrator_hash
-    assert voice_profile_hash(functional_narrator_voice_record(saved_profile)) == functional_hash
 
     def fail_if_called(self, role_id, voice_record, voice_path):
         raise AssertionError(f"{role_id} cache should be reused")
@@ -1690,8 +1755,40 @@ def test_controller_reuses_cached_session_narrator_voices_after_noop_profile_sav
     )
 
     patched_quote = [unit for unit in session.units if unit.quote_id == "q001"][0]
-    assert patched_quote.voice_config_path == functional_path.relative_to(paths.root).as_posix()
+    assert patched_quote.role_id == "narrator"
+    assert patched_quote.voice_config_path == narrator_path.relative_to(paths.root).as_posix()
     session.end()
+
+
+def test_controller_maps_legacy_functional_narrator_units_to_narrator_voice(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+
+    patched = controller._apply_session_narrator_voice_paths(
+        [
+            {
+                "chapter": "chapter_001",
+                "unit_id": 0,
+                "text": '"Closed"',
+                "source_start": 0,
+                "source_end": 8,
+                "role": "Functional Narrator",
+                "role_id": "functional_narrator",
+                "type": "narration",
+                "voice_config_path": None,
+                "quote_id": "q001",
+                "sentence_idx": 0,
+                "character": None,
+                "voice_variant": "functional_narrator",
+            }
+        ],
+        {"narrator": "voices/_narrator/hash/narrator.qvp"},
+    )
+
+    assert patched[0]["role"] == "Narrator"
+    assert patched[0]["role_id"] == "narrator"
+    assert patched[0]["voice_variant"] is None
+    assert patched[0]["voice_config_path"] == "voices/_narrator/hash/narrator.qvp"
 
 
 def test_controller_regenerates_narrator_voice_when_profile_changes(tmp_path, monkeypatch):
@@ -1780,7 +1877,7 @@ def test_controller_expands_simple_narrator_accent_into_strict_voice_instruction
     assert "no character voice switching" in instruction
 
 
-def test_controller_read_along_session_generates_functional_narrator_voice_at_session_start(tmp_path):
+def test_controller_read_along_session_uses_narrator_voice_for_narrator_quotes(tmp_path):
     paths = BookPaths(tmp_path / "book")
     paths.chapter_text("chapter_001").parent.mkdir(parents=True)
     paths.chapter_text("chapter_001").write_text('The phone said, "Please hang up."', encoding="utf-8")
@@ -1821,8 +1918,8 @@ def test_controller_read_along_session_generates_functional_narrator_voice_at_se
 
     units = controller.build_read_along_units("chapter_001")
     quote_unit = [unit for unit in units if unit["quote_id"] == "q001"][0]
-    assert quote_unit["role_id"] == "functional_narrator"
-    assert quote_unit["voice_variant"] == "functional_narrator"
+    assert quote_unit["role_id"] == "narrator"
+    assert quote_unit["voice_variant"] is None
     assert quote_unit["voice_config_path"] is None
 
     session = controller.create_read_along_session(
@@ -1841,14 +1938,11 @@ def test_controller_read_along_session_generates_functional_narrator_voice_at_se
 
     profile = controller.read_along_narrator_profile()
     narrator_hash = narrator_profile_hash(profile)
-    functional_record = functional_narrator_voice_record(profile)
-    functional_hash = voice_profile_hash(functional_record)
-    functional_path = paths.narrator_voice_qvp(functional_hash, "functional_narrator")
-    assert paths.narrator_voice_qvp(narrator_hash, "narrator").exists()
-    assert functional_path.exists()
+    narrator_path = paths.narrator_voice_qvp(narrator_hash, "narrator")
+    assert narrator_path.exists()
     patched_quote = [unit for unit in session.units if unit.quote_id == "q001"][0]
-    assert patched_quote.role_id == "functional_narrator"
-    assert patched_quote.voice_config_path == functional_path.relative_to(paths.root).as_posix()
+    assert patched_quote.role_id == "narrator"
+    assert patched_quote.voice_config_path == narrator_path.relative_to(paths.root).as_posix()
     session.end()
 
 
@@ -1897,13 +1991,11 @@ def test_controller_reports_read_along_session_start_setup_progress(tmp_path):
         "loading_tts_model",
         "building_read_along_units",
         "preparing_narrator_voice",
-        "preparing_functional_narrator_voice",
         "checking_local_chapter_voices",
         "validating_voice_paths",
     ]
     assert progress[0]["message"] == "Loading read-along TTS model."
     assert progress[2]["message"] == "Preparing narrator voice."
-    assert progress[3]["message"] == "Preparing functional narrator voice."
     session.end()
 
 

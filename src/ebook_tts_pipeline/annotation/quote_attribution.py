@@ -121,6 +121,7 @@ def render_quote_attribution_repair_prompt(
     original_prompt: str,
     invalid_payload: Any,
     validation_error: str,
+    diagnostics: List[Dict[str, Any]] | None = None,
 ) -> str:
     return (
         f"{original_prompt}\n\n"
@@ -128,6 +129,7 @@ def render_quote_attribution_repair_prompt(
         f"Validation error: {validation_error}\n\n"
         "Previous invalid JSON:\n"
         f"{json.dumps(invalid_payload, ensure_ascii=False)}\n\n"
+        f"{_render_repair_diagnostics(diagnostics or [])}"
         "Return corrected JSON only using the same output schema. "
         "Do not add explanations. If a quote row uses the third item \"narrator_quote\", "
         "do not create a local_speakers entry for non-character functional quoted text such as "
@@ -245,7 +247,10 @@ class QuoteAttributionService:
 
         for attempt in range(repairs_used, self.repair_retries + 1):
             try:
-                result = _canonicalize_quote_attribution_result(QuoteAttributionResult.from_dict(payload))
+                result = _canonicalize_quote_attribution_result(
+                    QuoteAttributionResult.from_dict(payload),
+                    registry=registry,
+                )
                 validate_quote_attribution(
                     result,
                     quote_indices=quote_indices,
@@ -267,7 +272,12 @@ class QuoteAttributionService:
                 )
                 if attempt >= self.repair_retries:
                     raise
-                prompt = render_quote_attribution_repair_prompt(prompt, payload, str(exc))
+                prompt = render_quote_attribution_repair_prompt(
+                    prompt,
+                    payload,
+                    str(exc),
+                    diagnostics=_repair_diagnostics_for_payload(payload, extraction, registry),
+                )
                 payload = self._complete_json(
                     chapter=chapter,
                     prompt=prompt,
@@ -380,18 +390,150 @@ def _registry_role_ids(registry: Dict[str, Any]) -> List[str]:
     return [str(record.get("role_id") or role_id) for role_id, record in characters.items() if isinstance(record, dict)]
 
 
-def _canonicalize_quote_attribution_result(result: QuoteAttributionResult) -> QuoteAttributionResult:
-    roles = list(result.roles)
-    for index, role in enumerate(roles):
-        normalized_role = normalize_name(role)
-        if normalized_role == normalize_name("narrator_quote"):
-            roles[index] = "Narrator"
+def _repair_diagnostics_for_payload(
+    payload: Any,
+    extraction: QuoteExtraction,
+    registry: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    try:
+        result = _canonicalize_quote_attribution_result(
+            QuoteAttributionResult.from_dict(payload),
+            registry=registry,
+        )
+    except Exception:
+        return []
 
+    known_role_ids = {normalize_name(role_id) for role_id in _registry_role_ids(registry)}
     local_ids = {
         normalize_name(str(speaker.get("local_id", "")))
         for speaker in result.local_speakers
         if str(speaker.get("local_id", "")).strip()
     }
+    quote_by_idx = {quote.idx: quote for quote in extraction.quotes}
+    alias_candidates = _registry_role_alias_candidates(registry)
+    by_role: Dict[str, Dict[str, Any]] = {}
+
+    for quote_idx, role_idx, quote_type in result.quotes:
+        if quote_type == "narrator_quote" or role_idx < 0 or role_idx >= len(result.roles):
+            continue
+        role = result.roles[role_idx]
+        normalized_role = normalize_name(role)
+        if (
+            normalized_role == normalize_name("Narrator")
+            or normalized_role in known_role_ids
+            or normalized_role in local_ids
+        ):
+            continue
+        entry = by_role.setdefault(
+            role,
+            {
+                "role": role,
+                "quotes": [],
+                "candidates": [
+                    _registry_candidate_summary(registry, candidate_role_id)
+                    for candidate_role_id in sorted(alias_candidates.get(normalized_role, set()))
+                ],
+            },
+        )
+        quote = quote_by_idx.get(quote_idx)
+        entry["quotes"].append(
+            {
+                "quote_idx": quote_idx,
+                "quote_id": f"q{quote_idx:03d}",
+                "text": _bounded_quote_text(quote.text if quote is not None else ""),
+            }
+        )
+
+    return list(by_role.values())
+
+
+def _render_repair_diagnostics(diagnostics: List[Dict[str, Any]]) -> str:
+    if not diagnostics:
+        return ""
+    lines = [
+        "Invalid role diagnostics:\n",
+        "For each invalid role below, consolidate to an exact global registry role_id when the speaker is a registry character. "
+        "If the speaker is not represented by the global registry, add a local_speakers entry and make roles reference that local_id. "
+        "Do not invent new global role_ids.\n",
+    ]
+    for diagnostic in diagnostics:
+        lines.append(f"- invalid role: {diagnostic['role']}")
+        lines.append("  error: role is neither an exact global registry role_id nor a local_speakers.local_id.")
+        quotes = diagnostic.get("quotes", [])
+        if quotes:
+            lines.append("  quotes using this invalid role:")
+            for quote in quotes:
+                lines.append(f"    - {quote['quote_id']}: {json.dumps(quote['text'], ensure_ascii=False)}")
+        candidates = diagnostic.get("candidates", [])
+        if candidates:
+            lines.append("  registry candidates from alias matching:")
+            for candidate in candidates:
+                lines.append(
+                    "    - "
+                    f"role_id: {candidate['role_id']}; "
+                    f"display_name: {json.dumps(candidate['display_name'], ensure_ascii=False)}; "
+                    f"age_stage: {json.dumps(candidate['age_stage'], ensure_ascii=False)}; "
+                    f"aliases: {json.dumps(candidate['aliases'], ensure_ascii=False)}"
+                )
+            lines.append(
+                "  repair: if chapter context matches one of these candidates, replace it with the exact registry role_id."
+            )
+        else:
+            lines.append("  registry candidates from alias matching: none.")
+        lines.append("  repair: if no registry candidate fits, add a local_speakers entry and use that local_id in roles.")
+    return "\n".join(lines) + "\n\n"
+
+
+def _bounded_quote_text(text: str, limit: int = 180) -> str:
+    compact = " ".join(str(text).split())
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[:limit]}..."
+
+
+def _registry_candidate_summary(registry: Dict[str, Any], role_id: str) -> Dict[str, Any]:
+    characters = registry.get("characters", {})
+    if not isinstance(characters, dict):
+        return {"role_id": role_id, "display_name": "", "age_stage": "", "aliases": []}
+    for key, record in characters.items():
+        if not isinstance(record, dict):
+            continue
+        canonical = str(record.get("role_id") or key).strip()
+        if canonical != role_id:
+            continue
+        identity = record.get("identity_profile", {})
+        identity = identity if isinstance(identity, dict) else {}
+        return {
+            "role_id": canonical,
+            "display_name": str(record.get("display_name") or "").strip(),
+            "age_stage": str(record.get("age_stage") or identity.get("age_stage") or "").strip(),
+            "aliases": [str(alias) for alias in record.get("aliases", []) if str(alias).strip()],
+        }
+    return {"role_id": role_id, "display_name": "", "age_stage": "", "aliases": []}
+
+
+def _canonicalize_quote_attribution_result(
+    result: QuoteAttributionResult,
+    registry: Dict[str, Any],
+) -> QuoteAttributionResult:
+    roles = list(result.roles)
+    local_ids = {
+        normalize_name(str(speaker.get("local_id", "")))
+        for speaker in result.local_speakers
+        if str(speaker.get("local_id", "")).strip()
+    }
+    registry_aliases = _unique_registry_role_aliases(registry)
+    for index, role in enumerate(roles):
+        normalized_role = normalize_name(role)
+        if normalized_role == normalize_name("narrator_quote"):
+            roles[index] = "Narrator"
+            continue
+        if normalized_role in local_ids:
+            continue
+        canonical_role = registry_aliases.get(normalized_role)
+        if canonical_role:
+            roles[index] = canonical_role
+
     dialogue_local_ids: Set[str] = set()
     narrator_quote_local_ids: Set[str] = set()
     for _quote_idx, role_idx, quote_type in result.quotes:
@@ -423,6 +565,68 @@ def _canonicalize_quote_attribution_result(result: QuoteAttributionResult) -> Qu
             quotes.append((quote_idx, role_idx, quote_type))
     roles, quotes = _prune_unreferenced_roles(roles, quotes)
     return QuoteAttributionResult(roles=roles, quotes=quotes, local_speakers=local_speakers)
+
+
+def _unique_registry_role_aliases(registry: Dict[str, Any]) -> Dict[str, str]:
+    candidates = _registry_role_alias_candidates(registry)
+    return {
+        alias: next(iter(role_ids))
+        for alias, role_ids in candidates.items()
+        if len(role_ids) == 1
+    }
+
+
+def _registry_role_alias_candidates(registry: Dict[str, Any]) -> Dict[str, Set[str]]:
+    candidates: Dict[str, Set[str]] = {}
+    characters = registry.get("characters", {})
+    if not isinstance(characters, dict):
+        return {}
+    for role_id, record in characters.items():
+        if not isinstance(record, dict):
+            continue
+        canonical = str(record.get("role_id") or role_id).strip()
+        if not canonical:
+            continue
+        for alias in _registry_record_aliases(canonical, record):
+            normalized = normalize_name(alias)
+            if normalized:
+                candidates.setdefault(normalized, set()).add(canonical)
+    return candidates
+
+
+def _registry_record_aliases(canonical: str, record: Dict[str, Any]) -> Set[str]:
+    identity = record.get("identity_profile", {})
+    identity = identity if isinstance(identity, dict) else {}
+    age_stage = str(record.get("age_stage") or identity.get("age_stage") or "").strip()
+    display_name = str(record.get("display_name") or "").strip()
+    aliases = {canonical, canonical.replace("_", " ")}
+    for value in record.get("aliases", []):
+        text = str(value).strip()
+        if text:
+            aliases.add(text)
+            if age_stage:
+                aliases.add(f"{text} {age_stage}")
+    if display_name:
+        aliases.add(display_name)
+        if age_stage:
+            aliases.add(f"{display_name} {age_stage}")
+        aliases.update(_short_honorific_aliases(display_name, age_stage))
+    return aliases
+
+
+def _short_honorific_aliases(display_name: str, age_stage: str) -> Set[str]:
+    tokens = display_name.split()
+    if len(tokens) < 3:
+        return set()
+    honorifics = {"mr", "mrs", "ms", "miss", "dr", "sir", "lady", "lord"}
+    honorific = tokens[0].rstrip(".").lower()
+    if honorific not in honorifics:
+        return set()
+    short = f"{tokens[0]} {tokens[-1]}"
+    aliases = {short}
+    if age_stage:
+        aliases.add(f"{short} {age_stage}")
+    return aliases
 
 
 def _prune_unreferenced_roles(

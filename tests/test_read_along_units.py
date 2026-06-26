@@ -42,7 +42,7 @@ def test_build_read_along_units_preserves_quote_offsets():
     assert units[1].voice_config_path == "voices/leigh_adult.qvp"
 
 
-def test_narrator_quote_marks_functional_narrator_variant_and_ignores_role_index():
+def test_narrator_quote_uses_book_narrator_and_ignores_role_index():
     text = 'The sign said "Closed" on the door.'
     extraction = extract_quoted_dialogue(text)
     attribution = QuoteAttributionResult(
@@ -60,11 +60,11 @@ def test_narrator_quote_marks_functional_narrator_variant_and_ignores_role_index
     )
 
     closed = [unit for unit in units if unit.text == '"Closed"'][0]
-    assert closed.role == "Functional Narrator"
-    assert closed.role_id == "functional_narrator"
+    assert closed.role == "Narrator"
+    assert closed.role_id == "narrator"
     assert closed.type == "narration"
-    assert closed.voice_variant == "functional_narrator"
-    assert closed.voice_config_path is None
+    assert closed.voice_variant is None
+    assert closed.voice_config_path == "voices/narrator.qvp"
 
 
 def _registry_with_voices():

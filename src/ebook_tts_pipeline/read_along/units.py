@@ -10,11 +10,6 @@ from ebook_tts_pipeline.registry import resolve_effective_voice
 from ebook_tts_pipeline.temp_registry import resolve_temp_voice
 
 
-FUNCTIONAL_NARRATOR_ROLE = "Functional Narrator"
-FUNCTIONAL_NARRATOR_ROLE_ID = "functional_narrator"
-FUNCTIONAL_NARRATOR_VARIANT = "functional_narrator"
-
-
 @dataclass(frozen=True)
 class ReadAlongUnit:
     chapter: str
@@ -99,7 +94,7 @@ def build_read_along_units(
     for quote in extraction.quotes:
         role_name, quote_type = quote_roles[quote.idx]
         if quote_type == "narrator_quote":
-            effective = _functional_narrator_effective(narrator_effective)
+            effective = narrator_effective
             speech_type = "narration"
         else:
             speech_type = "dialogue"
@@ -134,18 +129,6 @@ def build_read_along_units(
             )
         )
     return units
-
-
-def _functional_narrator_effective(narrator_effective: Dict[str, Any]) -> Dict[str, Any]:
-    voice_record = dict(narrator_effective.get("voice_record", {}))
-    voice_record["voice_config_path"] = None
-    return {
-        "role": FUNCTIONAL_NARRATOR_ROLE,
-        "role_id": FUNCTIONAL_NARRATOR_ROLE_ID,
-        "character": None,
-        "voice_variant": FUNCTIONAL_NARRATOR_VARIANT,
-        "voice_record": voice_record,
-    }
 
 
 def _split_narrator_span(

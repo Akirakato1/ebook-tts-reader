@@ -124,30 +124,6 @@ def narrator_summary(profile: Dict[str, Any]) -> str:
     return f"{normalized['display_name']}: {compact or 'custom narrator'}"
 
 
-def functional_narrator_voice_record(profile: Dict[str, Any]) -> Dict[str, Any]:
-    base = narrator_voice_record(profile)
-    voice_profile = dict(base["voice_profile"])
-    base_description = str(voice_profile.get("description") or "audiobook narrator")
-    base_instruction = str(voice_profile.get("qwen_instruct") or base_description)
-    return {
-        "role_id": "functional_narrator",
-        "display_name": "Functional Narrator",
-        "identity_profile": dict(base["identity_profile"]),
-        "voice_identity": dict(base["voice_identity"]),
-        "voice_profile": {
-            "description": (
-                f"{base_description}; same narrator identity for quoted non-dialogue text, "
-                "slightly higher pitch, flatter monotone delivery, crisp and restrained"
-            ),
-            "qwen_instruct": (
-                f"{base_instruction}. Keep the same base narrator identity, but render quoted "
-                "non-dialogue text with a slightly higher pitch, flatter monotone cadence, "
-                "restrained emotion, and crisp articulation."
-            ),
-        },
-    }
-
-
 def _string_list(value: Any) -> list[str]:
     if value is None:
         return []

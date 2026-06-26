@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Tuple
 
 QUOTE_PAIRS = {
     "\u201c": "\u201d",
+    "\u2018": "\u2019",
     '"': '"',
 }
 
@@ -79,7 +80,7 @@ def extract_quoted_dialogue(text: str) -> QuoteExtraction:
             index += 1
             continue
 
-        if char == quote_close:
+        if char == quote_close and _is_quote_close(text, index, quote_close):
             quote_end = index + 1
             _append_quote_span(quotes, text, quote_start, quote_end)
             quote_start = None
@@ -93,6 +94,13 @@ def extract_quoted_dialogue(text: str) -> QuoteExtraction:
         _append_narrator_span(narrator_spans, text, narrator_start, len(text))
 
     return QuoteExtraction(text=text, quotes=quotes, narrator_spans=narrator_spans)
+
+
+def _is_quote_close(text: str, index: int, quote_close: str) -> bool:
+    if quote_close != "\u2019":
+        return True
+    next_char = text[index + 1] if index + 1 < len(text) else ""
+    return not next_char.isalnum()
 
 
 def _append_quote_span(quotes: List[QuoteSpan], text: str, start: int, end: int) -> None:
