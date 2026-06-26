@@ -7,7 +7,7 @@ from ebook_tts_pipeline.json_io import read_json, write_json_atomic
 from ebook_tts_pipeline.paths import BookPaths
 from ebook_tts_pipeline.config import PipelineConfig
 from ebook_tts_pipeline.read_along.narrator_profile import narrator_profile_hash
-from ebook_tts_pipeline.registry import RegistryManager, voice_profile_hash
+from ebook_tts_pipeline.registry import RegistryManager, build_compact_voice_profile, voice_profile_hash
 from ebook_tts_pipeline.tts.fake import FakeTtsAdapter
 from ebook_tts_pipeline.ui import controller as controller_module
 from ebook_tts_pipeline.ui.controller import ChapterStage, PrototypeUiController
@@ -123,6 +123,7 @@ class RecordingFakeTtsAdapter(FakeTtsAdapter):
         super().__init__()
         self.ensure_voice_calls = []
         self.generated_role_ids = []
+        self.generated_texts = []
 
     def ensure_voice(self, role_id, voice_record, voice_path):
         self.ensure_voice_calls.append((role_id, Path(voice_path)))
@@ -130,6 +131,7 @@ class RecordingFakeTtsAdapter(FakeTtsAdapter):
 
     def generate_sentences(self, jobs):
         self.generated_role_ids.extend(str(job["role_id"]) for job in jobs)
+        self.generated_texts.extend(str(job["text"]) for job in jobs)
         return super().generate_sentences(jobs)
 
 
@@ -532,6 +534,52 @@ def test_controller_registry_review_payload_excludes_narrator_and_detects_race_a
     assert "Nigerian" in payload["race_or_ethnicity_options"]
 
 
+def test_compact_voice_profile_expands_british_accent_to_phonetic_constraints():
+    profile = build_compact_voice_profile(
+        "Winifred",
+        {
+            "identity_profile": {
+                "age_stage": "adult",
+                "gender": "female",
+                "personality": ["darkly witty"],
+                "race_or_ethnicity": "English",
+                "accent": "British",
+            }
+        },
+    )
+
+    instruction = profile["qwen_instruct"]
+    assert "British English pronunciation" in instruction
+    assert "non-rhotic R" in instruction
+    assert "no General American" in instruction
+
+
+def test_compact_voice_profile_expands_received_pronunciation_and_yorkshire():
+    rp = build_compact_voice_profile(
+        "Mr Pounds",
+        {"identity_profile": {"age_stage": "adult", "gender": "male", "accent": "Received Pronunciation"}},
+    )["qwen_instruct"]
+    yorkshire = build_compact_voice_profile(
+        "The Phaeton Driver",
+        {"identity_profile": {"age_stage": "adult", "gender": "male", "accent": "Yorkshire"}},
+    )["qwen_instruct"]
+
+    assert "upper-class southern British Received Pronunciation" in rp
+    assert "clipped precise consonants" in rp
+    assert "Yorkshire / Northern English accent" in yorkshire
+    assert "northern English vowel shapes" in yorkshire
+
+
+def test_compact_voice_profile_expands_french_accent():
+    profile = build_compact_voice_profile(
+        "The French Nurse",
+        {"identity_profile": {"age_stage": "adult", "gender": "female", "accent": "French"}},
+    )
+
+    assert "French-accented English" in profile["qwen_instruct"]
+    assert "softened th consonants" in profile["qwen_instruct"]
+
+
 def test_controller_registry_review_infers_blank_accent_from_race_background(tmp_path):
     paths = BookPaths(tmp_path / "book")
     write_json_atomic(
@@ -593,10 +641,13 @@ def test_controller_generates_registry_voice_sample_with_voice_asset_backend(tmp
         },
     )
     captured = []
+    pipelines = []
 
     def factory(config, needs_llm, fake_tts):
         captured.append((config.tts_backend, needs_llm, fake_tts))
-        return VoiceAssetPipeline(config)
+        pipeline = RecordingVoiceAssetPipeline(config)
+        pipelines.append(pipeline)
+        return pipeline
 
     monkeypatch.setenv("EBOOK_TTS_BACKEND", "wsl-vllm-omni")
     monkeypatch.delenv("EBOOK_TTS_VOICE_ASSET_BACKEND", raising=False)
@@ -609,6 +660,10 @@ def test_controller_generates_registry_voice_sample_with_voice_asset_backend(tmp
     assert sample["sample_url"] == "/api/registry/sample/leigh_adult.wav"
     sample_path = paths.root / sample["sample_path"]
     assert sample_path.read_bytes()[:4] == b"RIFF"
+    assert pipelines[0].tts_adapter.generated_texts == [
+        "Hello, my name is Leigh. After the party, I asked for a glass of water, "
+        "a little butter, and a proper cup of tea."
+    ]
     registry = read_json(paths.registry)
     assert registry["characters"]["leigh_adult"]["voice_config_path"] == "voices/leigh_adult.qvp"
     assert registry["characters"]["leigh_adult"]["voice_config_hash"]

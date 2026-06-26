@@ -157,6 +157,11 @@ There are three voice categories:
 - Registry profile saves are intentionally metadata-only. They return quickly, mark
   changed voices stale, and let the separate `Generate Voices` job rebuild QVP/sample
   assets with progress tracking.
+- Accent labels are expanded into explicit pronunciation constraints before QVP
+  generation. For example, `British`, `Received Pronunciation`, `Yorkshire`, and
+  `French` become concrete guidance about rhoticity, vowel color, consonants, and
+  regional drift rather than a bare accent name. Registry samples use a longer phrase
+  with accent-revealing words so the preview is easier to judge.
 - Narrator: generated or refreshed when a read-along session starts, based on the
   session narrator setting. Normal narration and `narrator_quote` units share this
   one narrator voice.

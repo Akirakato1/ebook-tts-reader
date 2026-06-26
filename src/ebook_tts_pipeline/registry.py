@@ -93,6 +93,79 @@ def infer_accent_from_identity(race_or_ethnicity: Any) -> str | None:
     return None
 
 
+def accent_voice_instruction(accent: Any) -> str:
+    text = _nullable_string(accent)
+    if not text:
+        return ""
+    normalized = normalize_name(text)
+    templates = {
+        "british": (
+            "British English pronunciation: non-rhotic R, British vowel shapes, crisp consonants, "
+            "and no General American rhotic R or American vowel coloring"
+        ),
+        "upperclassbritish": (
+            "upper-class southern British Received Pronunciation: non-rhotic R, clipped precise consonants, "
+            "long bath vowel, controlled intonation, and no General American pronunciation"
+        ),
+        "receivedpronunciation": (
+            "upper-class southern British Received Pronunciation: non-rhotic R, clipped precise consonants, "
+            "long bath vowel, controlled intonation, and no General American pronunciation"
+        ),
+        "yorkshire": (
+            "Yorkshire / Northern English accent: northern English vowel shapes, flatter short A sounds, "
+            "plain regional rhythm, and no General American pronunciation"
+        ),
+        "french": (
+            "French-accented English: French vowel coloring, softened th consonants, lightly rolled or softened R, "
+            "syllable-timed rhythm, and clear understandable English"
+        ),
+        "german": (
+            "German-accented English: precise consonants, German vowel coloring, firmer R articulation, "
+            "and clear understandable English"
+        ),
+        "germanscottish": (
+            "German-Scottish accented English: a German consonant edge blended with Scottish rhythm and R color, "
+            "while staying clear and understandable"
+        ),
+        "welsh": (
+            "Welsh-accented English: musical Welsh intonation, clear vowels, lightly rolled R, "
+            "and no General American pronunciation"
+        ),
+        "irish": (
+            "Irish-accented English: Irish rhythm and vowel color, lightly rhotic R, "
+            "and no General American pronunciation"
+        ),
+        "scottish": (
+            "Scottish-accented English: Scottish vowel color, firmer or rolled R, clipped rhythm, "
+            "and no General American pronunciation"
+        ),
+        "australian": (
+            "Australian English pronunciation: Australian vowel shifts, relaxed cadence, "
+            "and no General American pronunciation"
+        ),
+        "canadian": (
+            "Canadian English pronunciation: Canadian vowel color and clear North American cadence, "
+            "without drifting into exaggerated US regional accents"
+        ),
+        "newyork": (
+            "New York English pronunciation: New York vowel color and urban rhythm, "
+            "without drifting into southern or generic accents"
+        ),
+        "tokyo": (
+            "Tokyo Japanese-accented English: Japanese vowel timing, careful consonants, and clear understandable English"
+        ),
+        "generalamerican": (
+            "General American pronunciation: rhotic R, neutral US vowel shapes, and no British or regional accent drift"
+        ),
+    }
+    if normalized == "southernamerican":
+        return "Southern American pronunciation: southern US vowel color, relaxed drawl, rhotic R, and no British accent drift"
+    return templates.get(
+        normalized,
+        f"{text} pronunciation: keep the accent consistent, audible, and do not drift into General American unless requested",
+    )
+
+
 def default_narrator_voice_profile() -> Dict[str, str]:
     return dict(DEFAULT_NARRATOR_VOICE_PROFILE)
 
@@ -577,7 +650,7 @@ def build_compact_voice_profile(display_name: str, profile: Dict[str, Any]) -> D
 
     qwen_parts = [f"A {identity_phrase} voice", f"{personality_phrase} personality"]
     if accent:
-        qwen_parts.append(f"{accent} accent")
+        qwen_parts.append(accent_voice_instruction(accent) or f"{accent} accent")
     qwen_parts.append("clear natural audiobook delivery")
     return {
         "description": "; ".join(description_parts),

@@ -602,7 +602,7 @@ class PrototypeUiController:
                         "index": 0,
                         "sentence_idx": 0,
                         "unit_idx": 0,
-                        "text": f"Hi, my name is {display_name}.",
+                        "text": _registry_voice_sample_text(display_name),
                         "role": display_name,
                         "role_id": role_id,
                         "type": "dialogue",
@@ -1817,6 +1817,14 @@ def _registry_character_editable_fields(character: Dict[str, Any], infer_missing
         "occupation": _field_text(identity.get("occupation")),
         "aliases": ", ".join(_string_list(character.get("aliases"))),
     }
+
+
+def _registry_voice_sample_text(display_name: str) -> str:
+    name = str(display_name).strip() or "this character"
+    return (
+        f"Hello, my name is {name}. After the party, I asked for a glass of water, "
+        "a little butter, and a proper cup of tea."
+    )
 
 
 def _find_character_record_by_role_name(registry: Dict[str, Any], role_name: str) -> Optional[Tuple[str, Dict[str, Any]]]:
