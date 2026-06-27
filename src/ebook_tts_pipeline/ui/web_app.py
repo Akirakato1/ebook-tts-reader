@@ -3130,6 +3130,8 @@ INDEX_HTML = r"""<!doctype html>
     let sessionProgressTimer = null;
     let settingsSaveTimer = null;
     let topUpPromise = null;
+    let preloadedReadAlongAudio = null;
+    let preloadedReadAlongUrl = "";
     let audiobookPositionTimer = null;
     function compactStatusText(text, limit = 420) {
       const value = String(text || "");
@@ -4360,7 +4362,26 @@ INDEX_HTML = r"""<!doctype html>
         setStatus(error.message);
       }
     }
-    async function playReady() {
+    function clearPreloadedReadAlongAudio() {
+      preloadedReadAlongAudio = null;
+      preloadedReadAlongUrl = "";
+    }
+    function preloadNextReadyAudio() {
+      const next = state.ready[1];
+      if (!next || !next.audio_url) {
+        clearPreloadedReadAlongAudio();
+        return;
+      }
+      if (preloadedReadAlongUrl === next.audio_url) return;
+      preloadedReadAlongAudio = new Audio(next.audio_url);
+      preloadedReadAlongAudio.preload = "auto";
+      preloadedReadAlongAudio.playbackRate = Number(els.speed.value || 1);
+      preloadedReadAlongUrl = next.audio_url;
+      try {
+        preloadedReadAlongAudio.load();
+      } catch (_error) {}
+    }
+    async function playReady(options = {}) {
       if (!state.sessionActive) return;
       const item = state.ready[0];
       if (!item) {
@@ -4382,7 +4403,8 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
       await els.audio.play();
-      topUpBuffer();
+      preloadNextReadyAudio();
+      if (!options.deferTopUp) topUpBuffer();
     }
     async function pauseSession() {
       if (!state.sessionActive || state.sessionPaused) return;
@@ -4453,6 +4475,26 @@ INDEX_HTML = r"""<!doctype html>
       topUpPromise = promise;
       return promise;
     }
+    async function advanceServerAfterLocalHandoff(finishedUnitId) {
+      const sessionId = state.sessionId;
+      try {
+        const payload = await api("/api/session/advance", { method: "POST" });
+        if (!state.sessionActive || state.sessionId !== sessionId) return;
+        const currentUnitId = state.currentUnitId;
+        state.ready = payload.ready;
+        if (currentUnitId !== null && currentUnitId !== undefined) {
+          const currentIndex = state.ready.findIndex(item => Number(item.unit_id) === Number(currentUnitId));
+          if (currentIndex > 0) state.ready = state.ready.slice(currentIndex);
+        }
+        applyHighlights();
+        preloadNextReadyAudio();
+        topUpBuffer({ excludeUnitId: currentUnitId });
+      } catch (error) {
+        if (state.sessionActive && state.sessionId === sessionId) {
+          setStatus("Session advance sync failed after unit " + finishedUnitId + ": " + error.message);
+        }
+      }
+    }
     async function continueToNextChapter() {
       const nextChapter = nextChapterAfter(state.chapter);
       if (!nextChapter) {
@@ -4471,6 +4513,7 @@ INDEX_HTML = r"""<!doctype html>
         topUpPromise = null;
         state.sessionId = null;
         state.ready = [];
+        clearPreloadedReadAlongAudio();
         state.currentUnitId = null;
         setTtsLoadingStage("Loading next chapter text and read-along units.");
         await loadChapter(nextChapter.chapter, { allowDuringSession: true, selectFirstUnit: true });
@@ -4509,6 +4552,20 @@ INDEX_HTML = r"""<!doctype html>
     async function advanceSession() {
       if (!state.sessionActive) return;
       try {
+        const finishedUnitId = state.currentUnitId;
+        if (state.ready.length) {
+          const currentIndex = state.ready.findIndex(item => Number(item.unit_id) === Number(finishedUnitId));
+          if (currentIndex >= 0) {
+            state.ready.splice(0, currentIndex + 1);
+          } else {
+            state.ready.shift();
+          }
+        }
+        if (state.ready.length) {
+          await playReady({ deferTopUp: true });
+          advanceServerAfterLocalHandoff(finishedUnitId);
+          return;
+        }
         const payload = await api("/api/session/advance", { method: "POST" });
         state.ready = payload.ready;
         if (typeof payload.ready_playback_seconds === "number") {
@@ -4558,6 +4615,7 @@ INDEX_HTML = r"""<!doctype html>
       state.sessionPaused = false;
       state.sessionId = null;
       topUpPromise = null;
+      clearPreloadedReadAlongAudio();
       state.ready = [];
       state.currentUnitId = null;
       lockControls(false);

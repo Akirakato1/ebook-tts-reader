@@ -318,7 +318,11 @@ class PrototypeUiController:
 
     def read_along_narrator_profile(self) -> Dict[str, Any]:
         if self.paths.read_along_narrator_profile.exists():
-            return normalize_narrator_profile(read_json(self.paths.read_along_narrator_profile))
+            raw = read_json(self.paths.read_along_narrator_profile)
+            normalized = normalize_narrator_profile(raw, book_slug=self.book_root.name)
+            if normalized != raw:
+                write_json_atomic(self.paths.read_along_narrator_profile, normalized)
+            return normalized
         registry = read_json(self.paths.registry) if self.paths.registry.exists() else {}
         book_slug = str(registry.get("book", {}).get("slug", self.book_root.name))
         profile = narrator_profile_from_registry(registry, book_slug=book_slug)
@@ -327,7 +331,11 @@ class PrototypeUiController:
 
     def audiobook_narrator_profile(self) -> Dict[str, Any]:
         if self.paths.audiobook_narrator_profile.exists():
-            return normalize_narrator_profile(read_json(self.paths.audiobook_narrator_profile))
+            raw = read_json(self.paths.audiobook_narrator_profile)
+            normalized = normalize_narrator_profile(raw, book_slug=self.book_root.name)
+            if normalized != raw:
+                write_json_atomic(self.paths.audiobook_narrator_profile, normalized)
+            return normalized
         registry = read_json(self.paths.registry) if self.paths.registry.exists() else {}
         book_slug = str(registry.get("book", {}).get("slug", self.book_root.name))
         profile = narrator_profile_from_registry(registry, book_slug=book_slug)

@@ -1575,6 +1575,20 @@ def test_web_interface_uses_time_buffer_controls_and_pause_button(tmp_path):
         _stop_server(server, thread)
 
 
+def test_web_interface_hands_off_to_buffered_audio_before_server_advance(tmp_path):
+    server, thread, base_url = _start_test_server(tmp_path)
+    try:
+        response = urllib.request.urlopen(base_url, timeout=20).read().decode("utf-8")
+
+        assert "function preloadNextReadyAudio()" in response
+        assert "preloadedReadAlongAudio.preload = \"auto\";" in response
+        assert "state.ready.shift();" in response
+        assert "await playReady({ deferTopUp: true });" in response
+        assert "advanceServerAfterLocalHandoff" in response
+    finally:
+        _stop_server(server, thread)
+
+
 def test_web_interface_exposes_package_sharing_and_measured_generation_labels(tmp_path):
     server, thread, base_url = _start_test_server(tmp_path)
     try:

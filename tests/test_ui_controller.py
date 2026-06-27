@@ -2085,7 +2085,40 @@ def test_controller_read_along_narrator_profile_defaults_to_editable_profile(tmp
     assert profile["identity_profile"]["gender"] == "male"
     assert "audiobook narrator" in profile["identity_profile"]["occupation"]
     assert profile["voice_profile"]["description"]
+    assert "low baritone" in profile["voice_profile"]["qwen_instruct"]
     assert paths.read_along_narrator_profile.exists()
+
+
+def test_controller_rebuilds_stale_read_along_narrator_voice_profile_from_identity(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    write_json_atomic(
+        paths.read_along_narrator_profile,
+        {
+            "role_id": "narrator",
+            "display_name": "Narrator",
+            "identity_profile": {
+                "age_stage": "adult",
+                "gender": "male",
+                "personality": ["calm", "clear"],
+                "race_or_ethnicity": "White",
+                "accent": "General American",
+                "occupation": "audiobook narrator",
+            },
+            "voice_identity": {"seed": 123, "differentiators": ["calm baseline narrator timbre"]},
+            "voice_profile": {
+                "description": "thin old generated profile",
+                "qwen_instruct": "A thin old generated profile.",
+            },
+        },
+    )
+    controller = PrototypeUiController(book_root=paths.root, fake_tts=True)
+
+    profile = controller.read_along_narrator_profile()
+
+    assert "thin old generated profile" not in profile["voice_profile"]["qwen_instruct"]
+    assert "low baritone" in profile["voice_profile"]["qwen_instruct"]
+    assert "No accent drift" in profile["voice_profile"]["qwen_instruct"]
+    assert read_json(paths.read_along_narrator_profile) == profile
 
 
 def test_controller_migrates_narrator_profile_from_legacy_registry(tmp_path):
