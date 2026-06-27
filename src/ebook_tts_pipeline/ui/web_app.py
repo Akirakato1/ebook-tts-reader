@@ -3132,6 +3132,7 @@ INDEX_HTML = r"""<!doctype html>
     let topUpPromise = null;
     let preloadedReadAlongAudio = null;
     let preloadedReadAlongUrl = "";
+    let returnPromptPreviousPaused = false;
     let audiobookPositionTimer = null;
     function compactStatusText(text, limit = 420) {
       const value = String(text || "");
@@ -4613,6 +4614,7 @@ INDEX_HTML = r"""<!doctype html>
       showSessionError("");
       els.returnPrompt.hidden = true;
       state.sessionPaused = false;
+      returnPromptPreviousPaused = false;
       state.sessionId = null;
       topUpPromise = null;
       clearPreloadedReadAlongAudio();
@@ -4624,12 +4626,14 @@ INDEX_HTML = r"""<!doctype html>
     }
     function showReturnPrompt() {
       if (els.readerView.hidden) return;
-      if (state.sessionActive && !els.audio.paused) {
+      returnPromptPreviousPaused = state.sessionActive && state.sessionPaused;
+      if (state.sessionActive && !els.audio.paused && !returnPromptPreviousPaused) {
         els.audio.pause();
         state.sessionPaused = true;
-      } else {
+      } else if (!state.sessionActive) {
         state.sessionPaused = false;
       }
+      showTtsLoading(false);
       els.returnPromptCopy.textContent = state.sessionActive
         ? "The read-along session is paused. Return will end the session."
         : "Return to the library view.";
@@ -4638,9 +4642,20 @@ INDEX_HTML = r"""<!doctype html>
     }
     async function resumeFromReturnPrompt() {
       els.returnPrompt.hidden = true;
+      if (state.sessionActive && returnPromptPreviousPaused) {
+        returnPromptPreviousPaused = false;
+        state.sessionPaused = true;
+        els.pause.textContent = "Resume Session";
+        setTtsLoadingStage("Paused");
+        showTtsLoading(true, "paused");
+        setStatus("Session paused.");
+        return;
+      }
+      returnPromptPreviousPaused = false;
       if (state.sessionActive && state.sessionPaused) {
         state.sessionPaused = false;
         els.pause.textContent = "Pause Session";
+        showTtsLoading(false);
         try {
           await els.audio.play();
           topUpBuffer();
@@ -4662,6 +4677,7 @@ INDEX_HTML = r"""<!doctype html>
     async function returnToLibraryFromPrompt() {
       els.returnPrompt.hidden = true;
       state.sessionPaused = false;
+      returnPromptPreviousPaused = false;
       if (state.sessionActive) {
         await endSession("Session ended.");
       }

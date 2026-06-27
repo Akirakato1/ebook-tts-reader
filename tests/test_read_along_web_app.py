@@ -1575,6 +1575,21 @@ def test_web_interface_uses_time_buffer_controls_and_pause_button(tmp_path):
         _stop_server(server, thread)
 
 
+def test_web_interface_esc_prompt_restores_prior_pause_overlay(tmp_path):
+    server, thread, base_url = _start_test_server(tmp_path)
+    try:
+        response = urllib.request.urlopen(base_url, timeout=20).read().decode("utf-8")
+
+        assert "let returnPromptPreviousPaused = false;" in response
+        assert "returnPromptPreviousPaused = state.sessionActive && state.sessionPaused;" in response
+        assert "showTtsLoading(false);" in response
+        assert "if (state.sessionActive && returnPromptPreviousPaused)" in response
+        assert 'setTtsLoadingStage("Paused");' in response
+        assert 'showTtsLoading(true, "paused");' in response
+    finally:
+        _stop_server(server, thread)
+
+
 def test_web_interface_hands_off_to_buffered_audio_before_server_advance(tmp_path):
     server, thread, base_url = _start_test_server(tmp_path)
     try:
