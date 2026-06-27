@@ -113,14 +113,28 @@ class WslQwenWorkerAdapter:
                 self._process.terminate()
                 self._process = None
 
-    def ensure_voice(self, role_id: str, voice_record: Dict, voice_path: Path) -> Path:
+    def ensure_voice(
+        self,
+        role_id: str,
+        voice_record: Dict,
+        voice_path: Path,
+        sample_path: Optional[Path] = None,
+        reference_text: Optional[str] = None,
+    ) -> Path:
         self.start()
-        log_runtime_step("wsl_qwen_ensure_voice", role_id=role_id, voice_path=voice_path)
+        log_runtime_step(
+            "wsl_qwen_ensure_voice",
+            role_id=role_id,
+            voice_path=voice_path,
+            sample_path=sample_path,
+        )
         self.role_voice_paths.setdefault(role_id, voice_path)
         payload = {
             "role_id": role_id,
             "voice_record": dict(voice_record),
             "voice_path": to_wsl_path(voice_path),
+            "sample_path": to_wsl_path(sample_path) if sample_path is not None else None,
+            "reference_text": reference_text,
         }
         self._request("ensure_voice", payload)
         return voice_path

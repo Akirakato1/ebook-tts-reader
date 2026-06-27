@@ -122,13 +122,38 @@ class WslVllmOmniQwenAdapter:
                     self._process = None
             self._voice_worker.close()
 
-    def ensure_voice(self, role_id: str, voice_record: Dict, voice_path: Path) -> Path:
+    def ensure_voice(
+        self,
+        role_id: str,
+        voice_record: Dict,
+        voice_path: Path,
+        sample_path: Optional[Path] = None,
+        reference_text: Optional[str] = None,
+    ) -> Path:
         voice_path = Path(voice_path)
-        if voice_path.exists():
-            log_runtime_step("vllm_omni_ensure_voice_cached", role_id=role_id, voice_path=voice_path)
+        sample_path = Path(sample_path) if sample_path is not None else None
+        sample_ready = sample_path is None or sample_path.exists()
+        if voice_path.exists() and sample_ready and not voice_record.get("_force_regenerate"):
+            log_runtime_step(
+                "vllm_omni_ensure_voice_cached",
+                role_id=role_id,
+                voice_path=voice_path,
+                sample_path=sample_path,
+            )
             return voice_path
-        log_runtime_step("vllm_omni_ensure_voice_generate", role_id=role_id, voice_path=voice_path)
-        return self._voice_worker.ensure_voice(role_id, voice_record, voice_path)
+        log_runtime_step(
+            "vllm_omni_ensure_voice_generate",
+            role_id=role_id,
+            voice_path=voice_path,
+            sample_path=sample_path,
+        )
+        return self._voice_worker.ensure_voice(
+            role_id,
+            voice_record,
+            voice_path,
+            sample_path=sample_path,
+            reference_text=reference_text,
+        )
 
     def generate_sentence_batches(self, jobs: List[Dict]) -> Iterator[List[GeneratedSentenceAudio]]:
         yield self.generate_sentences(jobs)

@@ -1,4 +1,5 @@
 import json
+import wave
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +12,7 @@ from ebook_tts_pipeline.tts.qwen_adapter import QwenTtsAdapter, QwenTtsRuntime
 class FakeQwenModel:
     def __init__(self):
         self.voice_design_calls = []
+        self.voice_prompt_calls = []
         self.voice_clone_calls = []
 
     def generate_voice_design(self, text, instruct, language, **kwargs):
@@ -18,6 +20,14 @@ class FakeQwenModel:
         return [np.ones(100, dtype=np.float32) * 0.1], 24000
 
     def create_voice_clone_prompt(self, ref_audio, ref_text, x_vector_only_mode):
+        self.voice_prompt_calls.append(
+            {
+                "ref_audio_len": len(ref_audio[0]),
+                "sample_rate": ref_audio[1],
+                "ref_text": ref_text,
+                "x_vector_only_mode": x_vector_only_mode,
+            }
+        )
         return [{"ref_code": None, "ref_spk_embedding": "embedding", "x_vector_only_mode": True, "icl_mode": False}]
 
     def generate_voice_clone(self, text, language, voice_clone_prompt, **kwargs):
@@ -132,6 +142,36 @@ def test_qwen_adapter_regenerates_existing_qvp_when_forced(tmp_path):
     )
 
     assert len(model.voice_design_calls) == 2
+
+
+def test_qwen_adapter_saves_voice_design_reference_audio_as_preview_sample(tmp_path):
+    model = FakeQwenModel()
+    torch_store = FakeTorchStore()
+    adapter = QwenTtsAdapter(model=model, torch_module=torch_store)
+    voice_path = tmp_path / "voices" / "elena.qvp"
+    sample_path = tmp_path / "voices" / "_samples" / "elena.wav"
+    sample_text = "Hello, my name is Elena."
+    voice_record = {
+        "voice_profile": {"qwen_instruct": "A soft voice."},
+        "voice_identity": {"seed": 42},
+    }
+
+    adapter.ensure_voice(
+        "elena",
+        voice_record,
+        voice_path,
+        sample_path=sample_path,
+        reference_text=sample_text,
+    )
+
+    assert model.voice_design_calls == [
+        {"text": sample_text, "instruct": "A soft voice.", "language": "auto"}
+    ]
+    assert model.voice_prompt_calls[0]["ref_text"] == sample_text
+    with wave.open(str(sample_path), "rb") as wav_file:
+        assert wav_file.getnchannels() == 1
+        assert wav_file.getframerate() == 24000
+        assert wav_file.getnframes() == 100
 
 
 def test_qwen_adapter_generates_sentence_audio_in_order(tmp_path):

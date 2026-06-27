@@ -4,6 +4,7 @@ import gc
 import importlib.util
 import json
 import time
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
@@ -224,13 +225,22 @@ class QwenTtsAdapter:
         self._voice_prompt_cache: Dict[str, Any] = {}
         self._generated_batch_count = 0
 
-    def ensure_voice(self, role_id: str, voice_record: Dict, voice_path: Path) -> Path:
+    def ensure_voice(
+        self,
+        role_id: str,
+        voice_record: Dict,
+        voice_path: Path,
+        sample_path: Optional[Path] = None,
+        reference_text: Optional[str] = None,
+    ) -> Path:
         self.role_voice_paths.setdefault(role_id, voice_path)
-        if voice_path.exists() and not voice_record.get("_force_regenerate"):
+        sample_path = Path(sample_path) if sample_path is not None else None
+        sample_missing = sample_path is not None and not sample_path.exists()
+        if voice_path.exists() and not voice_record.get("_force_regenerate") and not sample_missing:
             return voice_path
         seed = int(voice_record.get("voice_identity", {}).get("seed", 0))
         instruct = str(voice_record["voice_profile"]["qwen_instruct"])
-        text = "This is the reference voice for this character."
+        text = str(reference_text or "This is the reference voice for this character.")
 
         if hasattr(self.model, "unload_model"):
             self.model.unload_model("Base")
@@ -244,6 +254,8 @@ class QwenTtsAdapter:
         finally:
             if hasattr(self.model, "unload_model"):
                 self.model.unload_model("VoiceDesign")
+        if sample_path is not None:
+            _write_wav_file(sample_path, np.asarray(wavs[0], dtype=np.float32), int(sample_rate))
         prompt = self.model.create_voice_clone_prompt(
             ref_audio=(wavs[0], sample_rate),
             ref_text=text,
@@ -644,6 +656,16 @@ def _role_switch_count(jobs: List[Dict]) -> int:
             switches += 1
         previous = role
     return switches
+
+
+def _write_wav_file(path: Path, samples: np.ndarray, sample_rate: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pcm16 = (np.clip(samples.astype(np.float32), -1.0, 1.0) * 32767).astype("<i2")
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(int(sample_rate))
+        wav_file.writeframes(pcm16.tobytes())
 
 
 def _call_if_available(owner: Any, name: str) -> Any:

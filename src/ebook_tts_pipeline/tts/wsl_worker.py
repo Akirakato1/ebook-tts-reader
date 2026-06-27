@@ -76,6 +76,8 @@ class WorkerState:
             role_id=str(payload["role_id"]),
             voice_record=dict(payload["voice_record"]),
             voice_path=Path(payload["voice_path"]),
+            sample_path=Path(payload["sample_path"]) if payload.get("sample_path") else None,
+            reference_text=str(payload["reference_text"]) if payload.get("reference_text") is not None else None,
         )
         return {"voice_path": str(path)}
 

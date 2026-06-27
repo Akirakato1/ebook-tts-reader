@@ -134,8 +134,21 @@ class _LazyTtsAdapter:
             self._adapter = self._adapter_factory()
         return self._adapter
 
-    def ensure_voice(self, role_id: str, voice_record: Dict, voice_path: Path) -> Path:
-        return self._require_adapter().ensure_voice(role_id, voice_record, voice_path)
+    def ensure_voice(
+        self,
+        role_id: str,
+        voice_record: Dict,
+        voice_path: Path,
+        sample_path: Optional[Path] = None,
+        reference_text: Optional[str] = None,
+    ) -> Path:
+        return self._require_adapter().ensure_voice(
+            role_id,
+            voice_record,
+            voice_path,
+            sample_path=sample_path,
+            reference_text=reference_text,
+        )
 
     def generate_sentence_batches(self, jobs: List[Dict]) -> Iterator[List[GeneratedSentenceAudio]]:
         yield from self._require_adapter().generate_sentence_batches(jobs)
@@ -600,29 +613,21 @@ class PrototypeUiController:
         if pipeline is None:
             pipeline = self._voice_asset_pipeline()
         voice_path = self._voice_path_for_registry_record(role_id, record, pipeline=pipeline)
+        sample_path = self.paths.root / "voices" / "_samples" / f"{role_id}.wav"
+        sample_text = _registry_voice_sample_text(display_name)
         try:
-            self._ensure_voice_asset(pipeline.tts_adapter, role_id, record, voice_path)
+            self._ensure_voice_asset(
+                pipeline.tts_adapter,
+                role_id,
+                record,
+                voice_path,
+                sample_path=sample_path,
+                reference_text=sample_text,
+            )
             pipeline.registry.save(registry)
 
-            generated = pipeline.tts_adapter.generate_sentences(
-                [
-                    {
-                        "index": 0,
-                        "sentence_idx": 0,
-                        "unit_idx": 0,
-                        "text": _registry_voice_sample_text(display_name),
-                        "role": display_name,
-                        "role_id": role_id,
-                        "type": "dialogue",
-                        "voice_config_path": record["voice_config_path"],
-                    }
-                ]
-            )
-            if not generated:
-                raise RuntimeError("Voice sample generation returned no audio.")
-            sample_dir = self.paths.root / "voices" / "_samples"
-            sample_path = sample_dir / f"{role_id}.wav"
-            _write_wav_file(sample_path, generated[0].samples, generated[0].sample_rate)
+            if not sample_path.exists():
+                raise RuntimeError("Voice sample reference audio was not written.")
             return {
                 "role_id": role_id,
                 "sample_path": sample_path.relative_to(self.paths.root).as_posix(),
@@ -1449,14 +1454,29 @@ class PrototypeUiController:
         role_id: str,
         record: Dict[str, Any],
         voice_path: Path,
+        sample_path: Optional[Path] = None,
+        reference_text: Optional[str] = None,
     ) -> str:
         current_hash = voice_profile_hash(record)
         cached_hash = record.get("voice_config_hash")
-        should_generate = not voice_path.exists() or cached_hash != current_hash
+        sample_path = Path(sample_path) if sample_path is not None else None
+        sample_missing = sample_path is not None and not sample_path.exists()
+        should_generate = not voice_path.exists() or cached_hash != current_hash or sample_missing
         if should_generate:
             adapter_record = dict(record)
-            adapter_record["_force_regenerate"] = voice_path.exists() and cached_hash != current_hash
-            adapter.ensure_voice(role_id, adapter_record, voice_path)
+            adapter_record["_force_regenerate"] = voice_path.exists() and (
+                cached_hash != current_hash or sample_missing
+            )
+            if sample_path is not None or reference_text is not None:
+                adapter.ensure_voice(
+                    role_id,
+                    adapter_record,
+                    voice_path,
+                    sample_path=sample_path,
+                    reference_text=reference_text,
+                )
+            else:
+                adapter.ensure_voice(role_id, adapter_record, voice_path)
             record["voice_config_hash"] = current_hash
         if hasattr(adapter, "role_voice_paths"):
             adapter.role_voice_paths[role_id] = voice_path
@@ -2078,20 +2098,6 @@ def _resolve_vllm_omni_model(config: PipelineConfig) -> Path | str:
 
 def _open_audio_file(path: Path) -> None:
     webbrowser.open(path.resolve().as_uri())
-
-
-def _write_wav_file(path: Path, samples: Any, sample_rate: int) -> None:
-    import wave
-
-    import numpy as np
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    pcm16 = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2")
-    with wave.open(str(path), "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(int(sample_rate))
-        wav.writeframes(pcm16.tobytes())
 
 
 class _UnavailableJsonClient:

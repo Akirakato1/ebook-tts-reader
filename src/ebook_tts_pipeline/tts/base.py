@@ -20,7 +20,14 @@ class GeneratedSentenceAudio:
 
 
 class TtsAdapter(Protocol):
-    def ensure_voice(self, role_id: str, voice_record: Dict, voice_path: Path) -> Path:
+    def ensure_voice(
+        self,
+        role_id: str,
+        voice_record: Dict,
+        voice_path: Path,
+        sample_path: Optional[Path] = None,
+        reference_text: Optional[str] = None,
+    ) -> Path:
         ...
 
     def generate_sentence_batches(self, jobs: List[Dict]) -> Iterator[List[GeneratedSentenceAudio]]:

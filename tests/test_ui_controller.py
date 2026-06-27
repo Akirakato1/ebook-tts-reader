@@ -125,9 +125,22 @@ class RecordingFakeTtsAdapter(FakeTtsAdapter):
         self.generated_role_ids = []
         self.generated_texts = []
 
-    def ensure_voice(self, role_id, voice_record, voice_path):
-        self.ensure_voice_calls.append((role_id, Path(voice_path)))
-        return super().ensure_voice(role_id, voice_record, voice_path)
+    def ensure_voice(self, role_id, voice_record, voice_path, sample_path=None, reference_text=None):
+        self.ensure_voice_calls.append(
+            {
+                "role_id": role_id,
+                "voice_path": Path(voice_path),
+                "sample_path": Path(sample_path) if sample_path is not None else None,
+                "reference_text": reference_text,
+            }
+        )
+        return super().ensure_voice(
+            role_id,
+            voice_record,
+            voice_path,
+            sample_path=sample_path,
+            reference_text=reference_text,
+        )
 
     def generate_sentences(self, jobs):
         self.generated_role_ids.extend(str(job["role_id"]) for job in jobs)
@@ -660,10 +673,18 @@ def test_controller_generates_registry_voice_sample_with_voice_asset_backend(tmp
     assert sample["sample_url"] == "/api/registry/sample/leigh_adult.wav"
     sample_path = paths.root / sample["sample_path"]
     assert sample_path.read_bytes()[:4] == b"RIFF"
-    assert pipelines[0].tts_adapter.generated_texts == [
-        "Hello, my name is Leigh. After the party, I asked for a glass of water, "
-        "a little butter, and a proper cup of tea."
+    assert pipelines[0].tts_adapter.ensure_voice_calls == [
+        {
+            "role_id": "leigh_adult",
+            "voice_path": paths.root / "voices" / "leigh_adult.qvp",
+            "sample_path": paths.root / "voices" / "_samples" / "leigh_adult.wav",
+            "reference_text": (
+                "Hello, my name is Leigh. After the party, I asked for a glass of water, "
+                "a little butter, and a proper cup of tea."
+            ),
+        }
     ]
+    assert pipelines[0].tts_adapter.generated_texts == []
     registry = read_json(paths.registry)
     assert registry["characters"]["leigh_adult"]["voice_config_path"] == "voices/leigh_adult.qvp"
     assert registry["characters"]["leigh_adult"]["voice_config_hash"]
@@ -1380,8 +1401,8 @@ def test_controller_prepare_read_along_voices_generates_only_missing_samples(tmp
     result = controller.prepare_read_along_voices()
 
     assert len(pipelines) == 1
-    assert pipelines[0].tts_adapter.ensure_voice_calls == []
-    assert pipelines[0].tts_adapter.generated_role_ids == ["callie_adult"]
+    assert [call["role_id"] for call in pipelines[0].tts_adapter.ensure_voice_calls] == ["callie_adult"]
+    assert pipelines[0].tts_adapter.generated_role_ids == []
     assert result["sample_count"] == 1
     assert result["voice_count"] == 2
     assert result["voice_total"] == 2
