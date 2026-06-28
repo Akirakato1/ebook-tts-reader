@@ -5,7 +5,7 @@ from ebook_tts_pipeline.annotation.quotes import extract_quoted_dialogue
 from ebook_tts_pipeline.config import PipelineConfig
 from ebook_tts_pipeline.json_io import read_json
 from ebook_tts_pipeline.paths import BookPaths
-from scripts.run_booknlp_annotation_harness import build_harness_report
+from scripts.run_booknlp_annotation_harness import build_harness_report, run_cached_harness
 
 
 def test_booknlp_runner_reuses_cache_when_input_hash_matches(tmp_path):
@@ -29,6 +29,45 @@ def test_booknlp_runner_reuses_cache_when_input_hash_matches(tmp_path):
     manifest = read_json(paths.booknlp_manifest)
     assert manifest["model"] == "small"
     assert manifest["chapter_count"] == 1
+
+
+def test_cached_harness_writes_sidecar_annotation_without_calling_sonnet(tmp_path):
+    paths = BookPaths(tmp_path / "book")
+    paths.chapter_text("chapter_017").parent.mkdir(parents=True, exist_ok=True)
+    paths.chapter_text("chapter_017").write_text(
+        'Mary paused. "The apple of my eye," Mr. Pounds said.',
+        encoding="utf-8",
+    )
+    paths.booknlp_output_dir.mkdir(parents=True, exist_ok=True)
+    (paths.booknlp_output_dir / "book.quotes").write_text(
+        "quote_start\tquote_end\tmention_start\tmention_end\tmention_phrase\tchar_id\tquote\n"
+        "3\t9\t10\t12\tMr. Pounds\t7\tThe apple of my eye,\n",
+        encoding="utf-8",
+    )
+    paths.registry.parent.mkdir(parents=True, exist_ok=True)
+    from ebook_tts_pipeline.json_io import write_json_atomic
+
+    write_json_atomic(
+        paths.registry,
+        {
+            "characters": {
+                "mr_john_pounds_adult": {
+                    "role_id": "mr_john_pounds_adult",
+                    "display_name": "Mr John Pounds",
+                    "age_stage": "adult",
+                    "aliases": ["Mr John Pounds adult"],
+                }
+            }
+        },
+    )
+
+    report = run_cached_harness(paths, ["chapter_017"], client=NoCallClient())
+
+    assert report["deterministic_quotes"] == 1
+    assert report["sonnet_quotes"] == 0
+    assert not paths.annotation("chapter_017").exists()
+    sidecar = paths.booknlp_dir / "harness_annotations" / "chapter_017.annotation.json"
+    assert read_json(sidecar)["quotes"] == [[1, 0]]
 
 
 class NoCallClient:
