@@ -2,6 +2,7 @@ from ebook_tts_pipeline.annotation.booknlp_runner import BookNlpRunner, BookNlpR
 from ebook_tts_pipeline.annotation.booknlp_candidates import QuoteAttributionCandidate
 from ebook_tts_pipeline.annotation.quote_consolidation import BookNlpSonnetConsolidationService
 from ebook_tts_pipeline.annotation.quotes import extract_quoted_dialogue
+from ebook_tts_pipeline.config import PipelineConfig
 from ebook_tts_pipeline.json_io import read_json
 from ebook_tts_pipeline.paths import BookPaths
 from scripts.run_booknlp_annotation_harness import build_harness_report
@@ -84,3 +85,13 @@ def test_harness_report_records_cost_reduction_metrics():
     assert report["deterministic_quotes"] == 8
     assert report["sonnet_quotes"] == 2
     assert report["estimated_prompt_char_savings"] == 45600
+
+
+def test_booknlp_harness_config_is_opt_in(monkeypatch):
+    monkeypatch.delenv("EBOOK_TTS_ANNOTATION_BACKEND", raising=False)
+    default_config = PipelineConfig.from_env("book")
+    assert default_config.annotation_backend == "sonnet"
+
+    monkeypatch.setenv("EBOOK_TTS_ANNOTATION_BACKEND", "booknlp_harness")
+    harness_config = PipelineConfig.from_env("book")
+    assert harness_config.annotation_backend == "booknlp_harness"

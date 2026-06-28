@@ -37,6 +37,10 @@ class PipelineConfig:
     anthropic_temperature: float = 0.1
     anthropic_max_tokens: int = 8192
     annotation_repair_retries: int = 1
+    annotation_backend: str = "sonnet"
+    booknlp_python: str = "python"
+    booknlp_model: str = "small"
+    booknlp_cache_policy: str = "reuse"
     qwen_model_choice: str = "1.7B"
     qwen_model_root: str = "models/qwen-tts"
     qwen_device: str = "auto"
@@ -85,6 +89,10 @@ class PipelineConfig:
                 "EBOOK_TTS_ANTHROPIC_MODEL",
                 DEFAULT_ANTHROPIC_MODEL,
             ),
+            annotation_backend=os.environ.get("EBOOK_TTS_ANNOTATION_BACKEND", "sonnet"),
+            booknlp_python=os.environ.get("EBOOK_TTS_BOOKNLP_PYTHON", "python"),
+            booknlp_model=os.environ.get("EBOOK_TTS_BOOKNLP_MODEL", "small"),
+            booknlp_cache_policy=os.environ.get("EBOOK_TTS_BOOKNLP_CACHE_POLICY", "reuse"),
             qwen_model_choice=os.environ.get("EBOOK_TTS_QWEN_MODEL", "1.7B"),
             qwen_model_root=os.environ.get("EBOOK_TTS_QWEN_MODEL_ROOT", "models/qwen-tts"),
             qwen_device=os.environ.get("EBOOK_TTS_QWEN_DEVICE", "auto"),
