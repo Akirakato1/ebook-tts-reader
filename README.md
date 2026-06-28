@@ -179,6 +179,34 @@ If the terminal shows local/temp speakers being generated during `Generate Voice
 is a bug. If it shows model downloads during a normal run, the local model path or backend
 configuration is probably wrong.
 
+## Experimental Annotation Harness
+
+The production `Annotate Book` path still uses Sonnet quote attribution. An opt-in
+BookNLP/Sonnet harness exists for cost and quality experiments:
+
+- BookNLP is used as a local candidate generator. It runs over stitched chapter text,
+  caches artifacts under `booknlp/`, and suggests quote-speaker candidates.
+- The app maps BookNLP quote rows back to its own deterministic quote IDs (`q001`,
+  `q002`, and so on), then resolves obvious registry aliases locally.
+- Sonnet is called only for unresolved or ambiguous candidates, with a compact prompt
+  containing candidate quotes and the global registry rather than the full chapter text.
+- Harness outputs still target `quote_attribution_v1`, so existing validation,
+  read-along unit construction, temp speaker handling, and voice generation remain the
+  quality gate.
+
+Relevant environment flags:
+
+```powershell
+$env:EBOOK_TTS_ANNOTATION_BACKEND = "booknlp_harness"
+$env:EBOOK_TTS_BOOKNLP_PYTHON = "python"
+$env:EBOOK_TTS_BOOKNLP_MODEL = "small"
+$env:EBOOK_TTS_BOOKNLP_CACHE_POLICY = "reuse"
+```
+
+Use `scripts/run_booknlp_annotation_harness.py` for harness reports. Do not treat the
+harness as the default UI annotation path until its quality is benchmarked against real
+books.
+
 ## TTS Stack
 
 Default environment-driven settings live in
