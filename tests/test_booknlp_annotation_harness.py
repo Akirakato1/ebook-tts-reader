@@ -1,4 +1,7 @@
 from ebook_tts_pipeline.annotation.booknlp_runner import BookNlpRunner, BookNlpRunnerConfig
+from ebook_tts_pipeline.annotation.booknlp_candidates import QuoteAttributionCandidate
+from ebook_tts_pipeline.annotation.quote_consolidation import BookNlpSonnetConsolidationService
+from ebook_tts_pipeline.annotation.quotes import extract_quoted_dialogue
 from ebook_tts_pipeline.json_io import read_json
 from ebook_tts_pipeline.paths import BookPaths
 
@@ -24,3 +27,41 @@ def test_booknlp_runner_reuses_cache_when_input_hash_matches(tmp_path):
     manifest = read_json(paths.booknlp_manifest)
     assert manifest["model"] == "small"
     assert manifest["chapter_count"] == 1
+
+
+class NoCallClient:
+    def complete_json(self, system_prompt, user_prompt):
+        raise AssertionError("Sonnet should not be called for deterministic mappings")
+
+
+def test_harness_service_writes_valid_annotation_without_sonnet_for_unique_match(tmp_path):
+    chapter_text = 'Mary paused. "The apple of my eye," Mr. Pounds said.'
+    extraction = extract_quoted_dialogue(chapter_text)
+    registry = {
+        "characters": {
+            "mr_john_pounds_adult": {
+                "role_id": "mr_john_pounds_adult",
+                "display_name": "Mr John Pounds",
+                "age_stage": "adult",
+                "aliases": ["Mr John Pounds adult"],
+            }
+        }
+    }
+    candidates = [
+        QuoteAttributionCandidate(
+            chapter="chapter_017",
+            quote_idx=1,
+            quote_id="q001",
+            quote_text='"The apple of my eye,"',
+            booknlp_character_id="7",
+            mention_phrase="Mr. Pounds",
+        )
+    ]
+    service = BookNlpSonnetConsolidationService(NoCallClient())
+
+    result = service.consolidate("chapter_017", extraction, candidates, registry)
+
+    assert result.to_dict() == {
+        "roles": ["mr_john_pounds_adult"],
+        "quotes": [[1, 0]],
+    }
