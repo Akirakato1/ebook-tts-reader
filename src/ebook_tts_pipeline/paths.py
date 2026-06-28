@@ -24,6 +24,22 @@ class BookPaths:
     def settings(self) -> Path:
         return self.root / "settings.json"
 
+    @property
+    def booknlp_dir(self) -> Path:
+        return self.root / "booknlp"
+
+    @property
+    def booknlp_input(self) -> Path:
+        return self.booknlp_dir / "input.txt"
+
+    @property
+    def booknlp_manifest(self) -> Path:
+        return self.booknlp_dir / "manifest.json"
+
+    @property
+    def booknlp_output_dir(self) -> Path:
+        return self.booknlp_dir / "output"
+
     def chapter_text(self, chapter: str) -> Path:
         return self.root / "chapters" / f"{chapter}.txt"
 
