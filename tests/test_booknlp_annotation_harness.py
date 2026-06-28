@@ -4,6 +4,7 @@ from ebook_tts_pipeline.annotation.quote_consolidation import BookNlpSonnetConso
 from ebook_tts_pipeline.annotation.quotes import extract_quoted_dialogue
 from ebook_tts_pipeline.json_io import read_json
 from ebook_tts_pipeline.paths import BookPaths
+from scripts.run_booknlp_annotation_harness import build_harness_report
 
 
 def test_booknlp_runner_reuses_cache_when_input_hash_matches(tmp_path):
@@ -65,3 +66,21 @@ def test_harness_service_writes_valid_annotation_without_sonnet_for_unique_match
         "roles": ["mr_john_pounds_adult"],
         "quotes": [[1, 0]],
     }
+
+
+def test_harness_report_records_cost_reduction_metrics():
+    report = build_harness_report(
+        book_slug="victorian_psycho",
+        chapters=["chapter_017"],
+        deterministic_quotes=8,
+        sonnet_quotes=2,
+        failed_quotes=0,
+        sonnet_prompt_chars=2400,
+        old_full_prompt_chars=48000,
+    )
+
+    assert report["book_slug"] == "victorian_psycho"
+    assert report["chapters"] == ["chapter_017"]
+    assert report["deterministic_quotes"] == 8
+    assert report["sonnet_quotes"] == 2
+    assert report["estimated_prompt_char_savings"] == 45600
