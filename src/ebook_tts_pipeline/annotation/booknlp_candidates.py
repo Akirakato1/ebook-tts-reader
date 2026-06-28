@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List
+from dataclasses import dataclass, field
+from typing import List, Mapping, Sequence
 
 from ebook_tts_pipeline.annotation.booknlp_artifacts import BookNlpQuoteRow
 from ebook_tts_pipeline.annotation.quotes import QuoteExtraction
@@ -16,6 +16,7 @@ class QuoteAttributionCandidate:
     quote_text: str
     booknlp_character_id: str
     mention_phrase: str
+    cluster_aliases: List[str] = field(default_factory=list)
     source: str = "booknlp"
 
 
@@ -23,8 +24,10 @@ def map_booknlp_quotes_to_extraction(
     chapter: str,
     extraction: QuoteExtraction,
     rows: List[BookNlpQuoteRow],
+    cluster_aliases: Mapping[str, Sequence[str]] | None = None,
 ) -> List[QuoteAttributionCandidate]:
     unmatched = list(extraction.quotes)
+    cluster_aliases = cluster_aliases or {}
     candidates: List[QuoteAttributionCandidate] = []
     for row in rows:
         row_key = _quote_key(row.quote_text)
@@ -40,6 +43,7 @@ def map_booknlp_quotes_to_extraction(
                 quote_text=match.text,
                 booknlp_character_id=row.character_id,
                 mention_phrase=row.mention_phrase,
+                cluster_aliases=list(cluster_aliases.get(row.character_id, [])),
             )
         )
     return candidates

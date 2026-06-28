@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from ebook_tts_pipeline.annotation.anthropic_client import AnthropicJsonClient
-from ebook_tts_pipeline.annotation.booknlp_artifacts import parse_booknlp_quotes
+from ebook_tts_pipeline.annotation.booknlp_artifacts import (
+    character_aliases_from_entities,
+    parse_booknlp_entities,
+    parse_booknlp_quotes,
+)
 from ebook_tts_pipeline.annotation.booknlp_candidates import map_booknlp_quotes_to_extraction
 from ebook_tts_pipeline.annotation.quote_consolidation import (
     BookNlpSonnetConsolidationService,
@@ -48,6 +52,7 @@ def run_cached_harness(
 ) -> Dict:
     registry = read_json(paths.registry) if paths.registry.exists() else {}
     quote_rows = parse_booknlp_quotes(paths.booknlp_output_dir / "book.quotes")
+    cluster_aliases = _load_cluster_aliases(paths)
     service = BookNlpSonnetConsolidationService(client)
     deterministic_quotes = 0
     sonnet_quotes = 0
@@ -60,7 +65,12 @@ def run_cached_harness(
         chapter_text = paths.chapter_text(chapter).read_text(encoding="utf-8", errors="replace")
         extraction = extract_quoted_dialogue(chapter_text)
         old_full_prompt_chars += len(chapter_text)
-        candidates = map_booknlp_quotes_to_extraction(chapter, extraction, quote_rows)
+        candidates = map_booknlp_quotes_to_extraction(
+            chapter,
+            extraction,
+            quote_rows,
+            cluster_aliases=cluster_aliases,
+        )
         deterministic = consolidate_candidates_deterministically(candidates, registry)
         deterministic_quotes += len(deterministic.resolved_quotes)
         unresolved_count = max(0, len(extraction.quotes) - len(deterministic.resolved_quotes))
@@ -84,6 +94,13 @@ def run_cached_harness(
         sonnet_prompt_chars=sonnet_prompt_chars,
         old_full_prompt_chars=old_full_prompt_chars,
     )
+
+
+def _load_cluster_aliases(paths: BookPaths) -> Dict[str, List[str]]:
+    entities_path = paths.booknlp_output_dir / "book.entities"
+    if not entities_path.exists():
+        return {}
+    return character_aliases_from_entities(parse_booknlp_entities(entities_path))
 
 
 def main() -> None:

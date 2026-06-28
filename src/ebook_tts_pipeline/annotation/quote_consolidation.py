@@ -37,7 +37,7 @@ def consolidate_candidates_deterministically(
     resolved: Dict[int, str] = {}
     unresolved: List[UnresolvedQuoteCandidate] = []
     for candidate in candidates:
-        possible = sorted(alias_candidates.get(normalize_name(candidate.mention_phrase), set()))
+        possible = _candidate_role_matches(candidate, alias_candidates)
         if len(possible) == 1:
             resolved[candidate.quote_idx] = possible[0]
             continue
@@ -53,6 +53,16 @@ def consolidate_candidates_deterministically(
     return DeterministicConsolidationResult(resolved_quotes=resolved, unresolved=unresolved)
 
 
+def _candidate_role_matches(
+    candidate: QuoteAttributionCandidate,
+    alias_candidates: Dict[str, set],
+) -> List[str]:
+    role_ids = set()
+    for alias in [candidate.mention_phrase, *candidate.cluster_aliases]:
+        role_ids.update(alias_candidates.get(normalize_name(alias), set()))
+    return sorted(role_ids)
+
+
 def render_consolidation_prompt(
     chapter: str,
     candidates: List[QuoteAttributionCandidate],
@@ -65,6 +75,7 @@ def render_consolidation_prompt(
             "quote_text": candidate.quote_text,
             "booknlp_character_id": candidate.booknlp_character_id,
             "booknlp_mention_phrase": candidate.mention_phrase,
+            "booknlp_cluster_aliases": list(candidate.cluster_aliases),
         }
         for candidate in candidates
     ]

@@ -41,7 +41,13 @@ def test_cached_harness_writes_sidecar_annotation_without_calling_sonnet(tmp_pat
     paths.booknlp_output_dir.mkdir(parents=True, exist_ok=True)
     (paths.booknlp_output_dir / "book.quotes").write_text(
         "quote_start\tquote_end\tmention_start\tmention_end\tmention_phrase\tchar_id\tquote\n"
-        "3\t9\t10\t12\tMr. Pounds\t7\tThe apple of my eye,\n",
+        "3\t9\t10\t12\the\t7\tThe apple of my eye,\n",
+        encoding="utf-8",
+    )
+    (paths.booknlp_output_dir / "book.entities").write_text(
+        "COREF\tstart_token\tend_token\tprop\tcat\ttext\n"
+        "7\t10\t12\tPROP\tPER\tJohn Pounds\n"
+        "7\t20\t21\tNOM\tPER\tMr. Pounds\n",
         encoding="utf-8",
     )
     paths.registry.parent.mkdir(parents=True, exist_ok=True)
@@ -55,7 +61,7 @@ def test_cached_harness_writes_sidecar_annotation_without_calling_sonnet(tmp_pat
                     "role_id": "mr_john_pounds_adult",
                     "display_name": "Mr John Pounds",
                     "age_stage": "adult",
-                    "aliases": ["Mr John Pounds adult"],
+                    "aliases": ["John Pounds"],
                 }
             }
         },

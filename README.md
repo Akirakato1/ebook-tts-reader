@@ -185,9 +185,11 @@ The production `Annotate Book` path still uses Sonnet quote attribution. An opt-
 BookNLP/Sonnet harness exists for cost and quality experiments:
 
 - BookNLP is used as a local candidate generator. It runs over stitched chapter text,
-  caches artifacts under `booknlp/`, and suggests quote-speaker candidates.
+  caches artifacts under `booknlp/`, and suggests quote-speaker candidates from
+  `.quotes` plus entity/coref aliases from `.entities`.
 - The app maps BookNLP quote rows back to its own deterministic quote IDs (`q001`,
-  `q002`, and so on), then resolves obvious registry aliases locally.
+  `q002`, and so on), then resolves obvious registry aliases locally using speaker
+  mentions and BookNLP cluster aliases.
 - Sonnet is called only for unresolved or ambiguous candidates, with a compact prompt
   containing candidate quotes and the global registry rather than the full chapter text.
 - Harness outputs still target `quote_attribution_v1`, so existing validation,
